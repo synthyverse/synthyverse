@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "synthyverse"
-version = "0.1.0"
-description = "Synthetic data generation and evaluation framework"
+dynamic = ["version"]
+description = "Synthetic data generation and evaluation library"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
-    { name = "Jim", email = " " },
+    { name = "Jim Achterberg", email = " " },
     { name = "Saif Ul Islam", email = " " },
     { name = "Zia Ur Rehman", email = " " }
 ]
@@ -28,3 +28,6 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[tool.setuptools.dynamic]
+version = {attr = "synthyverse.__version__"}

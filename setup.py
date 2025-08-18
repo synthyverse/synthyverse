@@ -1,5 +1,6 @@
 from setuptools import setup, find_packages
 import os
+from synthyverse.__version__ import __version__
 
 
 # Utility: read requirements from file
@@ -30,7 +31,7 @@ core_dependencies = []  # Always-installed dependencies
 
 setup(
     name="syntyverse",
-    version="0.1.0",
+    version=__version__,
     description="Synthetic data generation and evaluation framework",
     author="Jim, Saif Ul Islam, Zia Ur Rehman",
     author_email=" ",
