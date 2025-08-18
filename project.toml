@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synthyverse"
+version = "0.1.0"
+description = "Synthetic data generation and evaluation framework"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Jim", email = " " },
+    { name = "Saif Ul Islam", email = " " },
+    { name = "Zia Ur Rehman", email = " " }
+]
+requires-python = ">=3.8"
+dependencies = [
+    "arfpy",
+    "pandas",
+    "synthcity",
+    "ctgan",
+    "torch",
+    "numpy",
+    "scikit-learn",
+    "xgboost",
+    "sdmetrics"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
