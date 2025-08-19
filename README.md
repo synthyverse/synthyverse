@@ -2,7 +2,7 @@
 <tr>
 <td align="center">
 
-<img src="images/logo.png" alt="Synthyverse logo" width="250" height="auto">
+<img src="logo/logo.png" alt="Synthyverse logo" width="250" height="auto">
 
 <br/>
 <br/>
