@@ -3,11 +3,12 @@ import os
 
 version = "0.1.0"
 
+
 def read_requirements(filename):
     # Get the directory where setup.py is located
     setup_dir = os.path.dirname(os.path.abspath(__file__))
     filepath = os.path.join(setup_dir, "requirements", filename)
-    with open(filepath, "r") as f:
+    with open(filepath, "r", encoding="utf-8") as f:
         return [line.strip() for line in f if line.strip() and not line.startswith("#")]
 
 
@@ -39,7 +40,7 @@ setup(
     install_requires=core_dependencies,
     extras_require=extras,
     python_requires=">=3.8",
-    long_description=open("README.md").read(),
+    long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/synthyverse/synthyverse",
     classifiers=[
