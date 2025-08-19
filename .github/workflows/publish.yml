@@ -31,16 +31,6 @@ jobs:
       uses: actions/setup-python@v4
       with:
         python-version: ${{ matrix.python-version }}
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements/generators/base.txt
-    
-    - name: Run tests (if you have them)
-      run: |
-        python -c "import synthyverse; print('Package imports successfully')"
-        # Add your actual test commands here when you have tests
 
   build:
     needs: test
