@@ -3,10 +3,11 @@ import os
 
 version = "0.1.0"
 
-# Utility: read requirements from file
 def read_requirements(filename):
-    filepath = os.path.join("requirements", filename)
-    with open(filepath, "r", encoding="utf-8") as f:
+    # Get the directory where setup.py is located
+    setup_dir = os.path.dirname(os.path.abspath(__file__))
+    filepath = os.path.join(setup_dir, "requirements", filename)
+    with open(filepath, "r") as f:
         return [line.strip() for line in f if line.strip() and not line.startswith("#")]
 
 
@@ -24,7 +25,6 @@ extras = {
 extras["full"] = []
 for key in extras:
     extras["full"].extend(extras[key])
-# Optionally remove duplicates
 extras["full"] = list(set(extras["full"]))
 
 core_dependencies = []  # Always-installed dependencies
