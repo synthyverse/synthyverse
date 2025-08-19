@@ -1,3 +1,3 @@
-from .utils import set_seed
+from .reproducibility import set_seed
 
 __all__ = ["set_seed"]
