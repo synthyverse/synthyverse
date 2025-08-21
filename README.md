@@ -111,6 +111,7 @@ results = evaluator.evaluate(X_train, X_test, syn)
 ```
 
 ### Benchmarking
+The benchmarking module performs synthetic data generation and evaluation in a single pipeline. 
 
 Set-up a benchmarking object. Supply the [generator name and its parameters](synthyverse/generators/GENERATORS.md), [evaluation metrics](synthyverse/evaluation/METRICS.md), the number of random train-test splits to fit the generator to, number of random initializations to fit the generator to, the number of synthetic sets to sample for each fitted generator, and the size of the test set.
 
