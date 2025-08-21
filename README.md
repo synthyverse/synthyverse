@@ -9,7 +9,7 @@
 
 Welcome to the synthyverse!
 
-The most extensive ecosystem for synthetic data generation and evaluation in Python.
+An extensive ecosystem for synthetic data generation and evaluation in Python.
 
 _The synthyverse is a work in progress. Please provide any suggestions through a GitHub Issue._
 
@@ -21,7 +21,7 @@ _The synthyverse is a work in progress. Please provide any suggestions through a
 
 # Features
 - 🔧 **Highly modular installation.** Install only those modules which you require to keep your installation lightweight.
-- 📚 **Most extensive library for synthetic data.** Any generator or metric can be quickly added without dependency conflicts due to synthyverse's modular installation. This allows the synthyverse to host the most generators and evaluation metrics out of any synthetic data library.
+- 📚 **Extensive library for synthetic data.** Any generator or metric can be quickly added without dependency conflicts due to synthyverse's modular installation. This allows the synthyverse to host a great amount of generators and evaluation metrics. It also allows the synthyverse to wrap around any existing synthetic data library.
 - ⚙️ **Benchmarking module for simplified synthetic data pipelines.** The benchmarking module executes a modular pipeline of synthetic data generation and evaluation. Choose a generator, set of evaluation metrics, and pipeline parameters, and obtain results on synthetic data quality.
 - 👷 **Minimal preprocessing required.** All preprocessing is handled under the hood in the synthyverse, so no need for scaling, one-hot encoding, or handling missing values.
 
@@ -30,7 +30,7 @@ The synthyverse is unique in its modular installation set-up. To avoid conflicti
 
 Templates provide installation for specific generators, the evaluation module, and more. Install multiple templates to get access to multiple modules of the synthyverse, e.g., multiple generators and evaluation. 
 
-_We strongly advise to only install templates which you require during a specific run. Installing multiple templates gives rise to potential dependency conflicts. Use separate virtual environments across installations. Note that the core installation without any template doesn't install any modules._
+**We strongly advise to only install templates which you require during a specific run. Installing multiple templates gives rise to potential dependency conflicts. Use separate virtual environments across installations. Note that the core installation without any template doesn't install any modules.**
 
 See the [overview of templates](synthyverse/TEMPLATES.md).
 
