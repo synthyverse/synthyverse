@@ -1,0 +1,93 @@
+import torch
+
+from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+import warnings
+import time
+
+from tqdm import tqdm
+from .model import MLPDiffusion, Model
+
+warnings.filterwarnings("ignore")
+
+
+def train_tabsyn(train_z, num_epochs=10000, device=None):
+
+    train_z = torch.tensor(train_z).float()
+    train_z = train_z[:, 1:, :]
+    B, num_tokens, token_dim = train_z.size()
+    in_dim = num_tokens * token_dim
+    train_z = train_z.view(B, in_dim)
+
+    in_dim = train_z.shape[1]
+
+    mean, std = train_z.mean(0), train_z.std(0)
+
+    train_z = (train_z - mean) / 2
+    train_data = train_z
+
+    batch_size = 4096
+    train_loader = DataLoader(
+        train_data,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0,  # 4
+    )
+
+    denoise_fn = MLPDiffusion(in_dim, 1024).to(device)
+
+    model = Model(denoise_fn=denoise_fn, hid_dim=train_z.shape[1]).to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=0)
+    scheduler = ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=0.9,
+        patience=20,
+    )
+
+    model.train()
+
+    best_loss = float("inf")
+    patience = 0
+    start_time = time.time()
+    best_model = None
+    for epoch in range(num_epochs):
+
+        pbar = tqdm(train_loader, total=len(train_loader))
+        pbar.set_description(f"Epoch {epoch+1}/{num_epochs}")
+
+        batch_loss = 0.0
+        len_input = 0
+        for batch in pbar:
+            inputs = batch.float().to(device)
+            loss = model(inputs)
+
+            loss = loss.mean()
+
+            batch_loss += loss.item() * len(inputs)
+            len_input += len(inputs)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            pbar.set_postfix({"Loss": loss.item()})
+
+        curr_loss = batch_loss / len_input
+        scheduler.step(curr_loss)
+
+        if curr_loss < best_loss:
+            best_loss = curr_loss
+            patience = 0
+            best_model = model.state_dict()
+        else:
+            patience += 1
+            if patience == 500:
+                print("Early stopping")
+                break
+
+    model.load_state_dict(best_model)
+    end_time = time.time()
+    return model, train_z.shape, train_z.mean(0), token_dim

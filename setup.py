@@ -20,6 +20,7 @@ extras = {
     "arf": base_requirements + read_requirements("generators/arf.txt"),
     "bn": base_requirements + read_requirements("generators/bn.txt"),
     "tvae": base_requirements + read_requirements("generators/tvae.txt"),
+    "tabsyn": base_requirements + read_requirements("generators/tabsyn.txt"),
 }
 
 # Create a "full" extra that includes all extras

@@ -20,4 +20,15 @@ try:
 except ImportError:
     TVAEGenerator = None
 
-all_generators = [ARFGenerator, BNGenerator, CTGANGenerator, TVAEGenerator]
+try:
+    from .tabsyn_generator import TabSynGenerator
+except ImportError:
+    TabSynGenerator = None
+
+all_generators = [
+    ARFGenerator,
+    BNGenerator,
+    CTGANGenerator,
+    TVAEGenerator,
+    TabSynGenerator,
+]

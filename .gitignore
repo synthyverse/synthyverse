@@ -145,7 +145,7 @@ ENV/
 env.bak/
 venv.bak/
 .conda
-# data/
+data/
 results/
 
 # Spyder project settings
