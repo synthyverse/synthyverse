@@ -147,6 +147,7 @@ venv.bak/
 .conda
 data/
 results/
+workspace/
 
 # Spyder project settings
 .spyderproject

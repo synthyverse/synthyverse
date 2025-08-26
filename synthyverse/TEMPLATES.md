@@ -7,4 +7,5 @@
 |tvae|Installls TVAE generator. Also allows using CTGAN generator.|
 |tabsyn|Installs TabSyn generator.|
 |cdtd|Installs CDTD generator.|
+|tabargn|Installs TabularARGN generator (MostlyAI's tabular model).|
 |full|Installs all templates. Generally not recommended.|

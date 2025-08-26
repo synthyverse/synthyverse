@@ -22,6 +22,7 @@ extras = {
     "tvae": base_requirements + read_requirements("generators/tvae.txt"),
     "tabsyn": base_requirements + read_requirements("generators/tabsyn.txt"),
     "cdtd": base_requirements + read_requirements("generators/cdtd.txt"),
+    "tabargn": base_requirements + read_requirements("generators/tabargn.txt"),
 }
 
 # Create a "full" extra that includes all extras

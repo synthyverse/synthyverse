@@ -4,6 +4,8 @@ from ..utils.utils import get_generator, free_up_memory
 from ..utils.reproducibility import set_seed
 import pandas as pd
 from time import time
+import os
+import shutil
 
 
 class TabularBenchmark:
@@ -16,6 +18,7 @@ class TabularBenchmark:
         n_generated_datasets: int = 1,
         metrics: list = ["classifier_test", "mle", "dcr"],
         test_size: float = 0.3,
+        workspace: str = "workspace",
     ):
 
         self.generator_name = generator_name
@@ -25,11 +28,19 @@ class TabularBenchmark:
         self.n_generated_datasets = n_generated_datasets
         self.metrics = metrics
         self.test_size = test_size
+        self.workspace = workspace
 
     def run(self, X: pd.DataFrame, target_column: str, discrete_columns: list):
+        os.makedirs(self.workspace, exist_ok=True)
 
         results = {}
         generator_ = get_generator(self.generator_name)
+        # add workspace if needed
+        if hasattr(generator_, "needs_workspace") and getattr(
+            generator_, "needs_workspace", False
+        ):
+            self.generator_params["workspace"] = self.workspace
+
         for split_i in range(self.n_random_splits):
             results[f"split_{split_i}"] = {}
 
@@ -45,6 +56,8 @@ class TabularBenchmark:
             )
 
             for init_i in range(self.n_inits):
+                # reset workspace each time we fit the generator
+                self.clean_directory(self.workspace, remove_self=False)
                 results[f"split_{split_i}"][f"init_{init_i}"] = {}
                 set_seed(init_i)
                 generator = generator_(random_state=init_i, **self.generator_params)
@@ -84,5 +97,24 @@ class TabularBenchmark:
 
                     # free up memory for next iteration
                     free_up_memory()
-
+        # remove the workspace to ensure clean end
+        self.clean_directory(self.workspace, remove_self=True)
         return results
+
+    def clean_directory(self, path: str, remove_self: bool = False) -> None:
+        """
+        Remove all files and subdirectories inside a directory.
+        If remove_self=True, remove the directory itself as well.
+        """
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Directory '{path}' does not exist.")
+
+        if remove_self:
+            shutil.rmtree(path)
+        else:
+            for entry in os.listdir(path):
+                entry_path = os.path.join(path, entry)
+                if os.path.isfile(entry_path) or os.path.islink(entry_path):
+                    os.remove(entry_path)
+                elif os.path.isdir(entry_path):
+                    shutil.rmtree(entry_path)

@@ -30,6 +30,11 @@ try:
 except ImportError:
     CDTDGenerator = None
 
+try:
+    from .tabargn_generator import TabARGNGenerator
+except ImportError:
+    TabARGNGenerator = None
+
 all_generators = [
     ARFGenerator,
     BNGenerator,
@@ -37,4 +42,5 @@ all_generators = [
     TVAEGenerator,
     TabSynGenerator,
     CDTDGenerator,
+    TabARGNGenerator,
 ]
