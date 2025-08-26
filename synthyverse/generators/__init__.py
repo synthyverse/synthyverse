@@ -25,10 +25,16 @@ try:
 except ImportError:
     TabSynGenerator = None
 
+try:
+    from .cdtd_generator import CDTDGenerator
+except ImportError:
+    CDTDGenerator = None
+
 all_generators = [
     ARFGenerator,
     BNGenerator,
     CTGANGenerator,
     TVAEGenerator,
     TabSynGenerator,
+    CDTDGenerator,
 ]
