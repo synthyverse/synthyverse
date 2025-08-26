@@ -13,16 +13,6 @@ from ..utils_train import preprocess, TabularDataset
 warnings.filterwarnings("ignore")
 
 
-LR = 1e-3
-WD = 0
-D_TOKEN = 4
-TOKEN_BIAS = True
-
-N_HEAD = 1
-FACTOR = 32
-NUM_LAYERS = 2
-
-
 def compute_loss(X_num, X_cat, Recon_X_num, Recon_X_cat, mu_z, logvar_z):
     ce_loss_fn = nn.CrossEntropyLoss()
     mse_loss = (X_num - Recon_X_num).pow(2).mean()
@@ -55,11 +45,8 @@ def train_vae(
     X_cat_test,
     y_test,
     info,
-    max_beta,
-    min_beta,
-    lambd,
     device,
-    num_epochs=4000,
+    vae_params,
 ):
 
     X_num, X_cat, categories, d_numerical = preprocess(
@@ -90,7 +77,7 @@ def train_vae(
     X_test_num = X_test_num.float().to(device)
     X_test_cat = X_test_cat.to(device)
 
-    batch_size = 4096
+    batch_size = vae_params["BATCH_SIZE"]
     train_loader = DataLoader(
         train_data,
         batch_size=batch_size,
@@ -99,27 +86,39 @@ def train_vae(
     )
 
     model = Model_VAE(
-        NUM_LAYERS,
+        vae_params["NUM_LAYERS"],
         d_numerical,
         categories,
-        D_TOKEN,
-        n_head=N_HEAD,
-        factor=FACTOR,
+        vae_params["D_TOKEN"],
+        n_head=vae_params["N_HEAD"],
+        factor=vae_params["FACTOR"],
         bias=True,
     )
     model = model.to(device)
 
     pre_encoder = Encoder_model(
-        NUM_LAYERS, d_numerical, categories, D_TOKEN, n_head=N_HEAD, factor=FACTOR
+        vae_params["NUM_LAYERS"],
+        d_numerical,
+        categories,
+        vae_params["D_TOKEN"],
+        n_head=vae_params["N_HEAD"],
+        factor=vae_params["FACTOR"],
     ).to(device)
     pre_decoder = Decoder_model(
-        NUM_LAYERS, d_numerical, categories, D_TOKEN, n_head=N_HEAD, factor=FACTOR
+        vae_params["NUM_LAYERS"],
+        d_numerical,
+        categories,
+        vae_params["D_TOKEN"],
+        n_head=vae_params["N_HEAD"],
+        factor=vae_params["FACTOR"],
     ).to(device)
 
     pre_encoder.eval()
     pre_decoder.eval()
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WD)
+    optimizer = torch.optim.Adam(
+        model.parameters(), lr=vae_params["LR"], weight_decay=vae_params["WD"]
+    )
     scheduler = ReduceLROnPlateau(
         optimizer,
         mode="min",
@@ -132,10 +131,10 @@ def train_vae(
     current_lr = optimizer.param_groups[0]["lr"]
     patience = 0
 
-    beta = max_beta
-    for epoch in range(num_epochs):
+    beta = vae_params["MAX_BETA"]
+    for epoch in range(vae_params["NUM_EPOCHS"]):
         pbar = tqdm(train_loader, total=len(train_loader))
-        pbar.set_description(f"Epoch {epoch+1}/{num_epochs}")
+        pbar.set_description(f"Epoch {epoch+1}/{vae_params['NUM_EPOCHS']}")
 
         curr_loss_multi = 0.0
         curr_loss_gauss = 0.0
@@ -197,8 +196,8 @@ def train_vae(
             else:
                 patience += 1
                 if patience == 10:
-                    if beta > min_beta:
-                        beta = beta * lambd
+                    if beta > vae_params["MIN_BETA"]:
+                        beta = beta * vae_params["LAMBDA"]
         # print('epoch: {}, beta = {:.6f}, Train MSE: {:.6f}, Train CE:{:.6f}, Train KL:{:.6f}, Train ACC:{:6f}'.format(epoch, beta, num_loss, cat_loss, kl_loss, train_acc.item()))
         print(
             "epoch: {}, beta = {:.6f}, Train MSE: {:.6f}, Train CE:{:.6f}, Train KL:{:.6f}, Val MSE:{:.6f}, Val CE:{:.6f}, Train ACC:{:6f}, Val ACC:{:6f}".format(

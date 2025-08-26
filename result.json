@@ -1,0 +1,1 @@
+{"split_0": {"init_0": {"training_time": 27.390392541885376, "generated_dataset_0": {"inference_time": 105.1489839553833, "evaluation_time": 0.31130099296569824, "classifiertest.auc": 0.999705495366871, "mle.train-synthetic-test-real.auc": 0.4700651090237037, "mle.train-real-test-real.auc": 0.9784877411916308}}}}

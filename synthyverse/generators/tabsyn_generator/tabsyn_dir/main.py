@@ -12,7 +12,7 @@ from .model import MLPDiffusion, Model
 warnings.filterwarnings("ignore")
 
 
-def train_tabsyn(train_z, num_epochs=10000, device=None):
+def train_tabsyn(train_z, diffusion_params, device=None):
 
     train_z = torch.tensor(train_z).float()
     train_z = train_z[:, 1:, :]
@@ -27,7 +27,7 @@ def train_tabsyn(train_z, num_epochs=10000, device=None):
     train_z = (train_z - mean) / 2
     train_data = train_z
 
-    batch_size = 4096
+    batch_size = diffusion_params["BATCH_SIZE"]
     train_loader = DataLoader(
         train_data,
         batch_size=batch_size,
@@ -35,11 +35,15 @@ def train_tabsyn(train_z, num_epochs=10000, device=None):
         num_workers=0,  # 4
     )
 
-    denoise_fn = MLPDiffusion(in_dim, 1024).to(device)
+    denoise_fn = MLPDiffusion(in_dim, diffusion_params["DIM_T"]).to(device)
 
     model = Model(denoise_fn=denoise_fn, hid_dim=train_z.shape[1]).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=0)
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=diffusion_params["LR"],
+        weight_decay=diffusion_params["WD"],
+    )
     scheduler = ReduceLROnPlateau(
         optimizer,
         mode="min",
@@ -51,12 +55,11 @@ def train_tabsyn(train_z, num_epochs=10000, device=None):
 
     best_loss = float("inf")
     patience = 0
-    start_time = time.time()
     best_model = None
-    for epoch in range(num_epochs):
+    for epoch in range(diffusion_params["NUM_EPOCHS"]):
 
         pbar = tqdm(train_loader, total=len(train_loader))
-        pbar.set_description(f"Epoch {epoch+1}/{num_epochs}")
+        pbar.set_description(f"Epoch {epoch+1}/{diffusion_params['NUM_EPOCHS']}")
 
         batch_loss = 0.0
         len_input = 0
@@ -84,10 +87,10 @@ def train_tabsyn(train_z, num_epochs=10000, device=None):
             best_model = model.state_dict()
         else:
             patience += 1
-            if patience == 500:
+            if patience == diffusion_params["PATIENCE"]:
                 print("Early stopping")
                 break
 
     model.load_state_dict(best_model)
-    end_time = time.time()
+
     return model, train_z.shape, train_z.mean(0), token_dim

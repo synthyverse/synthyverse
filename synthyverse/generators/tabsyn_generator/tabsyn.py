@@ -15,28 +15,62 @@ class TabSynGenerator(BaseGenerator):
     name = "tabsyn"
 
     # TBD:
-    # - check whether multiclass is handled properly
-    # - add all params as arguments in generator constructor
     # - test results
     # - add more documentation on parameters
 
     def __init__(
         self,
-        target_column: str = "target",
-        vae_epochs: int = 4000,
-        diffusion_epochs: int = 10000 + 1,
+        target_column: str,
+        val_size: float = 0.1,
         random_state: int = 0,
+        vae_lr: float = 1e-3,
+        vae_wd: float = 0,
+        vae_d_token: int = 4,
+        vae_token_bias: bool = True,
+        vae_n_head: int = 1,
+        vae_factor: int = 32,
+        vae_num_layers: int = 2,
+        vae_batch_size: int = 4096,
+        vae_num_epochs: int = 4000,
+        vae_min_beta: float = 1e-5,
+        vae_max_beta: float = 1e-2,
+        vae_lambda: float = 0.7,
+        diffusion_batch_size: int = 4096,
+        diffusion_num_epochs: int = 10000 + 1,
+        diffusion_dim_t: int = 1024,
+        diffusion_lr: float = 1e-3,
+        diffusion_wd: float = 0,
+        diffusion_patience: int = 500,
     ):
         super().__init__(random_state=random_state)
         self.random_state = random_state
         self.target_column = target_column
 
-        self.max_beta = 1e-2
-        self.min_beta = 1e-5
-        self.lambd = 0.7
-        self.val_size = 0.1
-        self.vae_epochs = vae_epochs
-        self.diffusion_epochs = diffusion_epochs
+        self.val_size = val_size
+
+        self.vae_params = {
+            "LR": vae_lr,
+            "WD": vae_wd,
+            "D_TOKEN": vae_d_token,
+            "TOKEN_BIAS": vae_token_bias,
+            "N_HEAD": vae_n_head,
+            "FACTOR": vae_factor,
+            "NUM_LAYERS": vae_num_layers,
+            "BATCH_SIZE": vae_batch_size,
+            "NUM_EPOCHS": vae_num_epochs,
+            "MIN_BETA": vae_min_beta,
+            "MAX_BETA": vae_max_beta,
+            "LAMBDA": vae_lambda,
+        }
+
+        self.diffusion_params = {
+            "BATCH_SIZE": diffusion_batch_size,
+            "NUM_EPOCHS": diffusion_num_epochs,
+            "DIM_T": diffusion_dim_t,
+            "LR": diffusion_lr,
+            "WD": diffusion_wd,
+            "PATIENCE": diffusion_patience,
+        }
 
     def _fit_model(self, X: pd.DataFrame, discrete_features: list):
         stratify = (
@@ -53,7 +87,10 @@ class TabSynGenerator(BaseGenerator):
         task_type = (
             "binclass" if self.target_column in discrete_features else "regression"
         )
-        if X[self.target_column].nunique() > 2:
+        if (
+            self.target_column in discrete_features
+            and X[self.target_column].nunique() > 2
+        ):
             task_type = "multiclass"
 
         # create metadata
@@ -107,14 +144,11 @@ class TabSynGenerator(BaseGenerator):
             X_cat_test,
             y_test,
             self.metadata,
-            self.max_beta,
-            self.min_beta,
-            self.lambd,
             self.device,
-            num_epochs=self.vae_epochs,
+            self.vae_params,
         )
         self.diffusion_model, self.train_z_shape, self.train_z_mean, self.token_dim = (
-            train_tabsyn(train_z, self.diffusion_epochs, self.device)
+            train_tabsyn(train_z, self.diffusion_params, self.device)
         )
         self.metadata["token_dim"] = self.token_dim
 
