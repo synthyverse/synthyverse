@@ -10,4 +10,5 @@
 |cdtd|Installs CDTD generator.|
 |tabargn|Installs TabularARGN generator (MostlyAI's tabular model).|
 |realtabformer|Installs RealTabFormer generator.|
+|ctabgan|Installs CTABGAN+ generator.|
 |full|Installs all templates. Generally not recommended.|

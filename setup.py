@@ -26,6 +26,7 @@ extras = {
     "tabargn": base_requirements + read_requirements("generators/tabargn.txt"),
     "realtabformer": base_requirements
     + read_requirements("generators/realtabformer.txt"),
+    "ctabgan": base_requirements + read_requirements("generators/ctabgan.txt"),
 }
 
 # Create a "full" extra that includes all extras

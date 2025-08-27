@@ -45,6 +45,11 @@ try:
 except ImportError:
     RealTabFormerGenerator = None
 
+try:
+    from .ctabgan_generator import CTABGANGenerator
+except ImportError:
+    CTABGANGenerator = None
+
 all_generators = [
     ARFGenerator,
     BNGenerator,
@@ -55,4 +60,5 @@ all_generators = [
     TabARGNGenerator,
     TabDDPMGenerator,
     RealTabFormerGenerator,
+    CTABGANGenerator,
 ]
