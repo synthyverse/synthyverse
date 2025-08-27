@@ -61,10 +61,11 @@ class TabularBenchmark:
             )
 
             for init_i in range(self.n_inits):
-                # reset workspace each time we fit the generator
-                self.clean_directory(self.workspace, remove_self=False)
                 results[f"split_{split_i}"][f"init_{init_i}"] = {}
                 set_seed(init_i)
+                # reset workspace each time we fit the generator
+                generator = None
+                self.clean_directory(self.workspace, remove_self=False)
                 generator = generator_(random_state=init_i, **self.generator_params)
                 start_time = time()
                 generator.fit(X_train, discrete_columns)
@@ -103,6 +104,7 @@ class TabularBenchmark:
                     # free up memory for next iteration
                     free_up_memory()
         # remove the workspace to ensure clean end
+        generator = None
         self.clean_directory(self.workspace, remove_self=True)
         return results
 

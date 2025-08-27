@@ -148,6 +148,7 @@ venv.bak/
 data/
 results/
 workspace/
+**_workspace/
 
 # Spyder project settings
 .spyderproject

@@ -46,9 +46,7 @@ class TabDDPMGenerator(BaseGenerator):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def _fit_model(self, X: pd.DataFrame, discrete_features: list):
-        workspace_exists = False
-        if os.path.exists("workspace"):
-            workspace_exists = True
+        workspace = "tabddpm_workspace"
 
         if self.target_column in discrete_features:
             is_classification = True
@@ -72,6 +70,7 @@ class TabDDPMGenerator(BaseGenerator):
             model_params=self.model_params,
             dim_embed=self.dim_embed,
             random_state=self.random_state,
+            workspace="workspace",
         )
         kwargs = {
             "discrete_columns": [
@@ -79,10 +78,8 @@ class TabDDPMGenerator(BaseGenerator):
             ],
         }
         self.model.fit(loader, **kwargs)
-
-        # delete workspace if it did not exist before
-        if os.path.exists("workspace") and not workspace_exists:
-            shutil.rmtree("workspace")
+        # delete workspace
+        shutil.rmtree(workspace)
 
     def _generate_data(self, n: int):
         return self.model.generate(n)

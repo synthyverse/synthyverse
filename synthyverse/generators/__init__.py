@@ -40,6 +40,11 @@ try:
 except ImportError:
     TabDDPMGenerator = None
 
+try:
+    from .realtabformer_generator import RealTabFormerGenerator
+except ImportError:
+    RealTabFormerGenerator = None
+
 all_generators = [
     ARFGenerator,
     BNGenerator,
@@ -49,4 +54,5 @@ all_generators = [
     CDTDGenerator,
     TabARGNGenerator,
     TabDDPMGenerator,
+    RealTabFormerGenerator,
 ]
