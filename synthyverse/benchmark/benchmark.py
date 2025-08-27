@@ -40,6 +40,11 @@ class TabularBenchmark:
             generator_, "needs_workspace", False
         ):
             self.generator_params["workspace"] = self.workspace
+        # add target column if needed
+        if hasattr(generator_, "needs_target_column") and getattr(
+            generator_, "needs_target_column", False
+        ):
+            self.generator_params["target_column"] = target_column
 
         for split_i in range(self.n_random_splits):
             results[f"split_{split_i}"] = {}

@@ -13,10 +13,7 @@ from .tabsyn_dir.sample import sample_tabsyn
 
 class TabSynGenerator(BaseGenerator):
     name = "tabsyn"
-
-    # TBD:
-    # - test results
-    # - add more documentation on parameters
+    needs_target_column = True
 
     def __init__(
         self,

@@ -9,8 +9,6 @@ from .cdtd_dir import CDTD
 class CDTDGenerator(BaseGenerator):
     name = "cdtd"
 
-    # TBD: add more documentation on parameters
-
     def __init__(
         self,
         cat_emb_dim: int = 16,

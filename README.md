@@ -67,7 +67,7 @@ from synthyverse.generators import ARFGenerator
 generator = ARFGenerator(num_trees=20, random_state=0)
 ```
 
-Fit the generator.
+Fit the generator. For tabular data, also pass which columns are discrete, as these often need to be handled differently than numerical features. If the target column is discrete, it should also be included in the discrete features list. 
 ```python
 from sklearn.datasets import load_breast_cancer
 X = load_breast_cancer(as_frame=True).frame

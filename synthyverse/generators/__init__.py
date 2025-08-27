@@ -35,6 +35,11 @@ try:
 except ImportError:
     TabARGNGenerator = None
 
+try:
+    from .tabddpm_generator import TabDDPMGenerator
+except ImportError:
+    TabDDPMGenerator = None
+
 all_generators = [
     ARFGenerator,
     BNGenerator,
@@ -43,4 +48,5 @@ all_generators = [
     TabSynGenerator,
     CDTDGenerator,
     TabARGNGenerator,
+    TabDDPMGenerator,
 ]

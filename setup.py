@@ -20,6 +20,7 @@ extras = {
     "arf": base_requirements + read_requirements("generators/arf.txt"),
     "bn": base_requirements + read_requirements("generators/bn.txt"),
     "tvae": base_requirements + read_requirements("generators/tvae.txt"),
+    "tabddpm": base_requirements + read_requirements("generators/tabddpm.txt"),
     "tabsyn": base_requirements + read_requirements("generators/tabsyn.txt"),
     "cdtd": base_requirements + read_requirements("generators/cdtd.txt"),
     "tabargn": base_requirements + read_requirements("generators/tabargn.txt"),
