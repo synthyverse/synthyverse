@@ -4,7 +4,6 @@ from sklearn.metrics import roc_auc_score
 from xgboost import XGBClassifier
 from ..utils.xgb_utils import get_xgb_tree_method
 from ..utils.oneclass import OneClassLayer
-from ..utils.utils import suppress_print
 import torch
 from sklearn.neighbors import NearestNeighbors
 from sdmetrics.reports.single_table import QualityReport
@@ -202,7 +201,6 @@ class Similarity:
         super().__init__()
         self.discrete_features = discrete_features
 
-    @suppress_print
     def evaluate(
         self,
         rd: pd.DataFrame,
@@ -217,7 +215,7 @@ class Similarity:
         metadata["primary_key"] = "index"
 
         report = QualityReport()
-        report.generate(rd, sd, metadata)
+        report.generate(rd, sd, metadata, verbose=False)
         scores = report.get_properties()
 
         return {

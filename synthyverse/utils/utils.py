@@ -106,17 +106,3 @@ def free_up_memory():
 
     # Final sweep
     gc.collect()
-
-
-def suppress_print(func):
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        old_stdout = sys.stdout
-        sys.stdout = open(os.devnull, "w")
-        try:
-            return func(*args, **kwargs)
-        finally:
-            sys.stdout.close()
-            sys.stdout = old_stdout
-
-    return wrapper

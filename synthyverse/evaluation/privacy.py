@@ -1,6 +1,11 @@
 import pandas as pd
 import numpy as np
 from sklearn.metrics import pairwise_distances_argmin_min
+from sklearn.preprocessing import StandardScaler
+from scipy.stats import gaussian_kde
+from sklearn.decomposition import PCA
+
+from .utils import get_accuracy_metric
 
 
 class DCR:
@@ -80,9 +85,108 @@ class DCR:
                 score_test = np.quantile(min_distances_test, estimate)
             dictionary.update(
                 {
-                    f"dcr.train.{estimate}": float(score_train),
-                    f"dcr.test.{estimate}": float(score_test),
+                    f"dcr.train.batch_size={self.batch_size}.{estimate}": float(
+                        score_train
+                    ),
+                    f"dcr.test.batch_size={self.batch_size}.{estimate}": float(
+                        score_test
+                    ),
                 }
             )
 
         return dictionary
+
+
+class DOMIAS:
+    data_requirement = "train_and_test_preprocessed"
+
+    def __init__(
+        self,
+        ref_prop: float = 0.5,
+        member_prop: float = 1.0,
+        n_components: int = 0.95,
+        random_state: int = 0,
+        metric: str = "roc_auc",
+        predict_top: float = 0.5,
+    ):
+        super().__init__()
+        self.ref_prop = ref_prop
+        self.member_prop = member_prop
+        self.n_components = n_components
+        self.random_state = random_state
+        self.metric = metric
+        self.predict_top = predict_top
+
+    def evaluate(
+        self,
+        train: pd.DataFrame,
+        test: pd.DataFrame,
+        syn: pd.DataFrame,
+    ):
+        """
+        Computes DOMIAS membership inference attack accuracy (AUROC).
+        Estimates density through Gaussian KDE after dimensionality reduction.
+        Code based on Synthcity library.
+
+        ref_prop: proportion of test set used as reference set for computing RD density.
+        n_components: number of dimensions to retain after reduction.
+        """
+
+        members = train[: int(len(train) * self.member_prop)]
+        ref_size = int(self.ref_prop * len(test))
+        reference_set, non_members = test[:ref_size], test[ref_size:]
+
+        X_test = np.concatenate((members.to_numpy(), non_members.to_numpy()))
+        Y_test = np.concatenate(
+            [np.ones(members.shape[0]), np.zeros(non_members.shape[0])]
+        ).astype(bool)
+
+        embedder = PCA(n_components=self.n_components, random_state=self.random_state)
+
+        # fit embedder on syn and reference to avoid leakage of test data which would inflate separability
+        all_ = np.concatenate((syn.to_numpy(), reference_set.to_numpy()))
+        all_ = embedder.fit_transform(all_)
+        # project test data to same space
+        all_ = np.concatenate((all_, embedder.transform(X_test)))  # type: ignore
+        # standardize for gaussian KDE
+        all_ = StandardScaler().fit_transform(all_)
+        synth_set = all_[: len(syn)]
+        reference_set = all_[len(syn) : len(syn) + len(reference_set)]
+        X_test = all_[-len(X_test) :]
+
+        kde = gaussian_kde(synth_set.T)
+        P_G = kde(X_test.T)
+        kde = gaussian_kde(reference_set.T)
+        P_R = kde(X_test.T)
+        P_rel = P_G / (P_R + 1e-10)
+        P_rel = np.nan_to_num(P_rel)
+
+        if self.metric != "roc_auc":
+            threshold = np.percentile(P_rel, 100 * (1 - self.predict_top))
+
+            P_rel = P_rel > threshold
+
+        metric_func, self.metric = get_accuracy_metric(self.metric)
+        score = metric_func(Y_test, P_rel)
+
+        domias = {}
+        docstring = f"domias.predict_top={self.predict_top}.ref_prop={self.ref_prop}.member_prop={self.member_prop}.n_components={self.n_components}"
+        if self.metric == "precision-recall":
+            precision, recall = score
+            domias[docstring + f".metric=precision"] = precision
+            domias[docstring + f".metric=recall"] = recall
+        else:
+            domias[docstring + f".metric={self.metric}"] = score
+
+        if self.metric != "roc_auc":
+            # add a naive score (i.e. predicting all as members)
+            P_rel = np.ones_like(P_rel)
+            naive_score = metric_func(Y_test, P_rel)
+            if self.metric == "precision-recall":
+                naive_precision, naive_recall = naive_score
+                domias[docstring + f".metric=precision.naive"] = naive_precision
+                domias[docstring + f".metric=recall.naive"] = naive_recall
+            else:
+                domias[docstring + f".metric={self.metric}.naive"] = naive_score
+
+        return domias

@@ -10,7 +10,7 @@ from .fidelity import (
 
 from .utility import MLE
 
-from .privacy import DCR
+from .privacy import DCR, DOMIAS
 
 METRICS = {
     "classifier_test": ClassifierTest,
@@ -18,6 +18,7 @@ METRICS = {
     "dcr": DCR,
     "similarity": Similarity,
     "prauth": AlphaPrecisionBetaRecallAuthenticity,
+    "domias": DOMIAS,
 }
 
 
