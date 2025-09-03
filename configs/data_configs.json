@@ -1,0 +1,28 @@
+{
+    "churn": {
+        "path": "data/Customer Churn.csv",
+        "target": "Churn",
+        "cat_features": [
+            "Complains",
+            "Age Group",
+            "Tariff Plan",
+            "Status",
+            "Churn"
+        ]
+    },
+    "adult": {
+        "path": "data/adult.csv",
+        "target": "income",
+        "cat_features": [
+            "workclass",
+            "education",
+            "marital-status",
+            "occupation",
+            "relationship",
+            "race",
+            "gender",
+            "native-country",
+            "income"
+        ]
+    }
+}

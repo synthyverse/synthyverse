@@ -1,0 +1,8 @@
+{
+    "mle": {},
+    "dcr": {
+        "batch_size": 50000
+    },
+    "similarity": {},
+    "classifier_test": {}
+}

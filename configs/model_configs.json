@@ -1,0 +1,27 @@
+{
+    "xgenboost": {
+        "temperature": 1,
+        "max_depth": 6,
+        "n_estimators": 100,
+        "backend": "xgboost",
+        "duplicate_K": 20,
+        "mask_style": "causal",
+        "discretization": "uniform",
+        "max_bins": 30,
+        "min_samples_per_bin": 10,
+        "uniform_bins": "max",
+        "val_size": -1,
+        "early_stopping_rounds": 50,
+        "bootstrap_first": true,
+        "add_target_idx": true,
+        "merge_infrequent_categories": true,
+        "batch_size": 100000,
+        "per_bin_noise": "gaussian",
+        "numerical_scaling": "quantile",
+        "max_tree_bins": 256,
+        "n_gibbs_sweeps": 0
+    },
+    "arf": {
+        "num_trees": 20
+    }
+}

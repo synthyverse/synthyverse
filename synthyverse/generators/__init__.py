@@ -55,6 +55,11 @@ try:
 except ImportError:
     PermutationGenerator = None
 
+try:
+    from .xgenboost_generator import XGenBoostGenerator
+except ImportError:
+    XGenBoostGenerator = None
+
 all_generators = [
     ARFGenerator,
     BNGenerator,
@@ -67,4 +72,5 @@ all_generators = [
     RealTabFormerGenerator,
     CTABGANGenerator,
     PermutationGenerator,
+    XGenBoostGenerator,
 ]
