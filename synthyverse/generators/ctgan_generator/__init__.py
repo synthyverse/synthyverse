@@ -1,1 +1,1 @@
-from .ctab_gan import CTABGANGenerator
+from .ct_gan import CTGANGenerator

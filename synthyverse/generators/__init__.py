@@ -50,6 +50,11 @@ try:
 except ImportError:
     CTABGANGenerator = None
 
+try:
+    from .permutation_generator import PermutationGenerator
+except ImportError:
+    PermutationGenerator = None
+
 all_generators = [
     ARFGenerator,
     BNGenerator,
@@ -61,4 +66,5 @@ all_generators = [
     TabDDPMGenerator,
     RealTabFormerGenerator,
     CTABGANGenerator,
+    PermutationGenerator,
 ]
