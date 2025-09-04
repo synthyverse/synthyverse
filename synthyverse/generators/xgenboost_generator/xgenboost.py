@@ -254,36 +254,46 @@ class XGenBoostGenerator(BaseGenerator):
                     probs, colname, len(rows)
                 )
 
-        for sweep in range(self.n_gibbs_sweeps):
-            # one more generation sweep, but now starting from syn (not all NaN)
-            orders = (
-                np.vstack([np.random.permutation(d) for _ in range(n)])
-                if self.mask_style == "random"
-                else np.tile(np.arange(d), (n, 1))
-            )
+        # --- systematic Gibbs sweeps (mask target col across all rows) ---
+        if getattr(self, "n_gibbs_sweeps", 0) > 0:
+            n_rows, d = syn.shape
+            cols = self.X.columns.tolist()
 
-            for pos in tqdm(range(d), desc=f"Gibbs sweep {sweep+1}"):
-                target_cols = orders[:, pos]
+            for sweep in range(self.n_gibbs_sweeps):
+                # randomize column order each sweep; fixed is also fine
+                col_order = np.random.permutation(d)
 
-                curr_X = syn.copy()
-                if self.backend == "catboost":
-                    curr_X[self.discrete_columns] = curr_X[
-                        self.discrete_columns
-                    ].astype(str)
-                if self.add_target_idx:
-                    curr_X["idx_feature"] = target_cols
-
-                probs_all = self.model.predict_proba(curr_X)
-
-                for col_idx in np.unique(target_cols):
+                for col_idx in col_order:
                     colname = cols[col_idx]
-                    rows = np.where(target_cols == col_idx)[0]
-                    classes = np.arange(len(self.label_encoders[colname].classes_))
-                    probs = probs_all[rows, : len(classes)]
-                    syn.loc[rows, colname] = self._sample_from_posterior(
-                        probs, colname, len(rows)
-                    )
 
+                    # copy and MASK the target column for ALL rows
+                    curr_X = syn.copy()
+                    curr_X.iloc[:, col_idx] = np.nan
+
+                    # match inference dtypes to training dtypes
+                    if self.backend == "catboost":
+                        # CatBoost saw strings for categoricals during training (including 'nan')
+                        curr_X[self.discrete_columns] = curr_X[
+                            self.discrete_columns
+                        ].astype(str)
+                    else:
+                        # XGBoost with enable_categorical expects pandas 'category'
+                        curr_X[self.discrete_columns] = curr_X[
+                            self.discrete_columns
+                        ].astype("category")
+
+                    if self.add_target_idx:
+                        # constant target column id for all rows
+                        curr_X["idx_feature"] = col_idx
+
+                    # single predict_proba for this column (vectorized over rows)
+                    probs = self.model.predict_proba(curr_X)
+
+                    # slice to this column's class space and sample
+                    classes = np.arange(len(self.label_encoders[colname].classes_))
+                    probs = probs[:, : len(classes)]
+
+                    syn[colname] = self._sample_from_posterior(probs, colname, n_rows)
         # reinstate categories, numerical scaling, etc.
         for col in self.discrete_columns:
             syn[col] = self.label_encoders[col].inverse_transform(syn[col].astype(int))

@@ -22,6 +22,80 @@
         "n_gibbs_sweeps": 0
     },
     "arf": {
-        "num_trees": 20
+        "num_trees": 20,
+        "delta": 0.0,
+        "max_iters": 10,
+        "early_stop": true,
+        "verbose": true,
+        "min_node_size": 5
+    },
+    "tabsyn": {
+        "vae_lr": 1e-3,
+        "vae_wd": 0,
+        "vae_d_token": 4,
+        "vae_token_bias": true,
+        "vae_n_head": 1,
+        "vae_factor": 32,
+        "vae_num_layers": 2,
+        "vae_batch_size": 4096,
+        "vae_num_epochs": 4000,
+        "vae_min_beta": 1e-5,
+        "vae_max_beta": 1e-2,
+        "vae_lambda": 0.7,
+        "diffusion_batch_size": 4096,
+        "diffusion_num_epochs": 10001,
+        "diffusion_dim_t": 1024,
+        "diffusion_lr": 1e-3,
+        "diffusion_wd": 0,
+        "diffusion_patience": 500
+    },
+    "tabddpm": {
+        "n_iter": 1000,
+        "lr": 0.002,
+        "weight_decay": 1e-4,
+        "batch_size": 1024,
+        "num_timesteps": 1000,
+        "gaussian_loss_type": "mse",
+        "scheduler": "cosine",
+        "log_interval": 100,
+        "model_type": "mlp",
+        "model_params": {},
+        "dim_embed": 128
+    },
+    "ctgan": {
+        "embedding_dim": 128,
+        "generator_dim": [
+            256,
+            256
+        ],
+        "discriminator_dim": [
+            256,
+            256
+        ],
+        "generator_lr": 2e-4,
+        "generator_decay": 1e-6,
+        "discriminator_lr": 2e-4,
+        "discriminator_decay": 1e-6,
+        "batch_size": 500,
+        "discriminator_steps": 1,
+        "log_frequency": true,
+        "verbose": true,
+        "epochs": 300,
+        "pac": 10,
+        "cuda": true
+    },
+    "tvae": {
+        "embedding_dim": 128,
+        "compress_dims": [
+            128,
+            128
+        ],
+        "decompress_dims": [
+            128,
+            128
+        ],
+        "l2scale": 1e-5,
+        "batch_size": 500,
+        "epochs": 300
     }
 }
