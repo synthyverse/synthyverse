@@ -14,7 +14,7 @@ warnings.filterwarnings("ignore")
 
 def train_tabsyn(train_z, diffusion_params, device=None):
 
-    train_z = torch.tensor(train_z).float()
+    train_z = torch.from_numpy(train_z).float()
     train_z = train_z[:, 1:, :]
     B, num_tokens, token_dim = train_z.size()
     in_dim = num_tokens * token_dim

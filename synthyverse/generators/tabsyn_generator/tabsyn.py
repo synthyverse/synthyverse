@@ -14,11 +14,11 @@ from .tabsyn_dir.sample import sample_tabsyn
 class TabSynGenerator(BaseGenerator):
     name = "tabsyn"
     needs_target_column = True
+    needs_validation_set = True
 
     def __init__(
         self,
         target_column: str,
-        val_size: float = 0.1,
         random_state: int = 0,
         vae_lr: float = 1e-3,
         vae_wd: float = 0,
@@ -42,8 +42,6 @@ class TabSynGenerator(BaseGenerator):
         super().__init__(random_state=random_state)
         self.random_state = random_state
         self.target_column = target_column
-
-        self.val_size = val_size
 
         self.vae_params = {
             "LR": vae_lr,
@@ -69,17 +67,22 @@ class TabSynGenerator(BaseGenerator):
             "PATIENCE": diffusion_patience,
         }
 
-    def _fit_model(self, X: pd.DataFrame, discrete_features: list):
+    def _fit_model(
+        self, X: pd.DataFrame, X_val: pd.DataFrame = None, discrete_features: list = []
+    ):
         stratify = (
             X[self.target_column] if self.target_column in discrete_features else None
         )
-        # create validation set for early stopping
-        self.X, self.val_X = train_test_split(
-            X,
-            test_size=self.val_size,
-            stratify=stratify,
-            random_state=self.random_state,
-        )
+        # tabsyn always needs validation set since early stopping is built-in
+        if X_val is None:
+            self.X, self.val_X = train_test_split(
+                X,
+                test_size=0.1,
+                stratify=stratify,
+                random_state=self.random_state,
+            )
+        else:
+            self.X, self.val_X = X.copy(), X_val.copy()
 
         task_type = (
             "binclass" if self.target_column in discrete_features else "regression"
@@ -121,6 +124,9 @@ class TabSynGenerator(BaseGenerator):
         ) = process_data(self.X, self.val_X, self.metadata)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        # free some memory before training vae
+        del self.X, self.val_X
+
         _, _, _, _, self.num_inverse, self.cat_inverse = preprocess(
             X_num_train,
             X_cat_train,
@@ -144,6 +150,10 @@ class TabSynGenerator(BaseGenerator):
             self.device,
             self.vae_params,
         )
+
+        # free some memory before training diffusion model
+        del X_num_train, X_cat_train, y_train, X_num_test, X_cat_test, y_test
+
         self.diffusion_model, self.train_z_shape, self.train_z_mean, self.token_dim = (
             train_tabsyn(train_z, self.diffusion_params, self.device)
         )

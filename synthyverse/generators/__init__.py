@@ -55,6 +55,11 @@ try:
 except ImportError:
     PermutationGenerator = None
 
+try:
+    from .forestdiffusion_generator import ForestDiffusionGenerator
+except ImportError:
+    ForestDiffusionGenerator = None
+
 all_generators = [
     ARFGenerator,
     BNGenerator,
@@ -67,4 +72,5 @@ all_generators = [
     RealTabFormerGenerator,
     CTABGANGenerator,
     PermutationGenerator,
+    ForestDiffusionGenerator,
 ]

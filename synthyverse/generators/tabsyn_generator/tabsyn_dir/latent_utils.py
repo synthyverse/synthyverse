@@ -15,7 +15,7 @@ def get_input_train(dataname):
 
     ckpt_dir = f"{curr_dir}/ckpt/{dataname}/"
     embedding_save_path = f"{curr_dir}/vae/ckpt/{dataname}/train_z.npy"
-    train_z = torch.tensor(np.load(embedding_save_path)).float()
+    train_z = torch.from_numpy(np.load(embedding_save_path)).float()
 
     train_z = train_z[:, 1:, :]
     B, num_tokens, token_dim = train_z.size()
@@ -46,7 +46,7 @@ def split_num_cat_target(syn_data, pre_decoder, info, num_inverse, cat_inverse, 
 
     syn_data = syn_data.reshape(syn_data.shape[0], -1, token_dim)
 
-    norm_input = pre_decoder(torch.tensor(syn_data))
+    norm_input = pre_decoder(torch.from_numpy(syn_data))
     x_hat_num, x_hat_cat = norm_input
 
     syn_cat = []

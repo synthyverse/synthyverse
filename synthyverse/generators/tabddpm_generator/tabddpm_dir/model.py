@@ -116,6 +116,8 @@ class TabDDPM(nn.Module, ValidationMixin):
             cat_counts = [0]
             self.feature_names_out = self.feature_names
 
+        print(X.iloc[:, -len(cat_cols) :])
+
         dataset = TensorDataset(
             torch.tensor(X.values, dtype=torch.float32, device=self.device),
             (

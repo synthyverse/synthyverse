@@ -28,6 +28,10 @@ extras = {
     "realtabformer": base_requirements
     + read_requirements("generators/realtabformer.txt"),
     "ctabgan": base_requirements + read_requirements("generators/ctabgan.txt"),
+    "forestdiffusion": base_requirements
+    + read_requirements("generators/forestdiffusion.txt"),
+    "unmaskingtrees": base_requirements
+    + read_requirements("generators/unmaskingtrees.txt"),
 }
 
 # Create a "full" extra that includes all extras

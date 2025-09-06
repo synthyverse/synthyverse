@@ -67,10 +67,12 @@ def train_vae(
     X_train_cat, X_test_cat = X_cat
 
     X_train_num, X_test_num = (
-        torch.tensor(X_train_num).float(),
-        torch.tensor(X_test_num).float(),
+        torch.from_numpy(X_train_num).float(),
+        torch.from_numpy(X_test_num).float(),
     )
-    X_train_cat, X_test_cat = torch.tensor(X_train_cat), torch.tensor(X_test_cat)
+    X_train_cat, X_test_cat = torch.from_numpy(X_train_cat), torch.from_numpy(
+        X_test_cat
+    )
 
     train_data = TabularDataset(X_train_num.float(), X_train_cat)
 

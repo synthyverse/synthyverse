@@ -17,7 +17,8 @@ class TabularBenchmark:
         n_inits: int = 1,
         n_generated_datasets: int = 1,
         metrics: list = ["classifier_test", "mle", "dcr"],
-        test_size: float = 0.3,
+        test_size: float = 0.2,
+        val_size: float = 0.2,
         workspace: str = "workspace",
     ):
 
@@ -36,6 +37,7 @@ class TabularBenchmark:
         self.n_generated_datasets = n_generated_datasets
         self.metrics = metrics
         self.test_size = test_size
+        self.val_size = val_size
         self.workspace = workspace
 
     def run(
@@ -72,6 +74,22 @@ class TabularBenchmark:
             X_train, X_test = X_train.reset_index(drop=True), X_test.reset_index(
                 drop=True
             )
+            if self.val_size > 0:
+                stratify = None
+                if target_column in discrete_columns:
+                    stratify = X_train[target_column]
+                X_train, X_val = train_test_split(
+                    X_train,
+                    stratify=stratify,
+                    test_size=self.val_size
+                    / (
+                        1 - self.test_size
+                    ),  # val_size is a proportion of the training set
+                    random_state=split_i,
+                )
+                X_train, X_val = X_train.reset_index(drop=True), X_val.reset_index(
+                    drop=True
+                )
 
             for init_i in range(self.n_inits):
                 results[f"split_{split_i}"][f"init_{init_i}"] = {}
@@ -81,13 +99,22 @@ class TabularBenchmark:
                 self.clean_directory(self.workspace, remove_self=False)
                 generator = generator_(random_state=init_i, **self.generator_params)
                 start_time = time()
-                generator.fit(X_train, discrete_columns)
+                # pass validation data if needed
+                if hasattr(generator_, "needs_validation_set") and getattr(
+                    generator_, "needs_validation_set", False
+                ):
+                    generator.fit(X_train, X_val, discrete_columns)
+                else:
+                    generator.fit(X_train, discrete_columns)
                 results[f"split_{split_i}"][f"init_{init_i}"]["training_time"] = (
                     time() - start_time
                 )
 
                 # potentially generate multiple datasets
                 for generated_dataset_i in range(self.n_generated_datasets):
+                    set_seed(
+                        generated_dataset_i
+                    )  # for differences in evaluation metrics for same data
                     results[f"split_{split_i}"][f"init_{init_i}"][
                         f"generated_dataset_{generated_dataset_i}"
                     ] = {}
@@ -104,7 +131,7 @@ class TabularBenchmark:
                         metrics=self.metrics,
                         discrete_features=discrete_columns,
                         target_column=target_column,
-                        random_state=init_i,
+                        random_state=generated_dataset_i,
                     )
                     metric_results = evaluator.evaluate(X_train, X_test, X_syn)
                     results[f"split_{split_i}"][f"init_{init_i}"][
