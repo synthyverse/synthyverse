@@ -60,6 +60,12 @@ try:
 except ImportError:
     ForestDiffusionGenerator = None
 
+try:
+    from .unmaskingtrees_generator import UnmaskingTreesGenerator
+except ImportError:
+    UnmaskingTreesGenerator = None
+
+
 all_generators = [
     ARFGenerator,
     BNGenerator,
@@ -73,4 +79,5 @@ all_generators = [
     CTABGANGenerator,
     PermutationGenerator,
     ForestDiffusionGenerator,
+    UnmaskingTreesGenerator,
 ]

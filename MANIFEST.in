@@ -1,5 +1,0 @@
-include requirements/**/*
-include README.md
-include LICENSE
-include logo/*
-include tutorial.ipynb

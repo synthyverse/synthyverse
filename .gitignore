@@ -145,7 +145,8 @@ ENV/
 env.bak/
 venv.bak/
 .conda
-data/
+conda_**
+# data/
 results/
 workspace/
 **_workspace/
