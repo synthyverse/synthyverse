@@ -11,4 +11,5 @@
 |tabargn|Installs TabularARGN generator (MostlyAI's tabular model).|
 |realtabformer|Installs RealTabFormer generator.|
 |ctabgan|Installs CTABGAN+ generator.|
+|preproc|Install the packages required for preprocessing.|
 |full|Installs all templates. Generally not recommended.|

@@ -56,6 +56,9 @@ pip install synthyverse[arf,bn,ctgan,tvae]
 pip install synthyverse[ctgan,eval]
 ```
 
+```bash
+pip install synthyverse[preproc]
+```
 
 # Usage
 
@@ -135,6 +138,53 @@ benchmark = TabularBenchmark(
 Run the benchmarking pipeline on a dataset. 
 ```python
 results = benchmark.run(X, target_column="target", discrete_columns=["target"])
+```
+
+### Data Preprocessing
+How to use preprocessing function for automatic data preprocessing.
+```python
+import pandas as pd
+from synthyverse import preprocessing
+
+path = "" # path to your dataset forlder
+DatasetName = 'PimaIndiandiabetes.csv' # dataset name with file extension
+Dataset = path + DatasetName
+# Load dataset
+df = pd.read_csv(Dataset)
+
+# Step 1: Run initial data quality report
+report_before, alerts_before, recs_before = preprocessing.data_quality_report(
+    df, stage='before', skew_threshold=2, 
+    output_prefix=Dataset, plot_missing=False, plot_skew=False, verbose=False
+)
+    
+# Step 2: Check if cleaning is needed
+if alerts_before:  # If there are any alerts
+    print("\n Alerts detected! Performing data cleaning...")
+
+    # Step 3: Perform cleaning
+    df_cleaned, transforms = preprocessing.clean_and_impute(df, dataset_name=Dataset, cat_strategy='constant',
+                                                   handle_skewness=True, skew_threshold=2, skew_method='yeo-johnson',
+                                                   remove_empty=True, remove_constant=True)
+
+    # Step 4: Run after-cleaning data quality report
+    report_after, alerts_after, recs_after = preprocessing.data_quality_report(
+        df_cleaned, stage='after', skew_threshold=2,
+        output_prefix=Dataset, plot_missing=False, plot_skew=False, verbose=False
+    )
+
+    # Step 5: Save comparison report
+    preprocessing.data_quality_comparison(
+        report_before, alerts_before, recs_before,
+        report_after, alerts_after, recs_after,
+        dataset_name=Dataset
+    )
+
+    print(" Data cleaning completed and comparison report generated.")
+
+else:
+    print("\n No alerts found. Dataset is already clean. Skipping cleaning step.")
+
 ```
 
 # Tutorials
