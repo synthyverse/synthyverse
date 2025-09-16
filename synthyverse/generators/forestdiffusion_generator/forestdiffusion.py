@@ -1,11 +1,11 @@
-from ..base import BaseGenerator
+from ..base import TabularBaseGenerator
 import pandas as pd
 from ForestDiffusion import ForestDiffusionModel
 import numpy as np
 from sklearn.preprocessing import OrdinalEncoder
 
 
-class ForestDiffusionGenerator(BaseGenerator):
+class ForestDiffusionGenerator(TabularBaseGenerator):
     name = "forestdiffusion"
     needs_target_column = True
 
@@ -32,8 +32,9 @@ class ForestDiffusionGenerator(BaseGenerator):
         gpu_hist: bool = False,
         random_state: int = 0,
         max_rows_in_memory: int = 0,
+        **kwargs,
     ):
-        super().__init__(random_state=random_state)
+        super().__init__(random_state=random_state, **kwargs)
         self.target_column = target_column
         self.random_state = random_state
         self.max_depth = max_depth
@@ -58,7 +59,7 @@ class ForestDiffusionGenerator(BaseGenerator):
 
     def _fit_model(self, X: pd.DataFrame, discrete_features: list):
         self.ori_col_order = X.columns
-        self.discrete_features = discrete_features
+        self.discrete_features = discrete_features.copy()
         self.X = X.copy()
 
         # ordinally encode all features
@@ -126,6 +127,9 @@ class ForestDiffusionGenerator(BaseGenerator):
             n_batch=self.n_batch,  # If >0 use the data iterator with the specified number of batches
             seed=self.random_state,
         )
+        # free some memory
+        del self.X
+        del self.y
 
     def _generate_data(self, n: int):
         syn = self.model.generate(batch_size=n)

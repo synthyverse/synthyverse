@@ -16,6 +16,7 @@ def read_requirements(filename):
 base_requirements = read_requirements("generators/base.txt")
 extras = {
     "eval": read_requirements("evaluation/eval.txt"),
+    "base": base_requirements,
     "permutation": base_requirements + read_requirements("generators/permutation.txt"),
     "ctgan": base_requirements + read_requirements("generators/ctgan.txt"),
     "arf": base_requirements + read_requirements("generators/arf.txt"),

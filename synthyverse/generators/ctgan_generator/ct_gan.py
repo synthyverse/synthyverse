@@ -1,9 +1,9 @@
 from ctgan import CTGAN
-from ..base import BaseGenerator
+from ..base import TabularBaseGenerator
 import pandas as pd
 
 
-class CTGANGenerator(BaseGenerator):
+class CTGANGenerator(TabularBaseGenerator):
     name = "ctgan"
 
     def __init__(
@@ -23,8 +23,9 @@ class CTGANGenerator(BaseGenerator):
         pac=10,
         cuda=True,
         random_state: int = 0,
+        **kwargs,
     ):
-        super().__init__(random_state=random_state)
+        super().__init__(random_state=random_state, **kwargs)
         self.model = CTGAN(
             embedding_dim=embedding_dim,
             generator_dim=generator_dim,

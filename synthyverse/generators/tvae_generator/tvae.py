@@ -1,9 +1,9 @@
 from ctgan import TVAE
-from ..base import BaseGenerator
+from ..base import TabularBaseGenerator
 import pandas as pd
 
 
-class TVAEGenerator(BaseGenerator):
+class TVAEGenerator(TabularBaseGenerator):
     name = "tvae"
 
     def __init__(
@@ -18,8 +18,9 @@ class TVAEGenerator(BaseGenerator):
         cuda=True,
         verbose=True,
         random_state: int = 0,
+        **kwargs,
     ):
-        super().__init__(random_state=random_state)
+        super().__init__(random_state=random_state, **kwargs)
         self.model = TVAE(
             embedding_dim=embedding_dim,
             compress_dims=compress_dims,

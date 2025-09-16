@@ -1,10 +1,10 @@
-from ..base import BaseGenerator
+from ..base import TabularBaseGenerator
 
 import pandas as pd
 from mostlyai import engine
 
 
-class TabARGNGenerator(BaseGenerator):
+class TabARGNGenerator(TabularBaseGenerator):
     name = "tabargn"
     needs_workspace = True
 
@@ -13,8 +13,9 @@ class TabARGNGenerator(BaseGenerator):
         workspace: str,
         max_epochs: int = 100,
         random_state: int = 0,
+        **kwargs,
     ):
-        super().__init__(random_state=random_state)
+        super().__init__(random_state=random_state, **kwargs)
         self.workspace = workspace
         self.max_epochs = max_epochs
 

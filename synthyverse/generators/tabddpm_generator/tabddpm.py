@@ -1,4 +1,4 @@
-from ..base import BaseGenerator
+from ..base import TabularBaseGenerator
 import pandas as pd
 import torch
 import os
@@ -8,7 +8,7 @@ from .tabddpm_dir.plugin import TabDDPMPlugin
 from synthcity.plugins.core.dataloader import GenericDataLoader
 
 
-class TabDDPMGenerator(BaseGenerator):
+class TabDDPMGenerator(TabularBaseGenerator):
     name = "tabddpm"
     needs_target_column = True
 
@@ -27,8 +27,9 @@ class TabDDPMGenerator(BaseGenerator):
         model_params: dict = {},
         dim_embed: int = 128,
         random_state: int = 0,
+        **kwargs,
     ):
-        super().__init__(random_state=random_state)
+        super().__init__(random_state=random_state, **kwargs)
         self.n_iter = n_iter
         self.lr = lr
         self.weight_decay = weight_decay

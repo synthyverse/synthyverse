@@ -2,11 +2,11 @@ import pandas as pd
 from sklearn.preprocessing import OrdinalEncoder, QuantileTransformer, StandardScaler
 import torch
 
-from ..base import BaseGenerator
+from ..base import TabularBaseGenerator
 from .cdtd_dir import CDTD
 
 
-class CDTDGenerator(BaseGenerator):
+class CDTDGenerator(TabularBaseGenerator):
     name = "cdtd"
 
     def __init__(
@@ -31,8 +31,9 @@ class CDTDGenerator(BaseGenerator):
         ema_decay: float = 0.999,
         log_steps: int = 100,
         random_state: int = 0,
+        **kwargs,
     ):
-        super().__init__(random_state=random_state)
+        super().__init__(random_state=random_state, **kwargs)
         self.cdtd_params = {
             "cat_emb_dim": cat_emb_dim,
             "mlp_emb_dim": mlp_emb_dim,

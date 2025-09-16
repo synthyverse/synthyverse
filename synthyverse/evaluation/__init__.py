@@ -1,1 +1,1 @@
-from .eval import MetricEvaluator
+from .eval import TabularMetricEvaluator

@@ -45,7 +45,9 @@ class MLE:
         x_s = sd.drop(columns=[self.target_column])
 
         numerical_features = [
-            col for col in train.columns if col not in self.discrete_features
+            col
+            for col in train.columns
+            if col not in self.discrete_features and col != self.target_column
         ]
         discrete_features = [
             col for col in self.discrete_features if col != self.target_column

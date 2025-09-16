@@ -1,4 +1,4 @@
-from ..base import BaseGenerator
+from ..base import TabularBaseGenerator
 import pandas as pd
 from sklearn.model_selection import train_test_split
 import torch
@@ -11,7 +11,7 @@ from .tabsyn_dir.main import train_tabsyn
 from .tabsyn_dir.sample import sample_tabsyn
 
 
-class TabSynGenerator(BaseGenerator):
+class TabSynGenerator(TabularBaseGenerator):
     name = "tabsyn"
     needs_target_column = True
     needs_validation_set = True
@@ -38,8 +38,9 @@ class TabSynGenerator(BaseGenerator):
         diffusion_lr: float = 1e-3,
         diffusion_wd: float = 0,
         diffusion_patience: int = 500,
+        **kwargs,
     ):
-        super().__init__(random_state=random_state)
+        super().__init__(random_state=random_state, **kwargs)
         self.random_state = random_state
         self.target_column = target_column
 

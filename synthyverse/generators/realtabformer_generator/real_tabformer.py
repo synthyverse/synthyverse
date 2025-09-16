@@ -1,9 +1,9 @@
-from ..base import BaseGenerator
+from ..base import TabularBaseGenerator
 import pandas as pd
 from realtabformer import REaLTabFormer
 
 
-class RealTabFormerGenerator(BaseGenerator):
+class RealTabFormerGenerator(TabularBaseGenerator):
     name = "realtabformer"
     needs_workspace = True
 
@@ -16,8 +16,9 @@ class RealTabFormerGenerator(BaseGenerator):
         early_stopping_patience: int = 5,
         early_stopping_threshold: float = 0,
         random_state: int = 0,
+        **kwargs,
     ):
-        super().__init__(random_state=random_state)
+        super().__init__(random_state=random_state, **kwargs)
 
         self.model = REaLTabFormer(
             model_type="tabular",

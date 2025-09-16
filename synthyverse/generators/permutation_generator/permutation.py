@@ -1,18 +1,18 @@
-from ..base import BaseGenerator
+from ..base import TabularBaseGenerator
 import pandas as pd
 import numpy as np
 
 
-class PermutationGenerator(BaseGenerator):
+class PermutationGenerator(TabularBaseGenerator):
     name = "permutation"
 
-    def __init__(self, random_state: int = 0, permutation_rate: float = 0.5):
-        super().__init__(random_state=random_state)
+    def __init__(self, random_state: int = 0, permutation_rate: float = 0.5, **kwargs):
+        super().__init__(random_state=random_state, **kwargs)
         self.permutation_rate = permutation_rate
         self.random_state = random_state
 
     def _fit_model(self, X: pd.DataFrame, discrete_features: list):
-        self.X = X
+        self.X = X.copy()
 
     def _generate_data(self, n: int):
         if n <= len(self.X):

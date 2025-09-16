@@ -1,10 +1,10 @@
-from ..base import BaseGenerator
+from ..base import TabularBaseGenerator
 import pandas as pd
 
 from utrees import UnmaskingTrees
 
 
-class UnmaskingTreesGenerator(BaseGenerator):
+class UnmaskingTreesGenerator(TabularBaseGenerator):
     name = "unmaskingtrees"
 
     def __init__(
@@ -17,8 +17,9 @@ class UnmaskingTreesGenerator(BaseGenerator):
         cast_float32: bool = True,
         tabpfn: bool = False,
         random_state: int = 0,
+        **kwargs,
     ):
-        super().__init__(random_state=random_state)
+        super().__init__(random_state=random_state, **kwargs)
         self.model_params = {
             "depth": depth,
             "duplicate_K": duplicate_K,

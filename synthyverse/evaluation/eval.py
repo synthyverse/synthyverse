@@ -1,6 +1,7 @@
 from typing import Union
 import pandas as pd
-from ..utils.preprocessing import scale
+
+from ..preprocessing.tabular import TabularPreprocessor
 
 from .fidelity import (
     ClassifierTest,
@@ -22,7 +23,7 @@ METRICS = {
 }
 
 
-class MetricEvaluator:
+class TabularMetricEvaluator:
 
     def __init__(
         self,
@@ -36,7 +37,7 @@ class MetricEvaluator:
             self.metrics = {metric: {} for metric in metrics}
         else:
             self.metrics = metrics
-        self.discrete_features = discrete_features
+        self.discrete_features = discrete_features.copy()
         self.target_column = target_column
         self.random_state = random_state
 
@@ -51,13 +52,50 @@ class MetricEvaluator:
 
         # ensure that we do not evaluate a larger real dataset than synthetic
         X_train, X_test = X_train[: len(X_syn)], X_test[: len(X_syn)]
+        X_train, X_test = X_train.reset_index(drop=True), X_test.reset_index(drop=True)
 
-        # one hot, label encode, standard scale
-        X_tr_scaled, X_te_scaled, X_syn_scaled = scale(
-            X_train,
-            X_test,
-            X_syn,
-            discrete_features=self.discrete_features,
+        # impute missingness
+        X_all = pd.concat([X_train, X_test, X_syn])
+        X_all = X_all.reset_index(drop=True)
+        preprocessor = TabularPreprocessor(
+            discrete_features=self.discrete_features, random_state=self.random_state
+        )
+        X_all, _ = preprocessor.impute_missings(
+            X_all,
+            method="drop",
+            add_missing_indicator=False,
+        )
+
+        # onehot and scale the data
+        X_all = preprocessor.scale(
+            X_all,
+            numerical_transformer="none",
+            categorical_transformer="one-hot",
+        )
+        X_tr_scaled, X_te_scaled, X_syn_scaled = (
+            X_all.iloc[: len(X_train)],
+            X_all.iloc[len(X_train) : len(X_train) + len(X_test)],
+            X_all.iloc[len(X_train) + len(X_test) :],
+        )
+        X_tr_scaled, X_te_scaled, X_syn_scaled = (
+            X_tr_scaled.reset_index(drop=True),
+            X_te_scaled.reset_index(drop=True),
+            X_syn_scaled.reset_index(drop=True),
+        )
+        X_tr_scaled = preprocessor.scale(
+            X_tr_scaled,
+            numerical_transformer="standard",
+            categorical_transformer="none",
+        )
+        X_te_scaled = preprocessor.scale(
+            X_te_scaled,
+            numerical_transformer="standard",
+            categorical_transformer="none",
+        )
+        X_syn_scaled = preprocessor.scale(
+            X_syn_scaled,
+            numerical_transformer="standard",
+            categorical_transformer="none",
         )
 
         dict_ = {}

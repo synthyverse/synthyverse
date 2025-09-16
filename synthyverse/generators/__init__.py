@@ -1,5 +1,3 @@
-from .base import BaseGenerator
-
 try:
     from .arf_generator import ARFGenerator
 except ImportError:

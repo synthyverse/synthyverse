@@ -1,4 +1,4 @@
-from ..base import BaseGenerator
+from ..base import TabularBaseGenerator
 import pandas as pd
 from scipy.stats import normaltest
 
@@ -6,7 +6,7 @@ from .ctabgan_dir.synthesizer.ctabgan_synthesizer import CTABGANSynthesizer
 from .ctabgan_dir.pipeline.data_preparation import DataPrep
 
 
-class CTABGANGenerator(BaseGenerator):
+class CTABGANGenerator(TabularBaseGenerator):
     name = "ctabgan"
     needs_target_column = True
 
@@ -23,8 +23,9 @@ class CTABGANGenerator(BaseGenerator):
         epochs: int = 150,
         sides: list = [4, 8, 16, 24, 32, 64],
         random_state: int = 0,
+        **kwargs,
     ):
-        super().__init__(random_state=random_state)
+        super().__init__(random_state=random_state, **kwargs)
         self.target_column = target_column
         self.model = CTABGANSynthesizer(
             class_dim=class_dim,
@@ -66,7 +67,7 @@ class CTABGANGenerator(BaseGenerator):
 
         self.data_prep = DataPrep(
             X.copy(),
-            discrete_features,
+            discrete_features.copy(),
             [],  # TBD: add logic to check long-tailed features
             mixed_features,
             simple_gaussians,

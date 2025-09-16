@@ -1,11 +1,12 @@
 from sklearn.model_selection import train_test_split
-from ..evaluation.eval import MetricEvaluator
+from ..evaluation.eval import TabularMetricEvaluator
 from ..utils.utils import get_generator, free_up_memory
 from ..utils.reproducibility import set_seed
 import pandas as pd
 from time import time
 import os
 import shutil
+from typing import Union
 
 
 class TabularBenchmark:
@@ -18,7 +19,12 @@ class TabularBenchmark:
         n_generated_datasets: int = 1,
         metrics: list = ["classifier_test", "mle", "dcr"],
         test_size: float = 0.2,
-        val_size: float = 0.2,
+        val_size: float = 0.1,
+        missing_imputation_method: str = "drop",
+        retain_missingness: bool = False,
+        encode_mixed_numerical_features: bool = False,
+        quantile_transform_numericals: bool = False,
+        constraints: Union[str, list] = [],
         workspace: str = "workspace",
     ):
 
@@ -31,6 +37,16 @@ class TabularBenchmark:
             "workspace", None
         )  # workspace already provided if needed
         self.generator_params.pop("random_state", None)  # use loop-based random_states
+
+        self.generator_params.update(
+            {
+                "missing_imputation_method": missing_imputation_method,
+                "retain_missingness": retain_missingness,
+                "encode_mixed_numerical_features": encode_mixed_numerical_features,
+                "quantile_transform_numericals": quantile_transform_numericals,
+                "constraints": constraints,
+            }
+        )
 
         self.n_random_splits = n_random_splits
         self.n_inits = n_inits
@@ -112,9 +128,7 @@ class TabularBenchmark:
 
                 # potentially generate multiple datasets
                 for generated_dataset_i in range(self.n_generated_datasets):
-                    set_seed(
-                        generated_dataset_i
-                    )  # for differences in evaluation metrics for same data
+                    set_seed(generated_dataset_i)
                     results[f"split_{split_i}"][f"init_{init_i}"][
                         f"generated_dataset_{generated_dataset_i}"
                     ] = {}
@@ -127,7 +141,7 @@ class TabularBenchmark:
                         f"generated_dataset_{generated_dataset_i}"
                     ]["inference_time"] = (time() - start_time)
                     start_time = time()
-                    evaluator = MetricEvaluator(
+                    evaluator = TabularMetricEvaluator(
                         metrics=self.metrics,
                         discrete_features=discrete_columns,
                         target_column=target_column,

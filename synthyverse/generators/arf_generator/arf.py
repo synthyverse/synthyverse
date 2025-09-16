@@ -1,10 +1,10 @@
 import pandas as pd
 from arfpy.arf import arf
+import numpy as np
+from ..base import TabularBaseGenerator
 
-from ..base import BaseGenerator
 
-
-class ARFGenerator(BaseGenerator):
+class ARFGenerator(TabularBaseGenerator):
     name = "arf"
 
     def __init__(
@@ -15,9 +15,12 @@ class ARFGenerator(BaseGenerator):
         early_stop: bool = True,
         verbose: bool = True,
         min_node_size: int = 5,
+        retain_value_ranges: bool = False,  # whether to retain numerical feature ranges
         random_state: int = 0,
+        **kwargs,
     ):
-        super().__init__(random_state=random_state)
+        super().__init__(random_state=random_state, **kwargs)
+        self.retain_value_ranges = retain_value_ranges
         self.model_params = {
             "num_trees": num_trees,
             "delta": delta,
@@ -29,9 +32,30 @@ class ARFGenerator(BaseGenerator):
         }
 
     def _fit_model(self, X: pd.DataFrame, discrete_features: list):
-        X[discrete_features] = X[discrete_features].astype(str)
-        self.model = arf(X, **self.model_params)
+        xx = X.copy()
+        xx[discrete_features] = xx[discrete_features].astype(str)
+        self.numerical_features = [
+            col for col in xx.columns if col not in discrete_features
+        ]
+        if self.retain_value_ranges:
+            self.value_ranges = {}
+            for col in self.numerical_features:
+                self.value_ranges[col] = {
+                    "min": xx[col].min(),
+                    "max": xx[col].max(),
+                }
+
+        self.model = arf(xx, **self.model_params)
         self.model.forde()
 
     def _generate_data(self, n: int):
-        return self.model.forge(n)
+        syn = self.model.forge(n)
+        if self.retain_value_ranges:
+            for col in self.numerical_features:
+                syn[col] = np.clip(
+                    syn[col],
+                    self.value_ranges[col]["min"],
+                    self.value_ranges[col]["max"],
+                )
+
+        return syn
