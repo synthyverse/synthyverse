@@ -32,7 +32,9 @@ class TVAEGenerator(TabularBaseGenerator):
             cuda=cuda,
         )
 
-    def _fit_model(self, X: pd.DataFrame, discrete_features: list):
+    def _fit_model(
+        self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
+    ):
         self.model.fit(X, discrete_features)
 
     def _generate_data(self, n: int):

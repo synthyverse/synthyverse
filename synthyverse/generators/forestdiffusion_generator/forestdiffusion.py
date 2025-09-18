@@ -57,7 +57,9 @@ class ForestDiffusionGenerator(TabularBaseGenerator):
         self.noise_level = noise_level
         self.max_rows_in_memory
 
-    def _fit_model(self, X: pd.DataFrame, discrete_features: list):
+    def _fit_model(
+        self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
+    ):
         self.ori_col_order = X.columns
         self.discrete_features = discrete_features.copy()
         self.X = X.copy()

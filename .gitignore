@@ -150,6 +150,7 @@ data/
 results/
 workspace/
 **_workspace/
+tabsyn_embeddings/
 
 # Spyder project settings
 .spyderproject

@@ -11,7 +11,9 @@ class PermutationGenerator(TabularBaseGenerator):
         self.permutation_rate = permutation_rate
         self.random_state = random_state
 
-    def _fit_model(self, X: pd.DataFrame, discrete_features: list):
+    def _fit_model(
+        self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
+    ):
         self.X = X.copy()
 
     def _generate_data(self, n: int):

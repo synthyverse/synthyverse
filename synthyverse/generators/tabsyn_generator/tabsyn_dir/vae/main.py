@@ -5,6 +5,8 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import warnings
 from tqdm import tqdm
+import numpy as np
+import os
 
 
 from .model import Model_VAE, Encoder_model, Decoder_model
@@ -47,6 +49,8 @@ def train_vae(
     info,
     device,
     vae_params,
+    num_workers=0,
+    vae_embeddings_save_dir="",
 ):
 
     X_num, X_cat, categories, d_numerical = preprocess(
@@ -84,7 +88,7 @@ def train_vae(
         train_data,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=0,  # 4
+        num_workers=num_workers,  # 4
     )
 
     model = Model_VAE(
@@ -215,6 +219,7 @@ def train_vae(
             )
         )
     model.load_state_dict(best_model)
+
     # Saving latent embeddings
     with torch.no_grad():
         pre_encoder.load_weights(model)
@@ -223,6 +228,32 @@ def train_vae(
         X_train_num = X_train_num.to(device)
         X_train_cat = X_train_cat.to(device)
 
-        train_z = pre_encoder(X_train_num, X_train_cat).detach().cpu().numpy()
+        # batch-wise inference and stream to disk (avoids memory overload for low VRAM GPUs)
+        os.makedirs(vae_embeddings_save_dir, exist_ok=True)
+        os.chmod(vae_embeddings_save_dir, 0o700)
+        _, num_tokens, token_dim = pre_encoder(
+            X_train_num[0:5], X_train_cat[0:5]
+        ).size()
+        mm = np.memmap(
+            f"{vae_embeddings_save_dir}/tabsyn_embeddings.float32.mmap",
+            mode="w+",
+            dtype="float32",
+            shape=(
+                len(X_train_num),
+                num_tokens,
+                token_dim,
+            ),
+        )
+        for i in range(0, len(X_train_num), batch_size):
+            mm[i : i + batch_size, :] = (
+                pre_encoder(
+                    X_train_num[i : i + batch_size],
+                    X_train_cat[i : i + batch_size],
+                )
+                .detach()
+                .cpu()
+                .numpy()
+            )
+        mm.flush()
 
-    return train_z, pre_decoder
+    return pre_decoder, len(X_train_num), num_tokens, token_dim

@@ -31,7 +31,9 @@ class BNGenerator(TabularBaseGenerator):
             random_state=random_state,
         )
 
-    def _fit_model(self, X: pd.DataFrame, discrete_features: list):
+    def _fit_model(
+        self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
+    ):
 
         loader = GenericDataLoader(
             X,

@@ -46,7 +46,9 @@ class TabDDPMGenerator(TabularBaseGenerator):
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def _fit_model(self, X: pd.DataFrame, discrete_features: list):
+    def _fit_model(
+        self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
+    ):
         workspace = "tabddpm_workspace"
 
         if self.target_column in discrete_features:

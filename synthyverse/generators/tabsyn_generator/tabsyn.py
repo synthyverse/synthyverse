@@ -19,7 +19,6 @@ class TabSynGenerator(TabularBaseGenerator):
     def __init__(
         self,
         target_column: str,
-        random_state: int = 0,
         vae_lr: float = 1e-3,
         vae_wd: float = 0,
         vae_d_token: int = 4,
@@ -32,17 +31,22 @@ class TabSynGenerator(TabularBaseGenerator):
         vae_min_beta: float = 1e-5,
         vae_max_beta: float = 1e-2,
         vae_lambda: float = 0.7,
+        vae_embeddings_save_dir: str = "./tabsyn_embeddings",
         diffusion_batch_size: int = 4096,
         diffusion_num_epochs: int = 10000 + 1,
         diffusion_dim_t: int = 1024,
         diffusion_lr: float = 1e-3,
         diffusion_wd: float = 0,
         diffusion_patience: int = 500,
+        num_workers: int = 0,  # number of workers in pytorch dataloader
+        random_state: int = 0,
         **kwargs,
     ):
         super().__init__(random_state=random_state, **kwargs)
         self.random_state = random_state
         self.target_column = target_column
+        self.vae_embeddings_save_dir = vae_embeddings_save_dir
+        self.num_workers = num_workers
 
         self.vae_params = {
             "LR": vae_lr,
@@ -140,7 +144,7 @@ class TabSynGenerator(TabularBaseGenerator):
             inverse=True,
         )
 
-        train_z, self.pre_decoder = train_vae(
+        self.pre_decoder, *train_z_shape = train_vae(
             X_num_train,
             X_cat_train,
             y_train,
@@ -150,13 +154,21 @@ class TabSynGenerator(TabularBaseGenerator):
             self.metadata,
             self.device,
             self.vae_params,
+            num_workers=self.num_workers,
+            vae_embeddings_save_dir=self.vae_embeddings_save_dir,
         )
 
         # free some memory before training diffusion model
         del X_num_train, X_cat_train, y_train, X_num_test, X_cat_test, y_test
 
         self.diffusion_model, self.train_z_shape, self.train_z_mean, self.token_dim = (
-            train_tabsyn(train_z, self.diffusion_params, self.device)
+            train_tabsyn(
+                tuple(train_z_shape),
+                self.diffusion_params,
+                self.device,
+                self.num_workers,
+                self.vae_embeddings_save_dir,
+            )
         )
         self.metadata["token_dim"] = self.token_dim
 

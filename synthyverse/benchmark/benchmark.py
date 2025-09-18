@@ -106,6 +106,8 @@ class TabularBenchmark:
                 X_train, X_val = X_train.reset_index(drop=True), X_val.reset_index(
                     drop=True
                 )
+            else:
+                X_val = None
 
             for init_i in range(self.n_inits):
                 results[f"split_{split_i}"][f"init_{init_i}"] = {}
@@ -115,13 +117,9 @@ class TabularBenchmark:
                 self.clean_directory(self.workspace, remove_self=False)
                 generator = generator_(random_state=init_i, **self.generator_params)
                 start_time = time()
-                # pass validation data if needed
-                if hasattr(generator_, "needs_validation_set") and getattr(
-                    generator_, "needs_validation_set", False
-                ):
-                    generator.fit(X_train, X_val, discrete_columns)
-                else:
-                    generator.fit(X_train, discrete_columns)
+                generator.fit(
+                    X=X_train, discrete_features=discrete_columns, X_val=X_val
+                )
                 results[f"split_{split_i}"][f"init_{init_i}"]["training_time"] = (
                     time() - start_time
                 )

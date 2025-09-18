@@ -1,10 +1,12 @@
 import torch
-
+import os
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 import warnings
 import time
+import numpy as np
+import shutil
 
 from tqdm import tqdm
 from .model import MLPDiffusion, Model
@@ -12,7 +14,20 @@ from .model import MLPDiffusion, Model
 warnings.filterwarnings("ignore")
 
 
-def train_tabsyn(train_z, diffusion_params, device=None):
+def train_tabsyn(
+    train_z_shape,
+    diffusion_params,
+    device=None,
+    num_workers=0,
+    vae_embeddings_save_dir="",
+):
+
+    train_z = np.memmap(
+        f"{vae_embeddings_save_dir}/tabsyn_embeddings.float32.mmap",
+        mode="r",
+        dtype="float32",
+        shape=train_z_shape,
+    )
 
     train_z = torch.from_numpy(train_z).float()
     train_z = train_z[:, 1:, :]
@@ -32,7 +47,7 @@ def train_tabsyn(train_z, diffusion_params, device=None):
         train_data,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=0,  # 4
+        num_workers=num_workers,  # 4
     )
 
     denoise_fn = MLPDiffusion(in_dim, diffusion_params["DIM_T"]).to(device)
@@ -93,4 +108,10 @@ def train_tabsyn(train_z, diffusion_params, device=None):
 
     model.load_state_dict(best_model)
 
-    return model, train_z.shape, train_z.mean(0), token_dim
+    # remove the embeddings from memory as they are no longer needed
+    train_z_shape = train_z.shape
+    train_z_mean = train_z.mean(0)
+    del train_z
+    shutil.rmtree(vae_embeddings_save_dir)
+
+    return model, train_z_shape, train_z_mean, token_dim

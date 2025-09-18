@@ -19,7 +19,9 @@ class TabARGNGenerator(TabularBaseGenerator):
         self.workspace = workspace
         self.max_epochs = max_epochs
 
-    def _fit_model(self, X: pd.DataFrame, discrete_features: list):
+    def _fit_model(
+        self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
+    ):
 
         # set up workspace and default logging
         engine.init_logging()

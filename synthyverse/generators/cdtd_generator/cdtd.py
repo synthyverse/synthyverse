@@ -69,7 +69,9 @@ class CDTDGenerator(TabularBaseGenerator):
         if torch.cuda.is_available():
             torch.set_float32_matmul_precision("high")
 
-    def _fit_model(self, X: pd.DataFrame, discrete_features: list):
+    def _fit_model(
+        self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
+    ):
         numerical_features = [col for col in X.columns if col not in discrete_features]
         # retain original column order to output correct dataframe format after generation
         self.col_order = X.columns

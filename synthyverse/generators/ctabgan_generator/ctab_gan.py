@@ -37,7 +37,9 @@ class CTABGANGenerator(TabularBaseGenerator):
             sides=sides,
         )
 
-    def _fit_model(self, X: pd.DataFrame, discrete_features: list):
+    def _fit_model(
+        self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
+    ):
 
         if self.target_column in discrete_features:
             problem_type = {"Classification": self.target_column}

@@ -24,7 +24,7 @@ class TabularBaseGenerator:
         self.quantile_transform_numericals = quantile_transform_numericals
         self.encode_mixed_numerical_features = encode_mixed_numerical_features
 
-    def fit(self, X: pd.DataFrame, discrete_features: list):
+    def fit(self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None):
         self.base_discrete_features = discrete_features.copy()
         X_prep = X.copy()
 
@@ -41,10 +41,23 @@ class TabularBaseGenerator:
             quantile_transform_numericals=self.quantile_transform_numericals,
             constraints=self.constraints,
         )
+        if X_val is not None:
+            X_val_prep = self.preprocessor.pipeline(
+                X=X_val,
+                missing_imputation_method=self.missing_imputation_method,
+                retain_missingness=self.retain_missingness,
+                encode_mixed_numerical_features=self.encode_mixed_numerical_features,
+                quantile_transform_numericals=self.quantile_transform_numericals,
+                constraints=self.constraints,
+            )
+        else:
+            X_val_prep = None
         # update which features are discrete
         self.base_discrete_features = self.preprocessor.discrete_features.copy()
 
-        self._fit_model(X=X_prep, discrete_features=self.base_discrete_features)
+        self._fit_model(
+            X=X_prep, discrete_features=self.base_discrete_features, X_val=X_val_prep
+        )
 
         return self
 
