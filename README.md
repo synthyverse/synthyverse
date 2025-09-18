@@ -57,10 +57,6 @@ pip install synthyverse[arf,bn,ctgan,tvae]
 pip install synthyverse[ctgan,eval]
 ```
 
-```bash
-pip install synthyverse[preproc]
-```
-
 # Usage
 
 ### Synthetic Data Generation
