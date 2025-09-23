@@ -70,6 +70,18 @@ def train_vae(
     X_train_num, X_test_num = X_num
     X_train_cat, X_test_cat = X_cat
 
+    # filter out observations in validation set with categories unseen in training set
+    drop_mask = []
+    for col_idx in range(X_train_cat.shape[1]):
+        drop_mask.append(X_test_cat[:, col_idx] > X_train_cat[:, col_idx].max())
+    drop_mask = np.column_stack(drop_mask)
+    drop_mask = np.sum(drop_mask, axis=1) > 0
+    X_test_num = X_test_num[~drop_mask]
+    X_test_cat = X_test_cat[~drop_mask]
+    print(
+        f"Number of observations dropped in validation set due to unseen categories: {sum(drop_mask)}"
+    )
+
     X_train_num, X_test_num = (
         torch.from_numpy(X_train_num).float(),
         torch.from_numpy(X_test_num).float(),

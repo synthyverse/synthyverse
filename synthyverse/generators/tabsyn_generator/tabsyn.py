@@ -183,6 +183,7 @@ class TabSynGenerator(TabularBaseGenerator):
             pre_decoder=self.pre_decoder,
             train_z_shape=self.train_z_shape,
             train_z_mean=self.train_z_mean,
+            batch_size=self.diffusion_params["BATCH_SIZE"],
             device=self.device,
         )
 

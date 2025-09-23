@@ -1,8 +1,8 @@
 import warnings
-
+import torch
 from .latent_utils import recover_data, split_num_cat_target
 from .diffusion_utils import sample
-
+import numpy as np
 
 warnings.filterwarnings("ignore")
 
@@ -16,6 +16,7 @@ def sample_tabsyn(
     pre_decoder,
     train_z_shape: tuple,
     train_z_mean,
+    batch_size,
     device,
 ):
 
@@ -25,12 +26,18 @@ def sample_tabsyn(
     num_samples = n
     sample_dim = in_dim
 
-    x_next = sample(model.denoise_fn_D, num_samples, sample_dim, device)
-    x_next = x_next * 2 + mean.to(device)
+    # batch-wise inference
+    syn = []
+    with torch.no_grad():
+        for _ in range(0, num_samples, batch_size):
+            x_next = sample(model.denoise_fn_D, batch_size, sample_dim, device)
+            x_next = x_next * 2 + mean.to(device)
+            syn.append(x_next.float().cpu().numpy())
 
-    syn_data = x_next.float().cpu().numpy()
+    syn = np.concatenate(syn, axis=0)
+
     syn_num, syn_cat, syn_target = split_num_cat_target(
-        syn_data, pre_decoder, info, num_inverse, cat_inverse, device
+        syn, pre_decoder, info, num_inverse, cat_inverse, device
     )
 
     syn_df = recover_data(syn_num, syn_cat, syn_target, info)

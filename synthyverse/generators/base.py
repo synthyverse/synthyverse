@@ -33,14 +33,7 @@ class TabularBaseGenerator:
             discrete_features=self.base_discrete_features,
             random_state=self.random_state,
         )
-        X_prep = self.preprocessor.pipeline(
-            X=X_prep,
-            missing_imputation_method=self.missing_imputation_method,
-            retain_missingness=self.retain_missingness,
-            encode_mixed_numerical_features=self.encode_mixed_numerical_features,
-            quantile_transform_numericals=self.quantile_transform_numericals,
-            constraints=self.constraints,
-        )
+        # fit validation pipeline first s.t. pipeline params correspond to training set not validation
         if X_val is not None:
             X_val_prep = self.preprocessor.pipeline(
                 X=X_val,
@@ -52,6 +45,14 @@ class TabularBaseGenerator:
             )
         else:
             X_val_prep = None
+        X_prep = self.preprocessor.pipeline(
+            X=X_prep,
+            missing_imputation_method=self.missing_imputation_method,
+            retain_missingness=self.retain_missingness,
+            encode_mixed_numerical_features=self.encode_mixed_numerical_features,
+            quantile_transform_numericals=self.quantile_transform_numericals,
+            constraints=self.constraints,
+        )
         # update which features are discrete
         self.base_discrete_features = self.preprocessor.discrete_features.copy()
 
