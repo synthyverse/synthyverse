@@ -27,18 +27,26 @@ def sample_tabsyn(
     sample_dim = in_dim
 
     # batch-wise inference
-    syn = []
+    syn_num_ = []
+    syn_cat_ = []
+    syn_target_ = []
     with torch.no_grad():
         for _ in range(0, num_samples, batch_size):
+            # diffusion inference
             x_next = sample(model.denoise_fn_D, batch_size, sample_dim, device)
             x_next = x_next * 2 + mean.to(device)
-            syn.append(x_next.float().cpu().numpy())
+            # x_next = x_next.float().cpu().numpy()
+            # VAE inference
+            syn_num, syn_cat, syn_target = split_num_cat_target(
+                x_next, pre_decoder, info, num_inverse, cat_inverse, device
+            )
+            syn_num_.append(syn_num)
+            syn_cat_.append(syn_cat)
+            syn_target_.append(syn_target)
 
-    syn = np.concatenate(syn, axis=0)
-
-    syn_num, syn_cat, syn_target = split_num_cat_target(
-        syn, pre_decoder, info, num_inverse, cat_inverse, device
-    )
+    syn_num = np.concatenate(syn_num_)
+    syn_cat = np.concatenate(syn_cat_)
+    syn_target = np.concatenate(syn_target_)
 
     syn_df = recover_data(syn_num, syn_cat, syn_target, info)
 

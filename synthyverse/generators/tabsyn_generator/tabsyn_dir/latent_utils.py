@@ -45,8 +45,8 @@ def split_num_cat_target(syn_data, pre_decoder, info, num_inverse, cat_inverse, 
     token_dim = info["token_dim"]
 
     syn_data = syn_data.reshape(syn_data.shape[0], -1, token_dim)
-
-    norm_input = pre_decoder(torch.from_numpy(syn_data))
+    norm_input = pre_decoder(syn_data)
+    # norm_input = pre_decoder(torch.from_numpy(syn_data))
     x_hat_num, x_hat_cat = norm_input
 
     syn_cat = []
