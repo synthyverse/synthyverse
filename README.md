@@ -2,7 +2,7 @@
 <tr>
 <td align="center">
 
-<img src="logo/logo.png" alt="Synthyverse logo" width="250" height="auto">
+<img src="https://raw.githubusercontent.com/synthyverse/synthyverse/main/logo/logo.png" alt="Synthyverse logo" width="250" height="auto">
 
 <br/>
 <br/>
@@ -35,7 +35,7 @@ Templates provide installation for specific generators, the evaluation module, a
 
 **Note that the core installation without any template doesn't install any modules.**
 
-See the [overview of templates](synthyverse/TEMPLATES.md).
+See the [overview of templates](https://github.com/synthyverse/synthyverse/blob/main/synthyverse/TEMPLATES.md).
 
 ### General Installation Template
 
@@ -62,7 +62,7 @@ pip install synthyverse[ctgan,eval]
 ### Synthetic Data Generation
 Import desired generator. Note that you can only import generators according to your installed synthyverse template.
 
-See [all available generators](synthyverse/generators/GENERATORS.md).
+See [all available generators](https://github.com/synthyverse/synthyverse/blob/main/synthyverse/generators/GENERATORS.md).
 ```python
 from synthyverse.generators import ARFGenerator
 generator = ARFGenerator(num_trees=20, random_state=0)
@@ -83,7 +83,7 @@ syn = generator.generate(len(X))
 ### Synthetic Data Evaluation
 Choose a set of metrics. Either choose default metrics as a list, or provide them as a dictionary with carefully selected hyperparameters. Add a dash to the metric name to compute various configurations of the same evaluation metric.
 
-See [all available metrics](synthyverse/evaluation/METRICS.md).
+See [all available metrics](https://github.com/synthyverse/synthyverse/blob/main/synthyverse/evaluation/METRICS.md).
 ```python
 metrics = ["mle", "dcr", "similarity"]
 metrics={
@@ -94,7 +94,7 @@ metrics={
     }
 ```
 
-Set-up a metric evaluator object. See the [API reference](synthyverse/evaluation/EVAL.MD) for in-depth usage.
+Set-up a metric evaluator object. See the [API reference](https://github.com/synthyverse/synthyverse/blob/main/synthyverse/evaluation/EVAL.MD) for in-depth usage.
 
 ```python
 from synthyverse.evaluation import TabularMetricEvaluator
@@ -114,14 +114,14 @@ results = evaluator.evaluate(X_train, X_test, syn)
 ```
 
 ### Benchmarking
-The benchmarking module performs synthetic data generation and evaluation in a single pipeline. See the [API reference](synthyverse/benchmark/BENCHMARK.MD) for in-depth usage.
+The benchmarking module performs synthetic data generation and evaluation in a single pipeline. See the [API reference](https://github.com/synthyverse/synthyverse/blob/main/synthyverse/benchmark/BENCHMARK.MD) for in-depth usage.
 
-Set-up a benchmarking object. Supply the [generator name and its parameters](synthyverse/generators/GENERATORS.md), [evaluation metrics](synthyverse/evaluation/METRICS.md), the number of random train-test splits to fit the generator to, number of random initializations to fit the generator to, the number of synthetic sets to sample for each fitted generator, and the size of the test set.
+Set-up a benchmarking object. Supply the [generator name and its parameters](https://github.com/synthyverse/synthyverse/blob/main/synthyverse/generators/GENERATORS.md), [evaluation metrics](https://github.com/synthyverse/synthyverse/blob/main/synthyverse/evaluation/METRICS.md), the number of random train-test splits to fit the generator to, number of random initializations to fit the generator to, the number of synthetic sets to sample for each fitted generator, and the size of the test set.
 
 ```python
-from synthyverse.benchmark import TabularBenchmark
+from synthyverse.benchmark import TabularSynthesisBenchmark
 
-benchmark = TabularBenchmark(
+benchmark = TabularSynthesisBenchmark(
     generator_name="arf",
     generator_params={"num_trees": 20},
     n_random_splits=3,
@@ -148,7 +148,7 @@ Some of the options include:
 - whether to encode features which are a mix of discrete spikes and continuous numerical values (e.g., zero-inflated features)
 - whether to normalize numerical features through quantile transformation
 
-The example below shows how to pass preprocessing parameters to the generator and/or benchmarking module. See the [API reference](synthyverse/preprocessing/PREPROCESS.MD) for in-depth usage.
+The example below shows how to pass preprocessing parameters to the generator and/or benchmarking module. See the [API reference](https://github.com/synthyverse/synthyverse/blob/main/synthyverse/preprocessing/PREPROCESS.MD) for in-depth usage.
 
 ```python
 
@@ -165,7 +165,7 @@ generator.fit(X_train, discrete_features=["target"])
 syn = generator.generate(len(X))
 
 
-benchmark = TabularBenchmark(
+benchmark = TabularSynthesisBenchmark(
     generator_name="arf",
     generator_params={},
     n_random_splits=1,
@@ -212,7 +212,7 @@ X_preprocessed = preprocessor.scale(
 X = preprocessor.inverse_scale(X_preprocessed)
 ```
 
-Again, see the [API reference](synthyverse/preprocessing/PREPROCESS.MD) for in-depth usage.
+Again, see the [API reference](https://github.com/synthyverse/synthyverse/blob/main/synthyverse/preprocessing/PREPROCESS.MD) for in-depth usage.
 
 # Tutorials
-- [Tabular Synthetic Data with the synthyverse: Introduction](tutorial.ipynb)
+- [Tabular Synthetic Data with the synthyverse: Introduction](https://github.com/synthyverse/synthyverse/blob/main/tutorial.ipynb)
