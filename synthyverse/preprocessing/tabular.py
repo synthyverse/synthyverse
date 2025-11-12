@@ -497,7 +497,8 @@ class TabularPreprocessor:
         X_new = X.copy()
         constraints_dict = {}
         for constraint in constraints:
-            if "=" in constraint and not "<=" in constraint and not ">=" in constraint:
+            if "=" in constraint and not "<" in constraint and not ">" in constraint:
+                # equality constraint
 
                 constraints_dict["equality"] = constraint
                 # remove left feature, as it can be exactly computed post-hoc from right side of constraint

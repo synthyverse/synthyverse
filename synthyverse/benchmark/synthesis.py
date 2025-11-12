@@ -1,15 +1,18 @@
 from sklearn.model_selection import train_test_split
-from ..evaluation.eval import TabularMetricEvaluator
-from ..utils.utils import get_generator, free_up_memory
-from ..utils.reproducibility import set_seed
 import pandas as pd
 from time import time
 import os
 import shutil
 from typing import Union
 
+from .utils import format_results
+from ..evaluation.eval import TabularMetricEvaluator
+from ..generators import get_generator
+from ..utils.utils import free_up_memory
+from ..utils.reproducibility import set_seed
 
-class TabularBenchmark:
+
+class TabularSynthesisBenchmark:
     def __init__(
         self,
         generator_name: str = "arf",
@@ -25,10 +28,12 @@ class TabularBenchmark:
         encode_mixed_numerical_features: bool = False,
         quantile_transform_numericals: bool = False,
         constraints: Union[str, list] = [],
+        max_syn_size: int = int(1e9),
         workspace: str = "workspace",
     ):
 
         self.generator_name = generator_name
+        self.max_syn_size = max_syn_size
         self.generator_params = generator_params
         self.generator_params.pop(
             "target_column", None
@@ -79,6 +84,8 @@ class TabularBenchmark:
             self.generator_params["target_column"] = target_column
 
         for split_i in range(self.n_random_splits):
+            # remove any previously tuned hyperparameters; they need to be re-tuned for different training splits
+            shutil.rmtree("synthyverse_hyperparams_tuned", ignore_errors=True)
             results[f"split_{split_i}"] = {}
             # split data according to current seed
             stratify = None
@@ -130,22 +137,43 @@ class TabularBenchmark:
                     results[f"split_{split_i}"][f"init_{init_i}"][
                         f"generated_dataset_{generated_dataset_i}"
                     ] = {}
+
+                    # calculate sampling time for 1000 samples
                     start_time = time()
-                    X_syn = generator.generate(len(X))
+                    generator.generate(1000)
                     results[f"split_{split_i}"][f"init_{init_i}"][
                         f"generated_dataset_{generated_dataset_i}"
-                    ] = {}
+                    ]["inference_time_1k_samples"] = (time() - start_time)
+
+                    # sample synthetic dataset and perform evaluation
+                    n_train = min(self.max_syn_size, len(X_train))
+                    n_test = min(self.max_syn_size, len(X_test))
+                    n_val = min(self.max_syn_size, len(X_val))
+                    n = n_train + n_test
+                    start_time = time()
+                    X_syn = generator.generate(n)
                     results[f"split_{split_i}"][f"init_{init_i}"][
                         f"generated_dataset_{generated_dataset_i}"
                     ]["inference_time"] = (time() - start_time)
-                    start_time = time()
                     evaluator = TabularMetricEvaluator(
                         metrics=self.metrics,
                         discrete_features=discrete_columns,
                         target_column=target_column,
                         random_state=generated_dataset_i,
                     )
-                    metric_results = evaluator.evaluate(X_train, X_test, X_syn)
+                    start_time = time()
+                    metric_results = evaluator.evaluate(
+                        X_train.sample(
+                            n_train, replace=False, random_state=generated_dataset_i
+                        ),
+                        X_test.sample(
+                            n_test, replace=False, random_state=generated_dataset_i
+                        ),
+                        X_syn,
+                        X_val.sample(
+                            n_val, replace=False, random_state=generated_dataset_i
+                        ),
+                    )
                     results[f"split_{split_i}"][f"init_{init_i}"][
                         f"generated_dataset_{generated_dataset_i}"
                     ]["evaluation_time"] = (time() - start_time)
@@ -158,8 +186,9 @@ class TabularBenchmark:
         # remove the workspace which was used for intermediate storage
         generator = None
         self.clean_directory(self.workspace, remove_self=True)
+        shutil.rmtree("synthyverse_hyperparams_tuned", ignore_errors=True)
         if result_format == "frame":
-            results = self.format_results(results)
+            results = format_results(results)
         return results
 
     def clean_directory(self, path: str, remove_self: bool = False) -> None:
@@ -179,89 +208,3 @@ class TabularBenchmark:
                     os.remove(entry_path)
                 elif os.path.isdir(entry_path):
                     shutil.rmtree(entry_path)
-
-    def format_results(self, data, value_at_level=3):
-        """
-        A generalistic function that formats nested dictionary data into a dataframe.
-        Each row represents one metric with columns for metric name, value, and context.
-
-        Args:
-            data: Nested dictionary containing metric values
-            value_at_level: The dictionary level where metric key-value pairs reside
-
-        Returns:
-            pd.DataFrame: Formatted dataframe with metric, value, and context columns
-        """
-
-        def extract_metrics_recursive(d, current_level=0, context_dict=None):
-            """Recursively extract metrics at the target level"""
-            if context_dict is None:
-                context_dict = {}
-
-            rows = []
-
-            for key, value in d.items():
-                if isinstance(value, dict):
-                    if current_level == value_at_level - 1:
-                        # We've reached the level where metrics are stored
-                        # Each key-value pair becomes a row
-                        for metric_key, metric_value in value.items():
-                            row = context_dict.copy()
-                            row[f"context{current_level + 1}"] = (
-                                key  # Include current level key as context
-                            )
-                            row["metric"] = metric_key
-                            row["value"] = metric_value
-                            rows.append(row)
-                    else:
-                        # Continue traversing and collect context
-                        new_context = context_dict.copy()
-                        new_context[f"context{current_level + 1}"] = key
-                        rows.extend(
-                            extract_metrics_recursive(
-                                value, current_level + 1, new_context
-                            )
-                        )
-                else:
-                    # Leaf node - if we're at the right level, this is a metric
-                    if current_level == value_at_level - 1:
-                        row = context_dict.copy()
-                        row[f"context{current_level + 1}"] = (
-                            key  # Include current level key as context
-                        )
-                        row["metric"] = key
-                        row["value"] = value
-                        rows.append(row)
-                    else:
-                        # This is context information at a higher level
-                        context_dict[f"context{current_level + 1}"] = key
-
-            return rows
-
-        # Extract all rows
-        all_rows = extract_metrics_recursive(data)
-
-        if not all_rows:
-            # Fallback: if no rows found, try to find the deepest level automatically
-            def get_max_depth(d, level=0):
-                if not isinstance(d, dict):
-                    return level
-                return max(get_max_depth(v, level + 1) for v in d.values())
-
-            max_depth = get_max_depth(data)
-            if max_depth > 0:
-                # Try with the deepest level
-                all_rows = extract_metrics_recursive(
-                    data, current_level=0, context_dict=None
-                )
-
-        # Create dataframe
-        df = pd.DataFrame(all_rows)
-
-        # Ensure 'metric' and 'value' columns are first
-        if "metric" in df.columns and "value" in df.columns:
-            # Reorder columns to put metric and value first, then context columns
-            context_cols = [col for col in df.columns if col not in ["metric", "value"]]
-            df = df[["metric", "value"] + context_cols]
-
-        return df

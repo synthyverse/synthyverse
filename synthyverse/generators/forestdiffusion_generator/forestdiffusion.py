@@ -1,6 +1,6 @@
 from ..base import TabularBaseGenerator
 import pandas as pd
-from ForestDiffusion import ForestDiffusionModel
+from .fd_dir.fd import ForestDiffusionModel
 import numpy as np
 from sklearn.preprocessing import OrdinalEncoder
 
@@ -15,7 +15,6 @@ class ForestDiffusionGenerator(TabularBaseGenerator):
         duplicate_K: int = 100,
         noise_level: int = 50,
         diffusion_type: str = "flow",
-        n_batch: int = 1,
         n_jobs: int = -1,
         max_depth: int = 7,
         n_estimators: int = 100,
@@ -31,7 +30,7 @@ class ForestDiffusionGenerator(TabularBaseGenerator):
         n_z: int = 10,
         gpu_hist: bool = False,
         random_state: int = 0,
-        max_rows_in_memory: int = 0,
+        max_rows_in_memory: int = 100_000,
         **kwargs,
     ):
         super().__init__(random_state=random_state, **kwargs)
@@ -51,15 +50,18 @@ class ForestDiffusionGenerator(TabularBaseGenerator):
         self.beta_max = beta_max
         self.n_z = n_z
         self.n_jobs = n_jobs
-        self.n_batch = n_batch
         self.duplicate_K = duplicate_K
         self.diffusion_type = diffusion_type
         self.noise_level = noise_level
-        self.max_rows_in_memory
+        self.max_rows_in_memory = max_rows_in_memory
 
     def _fit_model(
         self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
     ):
+        # dynamically set n_batch based on max_rows_in_memory
+        # >= 1 so always use data iterator
+        self.n_batch = int(np.ceil(X.shape[0] / self.max_rows_in_memory))
+
         self.ori_col_order = X.columns
         self.discrete_features = discrete_features.copy()
         self.X = X.copy()
@@ -92,11 +94,6 @@ class ForestDiffusionGenerator(TabularBaseGenerator):
         int_indexes = []  # already handled by basegenerator
 
         self.X = self.X.to_numpy()
-
-        if self.max_rows_in_memory > 0:
-            rows_in_mem = self.X.shape[0] * self.noise_level * self.duplicate_K
-            if rows_in_mem > self.max_rows_in_memory:
-                pass
 
         self.model = ForestDiffusionModel(
             self.X,  # Numpy dataset

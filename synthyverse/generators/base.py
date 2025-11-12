@@ -33,7 +33,7 @@ class TabularBaseGenerator:
             discrete_features=self.base_discrete_features,
             random_state=self.random_state,
         )
-        # fit validation pipeline first s.t. pipeline params correspond to training set not validation
+        # fit validation preprocessor first to ensure we end up with training data params
         if X_val is not None:
             X_val_prep = self.preprocessor.pipeline(
                 X=X_val,
@@ -53,6 +53,7 @@ class TabularBaseGenerator:
             quantile_transform_numericals=self.quantile_transform_numericals,
             constraints=self.constraints,
         )
+
         # update which features are discrete
         self.base_discrete_features = self.preprocessor.discrete_features.copy()
 

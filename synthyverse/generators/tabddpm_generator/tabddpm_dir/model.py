@@ -49,6 +49,8 @@ class TabDDPM(nn.Module, ValidationMixin):
         n_iter_min: int = 100,
         patience: int = 5,
     ) -> None:
+        self.n_iter = n_iter
+
         nn.Module.__init__(self)
         ValidationMixin.__init__(
             self,

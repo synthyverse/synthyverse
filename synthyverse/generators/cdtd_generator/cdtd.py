@@ -4,6 +4,7 @@ import torch
 
 from ..base import TabularBaseGenerator
 from .cdtd_dir import CDTD
+from ...utils.utils import get_total_trainable_params
 
 
 class CDTDGenerator(TabularBaseGenerator):
@@ -72,7 +73,11 @@ class CDTDGenerator(TabularBaseGenerator):
     def _fit_model(
         self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
     ):
-        numerical_features = [col for col in X.columns if col not in discrete_features]
+        self.discrete_features = discrete_features
+
+        self.numerical_features = [
+            col for col in X.columns if col not in discrete_features
+        ]
         # retain original column order to output correct dataframe format after generation
         self.col_order = X.columns
 
@@ -82,7 +87,7 @@ class CDTDGenerator(TabularBaseGenerator):
         X_discrete = self.ord_encoder.fit_transform(X_discrete)
 
         # quantile transform and standard scale numericals (tries to put 30 samples per bin, but caps range inside [10,1000])
-        X_numerical = X[numerical_features].to_numpy().astype(float)
+        X_numerical = X[self.numerical_features].to_numpy().astype(float)
         self.quant_encoder = QuantileTransformer(
             output_distribution="normal",
             n_quantiles=max(min(X_numerical.shape[0] // 30, 1000), 10),
@@ -98,6 +103,10 @@ class CDTDGenerator(TabularBaseGenerator):
 
         self.cdtd = CDTD(
             X_cat_train=X_discrete, X_cont_train=X_numerical, **self.cdtd_params
+        )
+
+        print(
+            f"Number of CDTD params: {get_total_trainable_params(self.cdtd.diff_model)}"
         )
 
         self.cdtd.fit(

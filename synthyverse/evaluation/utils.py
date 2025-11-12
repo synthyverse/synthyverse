@@ -7,6 +7,7 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
+import optuna
 
 
 def precision_recall(
@@ -43,3 +44,15 @@ def get_accuracy_metric(name: str):
         )
     else:
         raise ValueError(f"Metric {name} not supported")
+
+
+def xgboost_hyperparams(trial):
+    return {
+        "tree_method": "hist",
+        "max_depth": trial.suggest_int("max_depth", 3, 10),
+        "n_estimators": trial.suggest_int("n_estimators", 30, 150),
+        "min_child_weight": trial.suggest_float(
+            "min_child_weight", 1.0, 20.0, log=True
+        ),
+        "gamma": trial.suggest_float("gamma", 0.0, 5.0),
+    }

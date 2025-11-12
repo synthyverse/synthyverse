@@ -150,9 +150,8 @@ def train_vae(
     patience = 0
 
     beta = vae_params["MAX_BETA"]
-    for epoch in range(vae_params["NUM_EPOCHS"]):
-        pbar = tqdm(train_loader, total=len(train_loader))
-        pbar.set_description(f"Epoch {epoch+1}/{vae_params['NUM_EPOCHS']}")
+    pbar = tqdm(range(vae_params["NUM_EPOCHS"]))
+    for _ in pbar:
 
         curr_loss_multi = 0.0
         curr_loss_gauss = 0.0
@@ -160,7 +159,7 @@ def train_vae(
 
         curr_count = 0
 
-        for batch_num, batch_cat in pbar:
+        for batch_num, batch_cat in train_loader:
             model.train()
             optimizer.zero_grad()
 
@@ -197,7 +196,10 @@ def train_vae(
             val_mse_loss, val_ce_loss, val_kl_loss, val_acc = compute_loss(
                 X_test_num, X_test_cat, Recon_X_num, Recon_X_cat, mu_z, std_z
             )
-            val_loss = val_mse_loss.item() * 0 + val_ce_loss.item()
+
+            # val_loss = val_mse_loss.item() * 0 + val_ce_loss.item()
+            # error in old validation loss computation
+            val_loss = val_mse_loss.item() + val_ce_loss.item()
 
             scheduler.step(val_loss)
             new_lr = optimizer.param_groups[0]["lr"]
@@ -217,19 +219,7 @@ def train_vae(
                     if beta > vae_params["MIN_BETA"]:
                         beta = beta * vae_params["LAMBDA"]
         # print('epoch: {}, beta = {:.6f}, Train MSE: {:.6f}, Train CE:{:.6f}, Train KL:{:.6f}, Train ACC:{:6f}'.format(epoch, beta, num_loss, cat_loss, kl_loss, train_acc.item()))
-        print(
-            "epoch: {}, beta = {:.6f}, Train MSE: {:.6f}, Train CE:{:.6f}, Train KL:{:.6f}, Val MSE:{:.6f}, Val CE:{:.6f}, Train ACC:{:6f}, Val ACC:{:6f}".format(
-                epoch,
-                beta,
-                num_loss,
-                cat_loss,
-                kl_loss,
-                val_mse_loss.item(),
-                val_ce_loss.item(),
-                train_acc.item(),
-                val_acc.item(),
-            )
-        )
+
     model.load_state_dict(best_model)
 
     # Saving latent embeddings

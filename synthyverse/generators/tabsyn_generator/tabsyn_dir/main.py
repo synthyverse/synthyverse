@@ -11,6 +11,8 @@ import shutil
 from tqdm import tqdm
 from .model import MLPDiffusion, Model
 
+from ....utils.utils import get_total_trainable_params
+
 warnings.filterwarnings("ignore")
 
 
@@ -54,6 +56,8 @@ def train_tabsyn(
 
     model = Model(denoise_fn=denoise_fn, hid_dim=train_z.shape[1]).to(device)
 
+    print(f"Number of trainable params: {get_total_trainable_params(model)}")
+
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=diffusion_params["LR"],
@@ -71,6 +75,7 @@ def train_tabsyn(
     best_loss = float("inf")
     patience = 0
     best_model = None
+
     for epoch in range(diffusion_params["NUM_EPOCHS"]):
 
         pbar = tqdm(train_loader, total=len(train_loader))

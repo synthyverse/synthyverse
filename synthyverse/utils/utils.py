@@ -1,17 +1,8 @@
 import gc, sys, os, functools
 
 
-def get_generator(generator: str):
-
-    from ..generators import all_generators
-
-    available_generators = [g for g in all_generators if g is not None]
-
-    generator_map = {g.name: g for g in available_generators}
-    if generator not in generator_map.keys():
-        raise ValueError(f"Generator {generator} not found")
-
-    return generator_map[generator]
+def get_total_trainable_params(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 def free_up_memory():

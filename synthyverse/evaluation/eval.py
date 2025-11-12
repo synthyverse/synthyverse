@@ -1,26 +1,8 @@
 from typing import Union
 import pandas as pd
+from sklearn.preprocessing import OrdinalEncoder
 
-from ..preprocessing.tabular import TabularPreprocessor
-
-from .fidelity import (
-    ClassifierTest,
-    AlphaPrecisionBetaRecallAuthenticity,
-    Similarity,
-)
-
-from .utility import MLE
-
-from .privacy import DCR, DOMIAS
-
-METRICS = {
-    "classifier_test": ClassifierTest,
-    "mle": MLE,
-    "dcr": DCR,
-    "similarity": Similarity,
-    "prauth": AlphaPrecisionBetaRecallAuthenticity,
-    "domias": DOMIAS,
-}
+from . import get_metric
 
 
 class TabularMetricEvaluator:
@@ -42,66 +24,76 @@ class TabularMetricEvaluator:
         self.random_state = random_state
 
     def evaluate(
-        self, X_train: pd.DataFrame, X_test: pd.DataFrame, X_syn: pd.DataFrame
+        self,
+        X_train: pd.DataFrame,
+        X_test: pd.DataFrame,
+        X_syn: pd.DataFrame,
+        X_val: pd.DataFrame = None,
     ):
+        # drop missings in numericals
+        numerical_features = [
+            col for col in X_train.columns if col not in self.discrete_features
+        ]
+        X_train, X_test, X_syn = (
+            X_train.dropna(subset=numerical_features),
+            X_test.dropna(subset=numerical_features),
+            X_syn.dropna(subset=numerical_features),
+        )
+        if X_val is not None:
+            X_val = X_val.dropna(subset=numerical_features)
+
         X_train, X_test, X_syn = (
             X_train.reset_index(drop=True),
             X_test.reset_index(drop=True),
             X_syn.reset_index(drop=True),
         )
 
-        # ensure that we do not evaluate a larger real dataset than synthetic
-        X_train, X_test = X_train[: len(X_syn)], X_test[: len(X_syn)]
-        X_train, X_test = X_train.reset_index(drop=True), X_test.reset_index(drop=True)
+        if X_val is not None:
+            X_val = X_val.reset_index(drop=True)
 
-        # impute missingness
-        X_all = pd.concat([X_train, X_test, X_syn])
-        X_all = X_all.reset_index(drop=True)
-        preprocessor = TabularPreprocessor(
-            discrete_features=self.discrete_features, random_state=self.random_state
+        # ensure discrete features are integer encoded
+        ordinal_encoder = OrdinalEncoder()
+        (
+            ordinal_encoder.fit(
+                pd.concat(
+                    [
+                        X_train[self.discrete_features],
+                        X_test[self.discrete_features],
+                        X_syn[self.discrete_features],
+                    ]
+                )
+            )
+            if X_val is None
+            else ordinal_encoder.fit(
+                pd.concat(
+                    [
+                        X_train[self.discrete_features],
+                        X_test[self.discrete_features],
+                        X_syn[self.discrete_features],
+                        X_val[self.discrete_features],
+                    ]
+                )
+            )
         )
-        X_all, _ = preprocessor.impute_missings(
-            X_all,
-            method="drop",
-            add_missing_indicator=False,
+        X_train[self.discrete_features] = ordinal_encoder.transform(
+            X_train[self.discrete_features]
         )
-
-        # onehot and scale the data
-        X_all = preprocessor.scale(
-            X_all,
-            numerical_transformer="none",
-            categorical_transformer="one-hot",
+        X_test[self.discrete_features] = ordinal_encoder.transform(
+            X_test[self.discrete_features]
         )
-        X_tr_scaled, X_te_scaled, X_syn_scaled = (
-            X_all.iloc[: len(X_train)],
-            X_all.iloc[len(X_train) : len(X_train) + len(X_test)],
-            X_all.iloc[len(X_train) + len(X_test) :],
+        X_syn[self.discrete_features] = ordinal_encoder.transform(
+            X_syn[self.discrete_features]
         )
-        X_tr_scaled, X_te_scaled, X_syn_scaled = (
-            X_tr_scaled.reset_index(drop=True),
-            X_te_scaled.reset_index(drop=True),
-            X_syn_scaled.reset_index(drop=True),
-        )
-        X_tr_scaled = preprocessor.scale(
-            X_tr_scaled,
-            numerical_transformer="standard",
-            categorical_transformer="none",
-        )
-        X_te_scaled = preprocessor.scale(
-            X_te_scaled,
-            numerical_transformer="standard",
-            categorical_transformer="none",
-        )
-        X_syn_scaled = preprocessor.scale(
-            X_syn_scaled,
-            numerical_transformer="standard",
-            categorical_transformer="none",
-        )
+        if X_val is not None:
+            X_val[self.discrete_features] = ordinal_encoder.transform(
+                X_val[self.discrete_features]
+            )
 
         dict_ = {}
         for metric__ in self.metrics.keys():
+            print(f"Evaluating metric: {metric__}")
             metric_ = metric__.split("-")[0].strip().lower()
-            metric_cls = METRICS[metric_]
+            metric_cls = get_metric(metric_)
             # Use class properties to determine which additional information needs to be passed to the metric
             if hasattr(metric_cls, "needs_discrete_features") and getattr(
                 metric_cls, "needs_discrete_features", False
@@ -116,6 +108,11 @@ class TabularMetricEvaluator:
             ):
                 self.metrics[metric__]["random_state"] = self.random_state
 
+            if hasattr(metric_cls, "needs_val_set") and getattr(
+                metric_cls, "needs_val_set", False
+            ):
+                self.metrics[metric__]["X_val"] = X_val
+
             metric = metric_cls(**self.metrics[metric__])
             # Use class property to determine which data to pass
             data_req = getattr(metric_cls, "data_requirement", None)
@@ -129,24 +126,8 @@ class TabularMetricEvaluator:
                     X_train,
                     X_syn[: len(X_train)],
                 )
-            elif data_req == "test_preprocessed":
-                metric_result = metric.evaluate(
-                    X_te_scaled,
-                    X_syn_scaled[-len(X_test) :],
-                )
-            elif data_req == "train_preprocessed":
-                metric_result = metric.evaluate(
-                    X_tr_scaled,
-                    X_syn_scaled[: len(X_train)],
-                )
             elif data_req == "train_and_test":
                 metric_result = metric.evaluate(X_train, X_test, X_syn)
-            elif data_req == "train_and_test_preprocessed":
-                metric_result = metric.evaluate(
-                    X_tr_scaled,
-                    X_te_scaled,
-                    X_syn_scaled,
-                )
             else:
                 raise Exception(
                     f"Metric {metric_} not (fully) implemented or missing data_requirement property"

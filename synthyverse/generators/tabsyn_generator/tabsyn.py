@@ -33,12 +33,12 @@ class TabSynGenerator(TabularBaseGenerator):
         vae_lambda: float = 0.7,
         vae_embeddings_save_dir: str = "./tabsyn_embeddings",
         diffusion_batch_size: int = 4096,
-        diffusion_num_epochs: int = 10000 + 1,
+        diffusion_num_epochs: int = 10_000 + 1,
         diffusion_dim_t: int = 1024,
         diffusion_lr: float = 1e-3,
         diffusion_wd: float = 0,
         diffusion_patience: int = 500,
-        num_workers: int = 0,  # number of workers in pytorch dataloader
+        num_workers: int = 0,  # number of workers in pytorch dataloader (can give issues on windows)
         random_state: int = 0,
         **kwargs,
     ):
@@ -80,14 +80,14 @@ class TabSynGenerator(TabularBaseGenerator):
         )
         # tabsyn always needs validation set since early stopping is built-in
         if X_val is None:
-            self.X, self.val_X = train_test_split(
+            x, x_val = train_test_split(
                 X,
                 test_size=0.1,
                 stratify=stratify,
                 random_state=self.random_state,
             )
         else:
-            self.X, self.val_X = X.copy(), X_val.copy()
+            x, x_val = X.copy(), X_val.copy()
 
         task_type = (
             "binclass" if self.target_column in discrete_features else "regression"
@@ -103,17 +103,17 @@ class TabSynGenerator(TabularBaseGenerator):
             "task_type": task_type,
             "column_names": X.columns.tolist(),
             "num_col_idx": [
-                X.columns.get_loc(x)
-                for x in X.columns
+                x.columns.get_loc(x)
+                for x in x.columns
                 if x not in discrete_features and x != self.target_column
             ],  # list of indices of numerical columns
             "cat_col_idx": [
-                X.columns.get_loc(x)
+                x.columns.get_loc(x)
                 for x in X.columns
                 if x in discrete_features and x != self.target_column
             ],  # list of indices of categorical columns
             "target_col_idx": [
-                X.columns.get_loc(self.target_column)
+                x.columns.get_loc(self.target_column)
             ],  # list of indices of the target columns
         }
 
@@ -126,11 +126,11 @@ class TabSynGenerator(TabularBaseGenerator):
             X_num_test,
             X_cat_test,
             y_test,
-        ) = process_data(self.X, self.val_X, self.metadata)
+        ) = process_data(x, x_val, self.metadata)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # free some memory before training vae
-        del self.X, self.val_X
+        del x, x_val
 
         _, _, _, _, self.num_inverse, self.cat_inverse = preprocess(
             X_num_train,

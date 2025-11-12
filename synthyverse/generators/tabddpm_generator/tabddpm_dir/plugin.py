@@ -31,6 +31,8 @@ from synthcity.plugins.core.schema import Schema
 from synthcity.utils.callbacks import Callback
 from synthcity.utils.constants import DEVICE
 
+from ....utils.utils import get_total_trainable_params
+
 
 class TabDDPMPlugin(Plugin):
     """
@@ -118,7 +120,7 @@ class TabDDPMPlugin(Plugin):
         workspace: Path = Path("workspace"),
         compress_dataset: bool = False,
         sampling_patience: int = 500,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> None:
         super().__init__(
             device=device,
@@ -126,7 +128,7 @@ class TabDDPMPlugin(Plugin):
             sampling_patience=sampling_patience,
             workspace=workspace,
             compress_dataset=compress_dataset,
-            **kwargs
+            **kwargs,
         )
 
         self.is_classification = is_classification
@@ -149,6 +151,8 @@ class TabDDPMPlugin(Plugin):
             valid_size=validation_size,
             valid_metric=validation_metric,
         )
+
+        print(f"Number of trainable params: {get_total_trainable_params(self.model)}")
 
         cont_encoder_params = cont_encoder_params.copy()
         cont_encoder_params.update(random_state=random_state)
@@ -221,7 +225,12 @@ class TabDDPMPlugin(Plugin):
             self.target_name = cond.name
 
         df = self.encoder.fit_transform(
-            df, discrete_columns=kwargs.pop("discrete_columns", [])
+            df,
+            discrete_columns=(
+                kwargs["discrete_columns"]
+                if "discrete_columns" in kwargs.keys()
+                else []
+            ),
         )
 
         if cond is not None:

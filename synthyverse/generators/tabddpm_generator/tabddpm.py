@@ -15,7 +15,7 @@ class TabDDPMGenerator(TabularBaseGenerator):
     def __init__(
         self,
         target_column: str,
-        n_iter: int = 1000,
+        epochs: int = 1000,
         lr: float = 0.002,
         weight_decay: float = 1e-4,
         batch_size: int = 1024,
@@ -30,7 +30,7 @@ class TabDDPMGenerator(TabularBaseGenerator):
         **kwargs,
     ):
         super().__init__(random_state=random_state, **kwargs)
-        self.n_iter = n_iter
+        self.epochs = epochs
         self.lr = lr
         self.weight_decay = weight_decay
         self.batch_size = batch_size
@@ -50,6 +50,7 @@ class TabDDPMGenerator(TabularBaseGenerator):
         self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
     ):
         workspace = "tabddpm_workspace"
+        os.makedirs(workspace, exist_ok=True)
 
         if self.target_column in discrete_features:
             is_classification = True
@@ -60,7 +61,7 @@ class TabDDPMGenerator(TabularBaseGenerator):
 
         self.model = TabDDPMPlugin(
             is_classification=is_classification,
-            n_iter=self.n_iter,
+            n_iter=self.epochs,
             lr=self.lr,
             weight_decay=self.weight_decay,
             batch_size=self.batch_size,
@@ -73,7 +74,7 @@ class TabDDPMGenerator(TabularBaseGenerator):
             model_params=self.model_params,
             dim_embed=self.dim_embed,
             random_state=self.random_state,
-            workspace="workspace",
+            workspace=workspace,
         )
         kwargs = {
             "discrete_columns": [
@@ -85,4 +86,4 @@ class TabDDPMGenerator(TabularBaseGenerator):
         shutil.rmtree(workspace)
 
     def _generate_data(self, n: int):
-        return self.model.generate(n)
+        return self.model.generate(n).dataframe()

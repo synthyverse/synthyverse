@@ -11,7 +11,7 @@ class UnmaskingTreesGenerator(TabularBaseGenerator):
         self,
         depth: int = 4,
         duplicate_K: int = 50,
-        clf_kwargs: dict = {},
+        xgboost_kwargs: dict = {},
         strategy: str = "kdiquantile",  # quantile, uniform, kmeans
         softmax_temp: float = 1,
         cast_float32: bool = True,
@@ -23,7 +23,7 @@ class UnmaskingTreesGenerator(TabularBaseGenerator):
         self.model_params = {
             "depth": depth,
             "duplicate_K": duplicate_K,
-            "clf_kwargs": clf_kwargs,
+            "xgboost_kwargs": xgboost_kwargs,
             "softmax_temp": softmax_temp,
             "cast_float32": cast_float32,
             "tabpfn": tabpfn,

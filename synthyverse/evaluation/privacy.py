@@ -1,115 +1,121 @@
 import pandas as pd
 import numpy as np
-from sklearn.metrics import pairwise_distances_argmin_min
-from sklearn.preprocessing import StandardScaler
-from scipy.stats import gaussian_kde
+from sklearn.preprocessing import StandardScaler, OneHotEncoder, MinMaxScaler
 from sklearn.decomposition import PCA
+from sklearn.neighbors import KernelDensity
+from sklearn.metrics import pairwise_distances_argmin_min
 
 from .utils import get_accuracy_metric
 
 
 class DCR:
-    """
-    Distance to Closest Record scores.
-    Indicates closeness of synthetic data to the training data, and an independent holdout set.
-    """
-
-    data_requirement = "train_and_test_preprocessed"
+    name = "dcr"
+    data_requirement = "train_and_test"
+    needs_discrete_features = True
 
     def __init__(
         self,
-        estimates: list = [
-            "mean",
-            0.01,
-            0.05,
-            0.1,
-            0.25,
-            0.5,
-        ],
-        batch_size: int = 16000,
+        discrete_features: list = [],
+        subsample_test_size: bool = True,
+        max_rows: int = 50000,
     ):
         super().__init__()
-        self.estimates = estimates
-        self.batch_size = batch_size
-
-    def _compute_min_distances_batch(
-        self, query_data: pd.DataFrame, reference_data: pd.DataFrame
-    ) -> np.ndarray:
-        """
-        Compute minimum distances between query_data and reference_data in batches.
-
-        Args:
-            query_data: DataFrame containing query points
-            reference_data: DataFrame containing reference points
-
-        Returns:
-            Array of minimum distances for each query point
-        """
-        if self.batch_size is None:
-            # Use original method for small datasets or when batch_size is not specified
-            _, min_distances = pairwise_distances_argmin_min(
-                query_data, reference_data, metric="euclidean"
-            )
-            return min_distances
-
-        min_distances = []
-        n_query = len(query_data)
-
-        for i in range(0, n_query, self.batch_size):
-            end_idx = min(i + self.batch_size, n_query)
-            batch_query = query_data.iloc[i:end_idx]
-
-            _, batch_min_distances = pairwise_distances_argmin_min(
-                batch_query, reference_data, metric="euclidean"
-            )
-            min_distances.extend(batch_min_distances)
-
-        return np.array(min_distances)
+        self.discrete_features = discrete_features
+        self.subsample_test_size = subsample_test_size
+        self.max_rows = max_rows
 
     def evaluate(self, train: pd.DataFrame, test: pd.DataFrame, sd: pd.DataFrame):
+        # compare training set to same size synthetic set
+        numerical_features = [
+            col for col in train.columns if col not in self.discrete_features
+        ]
 
-        sd = sd[: len(train)]
+        assert len(test) <= len(
+            train
+        ), "Test set must be smaller than or equal to train size to compute DCR"
 
-        # Use batch processing if batch_size is specified
-        min_distances_syn = self._compute_min_distances_batch(sd, train)
-        min_distances_test = self._compute_min_distances_batch(test, train)
+        # scale the data to fixed range
+        ohe = OneHotEncoder(sparse_output=False)
+        ohe.fit(
+            pd.concat(
+                [
+                    train[self.discrete_features],
+                    test[self.discrete_features],
+                    sd[self.discrete_features],
+                ],
+                axis=0,
+            )
+        )
+        scaler = MinMaxScaler()
+        scaler.fit(train[numerical_features])
+        data = {}
+        for df, name in zip([train, test, sd[: len(train)]], ["train", "test", "syn"]):
+            cat = ohe.transform(df[self.discrete_features])
+            cat = cat / 2  # scaling for Gower distance
+            num = scaler.transform(df[numerical_features])
+            data[name] = np.concatenate((cat, num), axis=1)
 
-        dictionary = {}
+        # subsample the dataset to either max rows or test size
+        num_rows_subsample = (
+            min(len(data["test"]), self.max_rows)
+            if self.subsample_test_size
+            else self.max_rows
+        )
+        num_rows_subsample = min(num_rows_subsample, len(data["train"]))
+        num_iterations = int(np.ceil(len(data["train"]) / num_rows_subsample))
+        scores = []
+        closer_to_train = []
+        closer_to_test = []
 
-        for estimate in self.estimates:
-            if estimate == "mean":
-                score_train = min_distances_syn.mean()
-                score_test = min_distances_test.mean()
-            else:
-                score_train = np.quantile(min_distances_syn, estimate)
-                score_test = np.quantile(min_distances_test, estimate)
-            dictionary.update(
-                {
-                    f"dcr.train.batch_size={self.batch_size}.{estimate}": float(
-                        score_train
-                    ),
-                    f"dcr.test.batch_size={self.batch_size}.{estimate}": float(
-                        score_test
-                    ),
-                }
+        def choose(x: np.ndarray, n: int) -> np.ndarray:
+            return x[np.random.choice(len(x), n, replace=False)]
+
+        for _ in range(num_iterations):
+            syn_curr = choose(data["syn"], num_rows_subsample)
+
+            _, d_s_tr = pairwise_distances_argmin_min(
+                syn_curr, choose(data["train"], num_rows_subsample), metric="cityblock"
+            )
+            # align test set size to never exceed subsampled set size
+            _, d_s_te = pairwise_distances_argmin_min(
+                syn_curr,
+                choose(data["test"], min(len(data["test"]), num_rows_subsample)),
+                metric="cityblock",
             )
 
-        return dictionary
+            closer_to_train_ = np.mean(d_s_tr < d_s_te)
+            closer_to_test_ = 1 - closer_to_train_
+            closer_to_train.append(closer_to_train_)
+            closer_to_test.append(closer_to_test_)
+            score = min(1, closer_to_test_ * 2)
+            scores.append(score)
+        return {
+            "dcr.score": np.mean(scores),
+            "dcr.closer_to_train": np.mean(closer_to_train),
+            "dcr.closer_to_test": np.mean(closer_to_test),
+        }
 
 
 class DOMIAS:
-    data_requirement = "train_and_test_preprocessed"
+    name = "domias"
+    data_requirement = "train_and_test"
+    needs_discrete_features = True
+    needs_random_state = True
 
     def __init__(
         self,
+        discrete_features: list = [],
         ref_prop: float = 0.5,
         member_prop: float = 1.0,
-        n_components: int = 0.95,
+        n_components: (
+            int | float
+        ) = 0.95,  # float in (0,1] = variance target; int = exact components
         random_state: int = 0,
         metric: str = "roc_auc",
         predict_top: float = 0.5,
     ):
         super().__init__()
+        self.discrete_features = discrete_features
         self.ref_prop = ref_prop
         self.member_prop = member_prop
         self.n_components = n_components
@@ -123,69 +129,134 @@ class DOMIAS:
         test: pd.DataFrame,
         syn: pd.DataFrame,
     ):
-        """
-        Computes DOMIAS membership inference attack accuracy (AUROC).
-        Estimates density through Gaussian KDE after dimensionality reduction.
-        Code based on Synthcity library.
+        numerical_features = [
+            col for col in train.columns if col not in self.discrete_features
+        ]
 
-        ref_prop: proportion of test set used as reference set for computing RD density.
-        n_components: number of dimensions to retain after reduction.
-        """
+        # ----- One-hot (fit on union to fix category spaces) -----
+        onehot_encoder = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
+        onehot_encoder.fit(
+            pd.concat(
+                [
+                    train[self.discrete_features],
+                    test[self.discrete_features],
+                    syn[self.discrete_features],
+                ],
+                axis=0,
+                ignore_index=True,
+            )
+        )
 
-        members = train[: int(len(train) * self.member_prop)]
-        ref_size = int(self.ref_prop * len(test))
-        reference_set, non_members = test[:ref_size], test[ref_size:]
+        def encode(df: pd.DataFrame) -> np.ndarray:
+            if self.discrete_features:
+                oh = onehot_encoder.transform(df[self.discrete_features])
+                if numerical_features:
+                    X = np.concatenate((df[numerical_features].to_numpy(), oh), axis=1)
+                else:
+                    X = oh
+            else:
+                X = df[numerical_features].to_numpy()
+            return X
 
-        X_test = np.concatenate((members.to_numpy(), non_members.to_numpy()))
+        x_train = encode(train)
+        x_test = encode(test)
+        x_syn = encode(syn)
+
+        # ----- Split members / reference / non-members -----
+        n_train = len(x_train)
+        n_test = len(x_test)
+
+        members = x_train[: int(n_train * self.member_prop)]
+        ref_size = int(self.ref_prop * n_test)
+        reference_set_raw = x_test[:ref_size]
+        non_members = x_test[ref_size:]
+
+        X_test_raw = np.concatenate((members, non_members), axis=0)
         Y_test = np.concatenate(
-            [np.ones(members.shape[0]), np.zeros(non_members.shape[0])]
+            [np.ones(len(members)), np.zeros(len(non_members))]
         ).astype(bool)
 
-        embedder = PCA(n_components=self.n_components, random_state=self.random_state)
+        # ----- PCA fit on syn + reference ONLY (no leakage from X_test_raw) -----
+        fit_mat = np.concatenate((x_syn, reference_set_raw), axis=0)
+        pca_full = PCA(svd_solver="full", random_state=self.random_state).fit(fit_mat)
 
-        # fit embedder on syn and reference to avoid leakage of test data which would inflate separability
-        all_ = np.concatenate((syn.to_numpy(), reference_set.to_numpy()))
-        all_ = embedder.fit_transform(all_)
-        # project test data to same space
-        all_ = np.concatenate((all_, embedder.transform(X_test)))  # type: ignore
-        # standardize for gaussian KDE
-        all_ = StandardScaler().fit_transform(all_)
-        synth_set = all_[: len(syn)]
-        reference_set = all_[len(syn) : len(syn) + len(reference_set)]
-        X_test = all_[-len(X_test) :]
+        # target components by variance threshold or integer
+        if isinstance(self.n_components, float) and 0 < self.n_components <= 1.0:
+            csum = np.cumsum(pca_full.explained_variance_ratio_)
+            n_var_thresh = int(np.searchsorted(csum, self.n_components) + 1)
+        else:
+            n_var_thresh = int(self.n_components)
 
-        kde = gaussian_kde(synth_set.T)
-        P_G = kde(X_test.T)
-        kde = gaussian_kde(reference_set.T)
-        P_R = kde(X_test.T)
-        P_rel = P_G / (P_R + 1e-10)
-        P_rel = np.nan_to_num(P_rel)
+        # numerical intrinsic rank (drop near-zero eigenvalues)
+        lam = pca_full.explained_variance_
+        lam_max = float(lam.max()) if lam.size else 0.0
+        eps = np.finfo(np.float64).eps
+        rank_tol = eps * max(fit_mat.shape) * max(lam_max, 1.0)
+        intrinsic_rank = int((lam > rank_tol).sum())
 
+        # cap by sample counts of each KDE fit (need d <= n-1 for covariance)
+        n_syn = len(x_syn)
+        n_ref = len(reference_set_raw)
+        cap_by_counts = max(1, min(n_syn, n_ref) - 1)
+
+        n_comp = max(1, min(n_var_thresh, intrinsic_rank, cap_by_counts))
+
+        # project all relevant sets using top PCs
+        W = pca_full.components_[:n_comp]  # (n_comp, D)
+        mu = pca_full.mean_
+        synth_set = (x_syn - mu) @ W.T
+        reference_set = (reference_set_raw - mu) @ W.T
+        X_test = (X_test_raw - mu) @ W.T
+
+        # ----- Standardize AFTER PCA (fit on syn+ref only) -----
+        dr_scaler = StandardScaler(with_mean=True, with_std=True).fit(
+            np.vstack([synth_set, reference_set])
+        )
+        synth_set = dr_scaler.transform(synth_set)
+        reference_set = dr_scaler.transform(reference_set)
+        X_test = dr_scaler.transform(X_test)
+
+        # ----- KDEs with Scott's rule (isotropic) -----
+        kde_syn = KernelDensity(kernel="gaussian").fit(synth_set)
+        kde_ref = KernelDensity(kernel="gaussian").fit(reference_set)
+
+        logP_G = kde_syn.score_samples(X_test)
+        logP_R = kde_ref.score_samples(X_test)
+        logP_rel = logP_G - logP_R
+        # if you need linear ratio
+        P_rel = np.exp(logP_rel)
+
+        # ----- Metrics / thresholding (unchanged) -----
         if self.metric != "roc_auc":
             threshold = np.percentile(P_rel, 100 * (1 - self.predict_top))
-
             P_rel = P_rel > threshold
 
         metric_func, self.metric = get_accuracy_metric(self.metric)
         score = metric_func(Y_test, P_rel)
 
         domias = {}
-        docstring = f"domias.predict_top={self.predict_top}.ref_prop={self.ref_prop}.member_prop={self.member_prop}.n_components={self.n_components}"
+        docstring = (
+            f"domias.predict_top={self.predict_top}"
+            f".ref_prop={self.ref_prop}"
+            f".member_prop={self.member_prop}"
+            f".n_components={self.n_components}"
+        )
+
         if self.metric == "precision-recall":
             precision, recall = score
-            domias[docstring + f".metric=precision"] = precision
-            domias[docstring + f".metric=recall"] = recall
+            domias[docstring + ".metric=precision"] = precision
+            domias[docstring + ".metric=recall"] = recall
         else:
             domias[docstring + f".metric={self.metric}"] = score
 
         if self.metric != "roc_auc":
-            # add a naive score (i.e. predicting all as members)
-            P_rel = np.ones_like(P_rel)
-            naive_score = metric_func(Y_test, P_rel)
+            # naive baseline: predict all as members
+            P_rel_naive = np.ones_like(P_rel)
+            naive_score = metric_func(Y_test, P_rel_naive)
             if self.metric == "precision-recall":
                 naive_precision, naive_recall = naive_score
-                domias[docstring + f".metric=precision.naive"] = naive_precision
-                domias[docstring + f".metric=recall.naive"] = naive_recall
+                domias[docstring + ".metric=precision.naive"] = naive_precision
+                domias[docstring + ".metric=recall.naive"] = naive_recall
             else:
                 domias[docstring + f".metric={self.metric}.naive"] = naive_score
 

@@ -63,6 +63,27 @@ try:
 except ImportError:
     UnmaskingTreesGenerator = None
 
+try:
+    from .synthpop_generator import SynthpopGenerator
+except ImportError:
+    SynthpopGenerator = None
+
+try:
+    from .nrgboost_generator import NRGBoostGenerator
+except ImportError:
+    NRGBoostGenerator = None
+
+
+def get_generator(generator_name: str):
+
+    available_generators = [g for g in all_generators if g is not None]
+
+    generator_map = {g.name: g for g in available_generators}
+    if generator_name not in generator_map.keys():
+        raise ValueError(f"Generator {generator_name} not found")
+
+    return generator_map[generator_name]
+
 
 all_generators = [
     ARFGenerator,
@@ -78,4 +99,6 @@ all_generators = [
     PermutationGenerator,
     ForestDiffusionGenerator,
     UnmaskingTreesGenerator,
+    NRGBoostGenerator,
+    SynthpopGenerator,
 ]

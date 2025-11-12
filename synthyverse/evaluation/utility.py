@@ -1,34 +1,58 @@
 import pandas as pd
 import numpy as np
-from sklearn.metrics import roc_auc_score, r2_score
-from xgboost import XGBClassifier, XGBRegressor
-from sklearn.preprocessing import LabelEncoder
-from ..utils.xgb_utils import get_xgb_tree_method
+from sklearn.metrics import (
+    roc_auc_score,
+    r2_score,
+    f1_score,
+    accuracy_score,
+    root_mean_squared_error,
+)
+from .utils import xgboost_hyperparams
+import xgboost as xgb
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+import json
+import os
+import optuna
 
 
 class MLE:
     """
-    Machine Learning Efficacy from a XGB classifier.
-    AUC score for discrete target columns, R^2 score for continuous target columns.
+    Machine Learning Efficacy from an XGBoost classifier.
     """
 
+    name = "mle"
     data_requirement = "train_and_test"
     needs_discrete_features = True
     needs_target_column = True
     needs_random_state = True
+    needs_val_set = True
 
     def __init__(
         self,
+        X_val: pd.DataFrame = None,
         target_column: str = "target",
         discrete_features: list = [],
         random_state: int = 0,
-        train_set: str = "synthetic",
+        train_set: str = "synthetic",  # whether to compute TSTR or TRTS
+        model_params: dict = {"max_depth": 3, "tree_method": "hist"},
+        tune: bool = False,
+        tuning_trials: int = 32,
     ):
         super().__init__()
         self.random_state = random_state
+        self.tune = tune
+        self.tuning_trials = tuning_trials
+        self.X_val = X_val
         self.discrete_features = discrete_features
         self.target_column = target_column
         self.train_set = train_set
+        self.model_params = model_params
+        self.model_params.update(
+            {
+                "random_state": self.random_state,
+            }
+        )
+        self.prefix = f"mle.train-{self.train_set}-test-{'real' if self.train_set == 'synthetic' else 'synthetic'}"
 
     def evaluate(
         self,
@@ -37,81 +61,209 @@ class MLE:
         sd: pd.DataFrame,
     ):
 
-        y_tr = train[self.target_column]
-        y_te = test[self.target_column]
-        y_s = sd[self.target_column]
-        x_tr = train.drop(columns=[self.target_column])
-        x_te = test.drop(columns=[self.target_column])
-        x_s = sd.drop(columns=[self.target_column])
-
-        numerical_features = [
-            col
-            for col in train.columns
-            if col not in self.discrete_features and col != self.target_column
+        self.feature_types = [
+            "c" if col in self.discrete_features else "q"
+            for col in [x for x in train.columns if x != self.target_column]
         ]
-        discrete_features = [
-            col for col in self.discrete_features if col != self.target_column
-        ]
-
-        x_tr[numerical_features], x_te[numerical_features], x_s[numerical_features] = (
-            x_tr[numerical_features].astype(float),
-            x_te[numerical_features].astype(float),
-            x_s[numerical_features].astype(float),
-        )
-        x_tr[discrete_features], x_te[discrete_features], x_s[discrete_features] = (
-            x_tr[discrete_features].astype("category"),
-            x_te[discrete_features].astype("category"),
-            x_s[discrete_features].astype("category"),
-        )
+        self.feature_names = [x for x in train.columns if x != self.target_column]
 
         if self.target_column in self.discrete_features:
-            le = LabelEncoder()
-            le.fit(pd.concat((y_tr, y_te, y_s)))
-            y_tr = le.transform(y_tr)
-            y_te = le.transform(y_te)
-            y_s = le.transform(y_s)
-            model = XGBClassifier(
-                tree_method=get_xgb_tree_method(),
-                enable_categorical=True,
-                random_state=self.random_state,
-                max_depth=3,
+            self.objective = (
+                "multi:softprob"
+                if len(
+                    np.unique(
+                        pd.concat(
+                            (
+                                train[self.target_column],
+                                test[self.target_column],
+                                sd[self.target_column],
+                            )
+                        )
+                    )
+                )
+                > 2
+                else "binary:logistic"
+            )
+            self.label_encoder = LabelEncoder()
+            self.label_encoder.fit(
+                pd.concat(
+                    (
+                        train[self.target_column],
+                        test[self.target_column],
+                        sd[self.target_column],
+                    )
+                )
             )
         else:
-            model = XGBRegressor(
-                tree_method=get_xgb_tree_method(),
-                enable_categorical=True,
-                random_state=self.random_state,
-                max_depth=3,
+            self.objective = "reg:squarederror"
+            self.scaler = StandardScaler()
+            (
+                self.scaler.fit(
+                    pd.concat(
+                        (
+                            train[[self.target_column]],
+                            test[[self.target_column]],
+                            sd[[self.target_column]],
+                        )
+                    )
+                )
+                if self.X_val is None
+                else self.scaler.fit(
+                    pd.concat(
+                        (
+                            train[[self.target_column]],
+                            test[[self.target_column]],
+                            sd[[self.target_column]],
+                            self.X_val[[self.target_column]],
+                        )
+                    )
+                )
             )
 
-        if self.train_set == "synthetic":
-            model.fit(x_s[: len(x_tr)], y_s[: len(x_tr)])
-            score = self._get_score(y_te, x_te, model)
-        else:
-            model.fit(x_tr, y_tr)
-            score = self._get_score(y_s[-len(x_te) :], x_s[-len(x_te) :], model)
+        self.model_params.update({"objective": self.objective})
 
-        # also add trtr score
-        model.fit(x_tr, y_tr)
-        score_trtr = self._get_score(y_te, x_te, model)
-
-        return {
-            f"mle.train-{self.train_set}-test-{'real' if self.train_set == 'synthetic' else 'synthetic'}.{'auc' if self.target_column in self.discrete_features else 'r2'}": float(
-                score
-            ),
-            f"mle.train-real-test-real.{'auc' if self.target_column in self.discrete_features else 'r2'}": float(
-                score_trtr
-            ),
-        }
-
-    def _get_score(self, y_te, X_te, model):
-        if self.target_column in self.discrete_features:
-            preds = model.predict_proba(X_te)
-            if np.unique(y_te).shape[0] > 2:
-                score = roc_auc_score(y_te, preds, multi_class="ovr", average="micro")
+        if self.tune:
+            assert self.X_val is not None, "X_val must be provided when tune=True."
+            # try to load params from file - if it doesn't exist, we tune and save the params
+            param_file = "synthyverse_hyperparams_tuned/mle.json"
+            if os.path.exists(param_file):
+                with open(param_file, "r") as f:
+                    params = json.load(f)
             else:
-                score = roc_auc_score(y_te, preds[:, 1])
+                params = self._tune(train)  # tune on RD only
+                os.makedirs(os.path.dirname(param_file), exist_ok=True)
+                with open(param_file, "w") as f:
+                    json.dump(params, f)
+
+            return self._evaluate(train, test, sd, params)
         else:
-            preds = model.predict(X_te)
-            score = r2_score(y_te, preds)
-        return score
+            return self._evaluate(train, test, sd, self.model_params)
+
+    def _evaluate(
+        self,
+        train: pd.DataFrame,
+        test: pd.DataFrame,
+        sd: pd.DataFrame,
+        model_params: dict = None,
+    ):
+        if self.train_set == "synthetic":
+            scores = self._ml_experiment(sd[: len(train)], test, model_params)
+        else:
+            scores = self._ml_experiment(train, sd[-len(test) :], model_params)
+
+        outputs = {}
+        outputs.update({f"{self.prefix}.{k}": v for k, v in scores.items()})
+
+        scores = self._ml_experiment(train, test, model_params)
+        outputs.update({f"mle.train-real-test-real.{k}": v for k, v in scores.items()})
+
+        return outputs
+
+    def _ml_experiment(
+        self, train: pd.DataFrame, test: pd.DataFrame, model_params: dict = None
+    ):
+
+        y_tr = train[self.target_column].to_numpy(copy=False)
+        y_te = test[self.target_column].to_numpy(copy=False)
+        x_tr = train.drop(columns=[self.target_column]).to_numpy(copy=False)
+        x_te = test.drop(columns=[self.target_column]).to_numpy(copy=False)
+
+        if self.target_column in self.discrete_features:
+
+            y_tr = self.label_encoder.transform(y_tr)
+            y_te = self.label_encoder.transform(y_te)
+        else:
+            y_tr = self.scaler.transform(y_tr.reshape(-1, 1)).squeeze()
+            y_te = self.scaler.transform(y_te.reshape(-1, 1)).squeeze()
+
+        num_boost_round = (
+            model_params["n_estimators"]
+            if "n_estimators" in model_params.keys()
+            else 100
+        )
+
+        dmatrix = xgb.QuantileDMatrix(
+            data=x_tr,
+            label=y_tr,
+            feature_types=self.feature_types,
+            feature_names=self.feature_names,
+            enable_categorical=True,
+        )
+
+        model = xgb.train(
+            model_params,
+            dmatrix,
+            num_boost_round=num_boost_round,
+        )
+        dmatrix = xgb.QuantileDMatrix(
+            data=x_te,
+            feature_types=self.feature_types,
+            feature_names=self.feature_names,
+            enable_categorical=True,
+            ref=dmatrix,
+        )
+        preds = model.predict(
+            dmatrix,
+        )
+        scores = self.score_fn(y_te, preds)
+        return scores
+
+    def _tune(self, train: pd.DataFrame):
+
+        def objective(trial: optuna.Trial):
+            params = xgboost_hyperparams(trial)
+            params.update(
+                {"objective": self.objective, "random_state": self.random_state}
+            )
+
+            scores = self._ml_experiment(train, self.X_val, params)
+            return (
+                scores["auc"]
+                if self.target_column in self.discrete_features
+                else scores["r2"]
+            )
+
+        study = optuna.create_study(
+            sampler=optuna.samplers.TPESampler(seed=self.random_state),
+            direction="maximize",
+        )
+        study.optimize(
+            objective,
+            n_trials=self.tuning_trials,
+            show_progress_bar=True,
+        )
+
+        best = study.best_params.copy()
+        best.update(
+            {
+                "tree_method": "hist",
+                "random_state": self.random_state,
+                "objective": self.objective,
+            }
+        )
+
+        return best
+
+    def score_fn(self, y, preds):
+        if self.target_column in self.discrete_features:
+            return {
+                "auc": roc_auc_score(y, preds, average="micro", multi_class="ovr"),
+                "f1": f1_score(
+                    y,
+                    (
+                        np.argmax(preds, axis=1)
+                        if self.objective == "multi:softprob"
+                        else (preds > 0.5).astype(int)
+                    ),
+                ),
+                "accuracy": accuracy_score(
+                    y,
+                    (
+                        np.argmax(preds, axis=1)
+                        if self.objective == "multi:softprob"
+                        else (preds > 0.5).astype(int)
+                    ),
+                ),
+            }
+        else:
+            return {"r2": r2_score(y, preds), "rmse": root_mean_squared_error(y, preds)}
