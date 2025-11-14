@@ -7,6 +7,36 @@ from ..base import BaseImputer
 
 
 class ICEImputer(BaseImputer):
+    """Imputation by Chained Equations (ICE).
+
+    Uses scikit-learn's IterativeImputer.
+
+    Args:
+        max_iter (int): Maximum number of imputation rounds. Default: 10.
+        sample_posterior (bool): Whether to sample from the posterior distribution
+            for imputation. Default: True.
+        random_state (int): Random seed for reproducibility. Default: 0.
+        **kwargs: Additional arguments passed to BaseImputer.
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.imputers import ICEImputer
+        >>>
+        >>> # Load data with missing values
+        >>> X = pd.read_csv("data_with_missing.csv")
+        >>> discrete_features = ["category_col"]
+        >>>
+        >>> # Create and fit imputer
+        >>> imputer = ICEImputer(
+        ...     max_iter=10,
+        ...     sample_posterior=True,
+        ...     random_state=42
+        ... )
+        >>> imputer.fit(X, discrete_features)
+        >>>
+        >>> # Transform data
+        >>> X_imputed = imputer.transform(X)
+    """
 
     def __init__(
         self,

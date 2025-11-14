@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from typing import Union
 from sklearn.preprocessing import StandardScaler, OneHotEncoder, MinMaxScaler
 from sklearn.decomposition import PCA
 from sklearn.neighbors import KernelDensity
@@ -9,6 +10,37 @@ from .utils import get_accuracy_metric
 
 
 class DCR:
+    """Distance to Closest Record (DCR) privacy metric.
+
+    Measures whether synthetic records are more often closer (by Gower distance) to a training record than an independent test record.
+    Low scores indicate risk that synthetic data overfits to the training set, and therefore privacy risk.
+
+    Args:
+        discrete_features (list): List of discrete/categorical feature names. Default: [].
+        subsample_test_size (bool): Whether to subsample the training set and synthetic set to the test set size. Prevents biasing DCR due to different sample sizes. If used, multiple iterations of the DCR score are computed and aggregated, to ensure the metric is based on all training and synthetic records. Default: True.
+        max_rows (int): Maximum number of rows to use for computation to limit evaluation time. Default: 50000.
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.evaluation import DCR
+        >>>
+        >>> # Prepare data
+        >>> X_train = pd.DataFrame(...)
+        >>> X_test = pd.DataFrame(...)
+        >>> X_syn = pd.DataFrame(...)
+        >>> discrete_features = ["category_col"]
+        >>>
+        >>> # Create metric
+        >>> metric = DCR(
+        ...     discrete_features=discrete_features,
+        ...     max_rows=50000,
+        ...     subsample_test_size=True
+        ... )
+        >>>
+        >>> # Evaluate
+        >>> results = metric.evaluate(X_train, X_test, X_syn)
+    """
+
     name = "dcr"
     data_requirement = "train_and_test"
     needs_discrete_features = True
@@ -25,6 +57,24 @@ class DCR:
         self.max_rows = max_rows
 
     def evaluate(self, train: pd.DataFrame, test: pd.DataFrame, sd: pd.DataFrame):
+        """Evaluate synthetic data privacy using DCR metric.
+
+        DCR score is aggregated as min(1, dcr.closer_to_test * 2) to ensure higher scores indicate better privacy.
+
+        Args:
+            train: Training data as a pandas DataFrame.
+            test: Test data as a pandas DataFrame.
+            sd: Synthetic data as a pandas DataFrame.
+
+        Returns:
+            dict: Dictionary with keys:
+                - "dcr.score": DCR score
+                - "dcr.closer_to_train": Proportion closer to train
+                - "dcr.closer_to_test": Proportion closer to test
+
+        Raises:
+            AssertionError: If test set is larger than train set.
+        """
         # compare training set to same size synthetic set
         numerical_features = [
             col for col in train.columns if col not in self.discrete_features
@@ -97,6 +147,48 @@ class DCR:
 
 
 class DOMIAS:
+    """DOMIAS membership inference attack metric.
+
+    Measures vulnerability to membership inference attacks using density-based
+    methods. Lower scores indicate better privacy. Uses KDE on PCA-transformed data for density estimation.
+
+    For threshold-based metrics we also include a naive baseline, i.e., all records are predicted as members.
+
+    Based on the paper "Membership inference attacks against synthetic data through overfitting detection" by van Breugel et al. (2023).
+
+    Args:
+        discrete_features (list): List of discrete/categorical feature names. Default: [].
+        ref_prop (float): Proportion of test set to use as reference for density estimation. Default: 0.5.
+        member_prop (float): Proportion of train set to use as members. Default: 1.0.
+        n_components (Union[int, float]): Number of PCA components. Float in (0,1] = variance target,
+            int = exact components. Default: 0.95.
+        random_state (int): Random seed for reproducibility. Default: 0.
+        metric (str): Evaluation metric ("roc_auc", "f1", "accuracy", "precision-recall", "etc.). Default: "roc_auc".
+        predict_top (float): Proportion of top predictions to consider as members. Can be lowered to increase attack precision at the cost of recall. Only relevant for threshold-based metrics, e.g., "precision-recall". Default: 0.5.
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.evaluation import DOMIAS
+        >>>
+        >>> # Prepare data
+        >>> X_train = pd.DataFrame(...)
+        >>> X_test = pd.DataFrame(...)
+        >>> X_syn = pd.DataFrame(...)
+        >>> discrete_features = ["category_col"]
+        >>>
+        >>> # Create metric
+        >>> metric = DOMIAS(
+        ...     discrete_features=discrete_features,
+        ...     ref_prop=0.5,
+        ...     n_components=0.95,
+        ...     metric="roc_auc",
+        ...     random_state=42
+        ... )
+        >>>
+        >>> # Evaluate
+        >>> results = metric.evaluate(X_train, X_test, X_syn)
+    """
+
     name = "domias"
     data_requirement = "train_and_test"
     needs_discrete_features = True
@@ -129,6 +221,17 @@ class DOMIAS:
         test: pd.DataFrame,
         syn: pd.DataFrame,
     ):
+        """Evaluate synthetic data privacy using DOMIAS membership inference attack.
+
+        Args:
+            train: Training data as a pandas DataFrame.
+            test: Test data as a pandas DataFrame.
+            syn: Synthetic data as a pandas DataFrame.
+
+        Returns:
+            dict: Dictionary with DOMIAS metric scores. Keys include metric name with
+                configuration parameters in the name.
+        """
         numerical_features = [
             col for col in train.columns if col not in self.discrete_features
         ]

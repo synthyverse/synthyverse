@@ -12,6 +12,62 @@ from .tabsyn_dir.sample import sample_tabsyn
 
 
 class TabSynGenerator(TabularBaseGenerator):
+    """TabSyn is a latent diffusion model for tabular synthetic data.
+
+    TabSyn trains a VAE to learn embeddings, then trains a diffusion model on the embeddings.
+    Synthetic embeddings sampled from the diffusion model are decoded by the VAE to generate synthetic data.
+    We use the implementation from the original paper. We adapt the code to allow it to follow the synthyverse API.
+    We also provide the following fixes:
+    i) early stopping the VAE based on validation loss instead of test loss
+    ii) early stopping the VAE based on full reconstruction loss instead of only categorical cross-entropy
+    Paper: "Mixed-type tabular data synthesis with score-based diffusion in latent space" by Zhang et al. (2023).
+
+    Args:
+        target_column (str): Name of the target column.
+        vae_lr (float): Learning rate for VAE training. Default: 1e-3.
+        vae_wd (float): Weight decay for VAE training. Default: 0.
+        vae_d_token (int): Token dimension for VAE. Default: 4.
+        vae_token_bias (bool): Whether to use token bias in VAE. Default: True.
+        vae_n_head (int): Number of attention heads in VAE. Default: 1.
+        vae_factor (int): Factor for VAE architecture. Default: 32.
+        vae_num_layers (int): Number of layers in VAE. Default: 2.
+        vae_batch_size (int): Batch size for VAE training. Default: 4096.
+        vae_num_epochs (int): Number of epochs for VAE training. Default: 4000.
+        vae_min_beta (float): Minimum beta for VAE. Default: 1e-5.
+        vae_max_beta (float): Maximum beta for VAE. Default: 1e-2.
+        vae_lambda (float): Lambda parameter for VAE. Default: 0.7.
+        vae_embeddings_save_dir (str): Directory to save VAE embeddings. Default: "./tabsyn_embeddings".
+        diffusion_batch_size (int): Batch size for diffusion training. Default: 4096.
+        diffusion_num_epochs (int): Number of epochs for diffusion training. Default: 10001.
+        diffusion_dim_t (int): Dimension for diffusion time embedding. Default: 1024.
+        diffusion_lr (float): Learning rate for diffusion training. Default: 1e-3.
+        diffusion_wd (float): Weight decay for diffusion training. Default: 0.
+        diffusion_patience (int): Patience for early stopping in diffusion. Default: 500.
+        num_workers (int): Number of workers for PyTorch DataLoader (0 recommended on Windows). Default: 0.
+        random_state (int): Random seed for reproducibility. Default: 0.
+        **kwargs: Additional arguments passed to TabularBaseGenerator.
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.generators import TabSynGenerator
+        >>>
+        >>> # Load data
+        >>> X = pd.read_csv("data.csv")
+        >>> discrete_features = ["category_col"]
+        >>>
+        >>> # Create generator (requires target column)
+        >>> generator = TabSynGenerator(
+        ...     target_column="target",
+        ...     vae_num_epochs=4000,
+        ...     diffusion_num_epochs=10001,
+        ...     random_state=42
+        ... )
+        >>>
+        >>> # Fit and generate
+        >>> generator.fit(X, discrete_features, X_val=X_val)
+        >>> X_syn = generator.generate(1000)
+    """
+
     name = "tabsyn"
     needs_target_column = True
     needs_validation_set = True
@@ -173,7 +229,6 @@ class TabSynGenerator(TabularBaseGenerator):
         self.metadata["token_dim"] = self.token_dim
 
     def _generate_data(self, n: int):
-
         syn = sample_tabsyn(
             n=n,
             num_inverse=self.num_inverse,

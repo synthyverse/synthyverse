@@ -1,9 +1,9 @@
 try:
     from .synthesis import TabularSynthesisBenchmark
-except ImportError:
+except:
     TabularSynthesisBenchmark = None
 
 try:
     from .imputation import TabularImputationBenchmark
-except ImportError:
+except:
     TabularImputationBenchmark = None

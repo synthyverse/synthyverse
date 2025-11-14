@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 import os
 
-version = "0.1.2"
+version = "0.1.3"
 
 
 def read_requirements(filename):
@@ -32,7 +32,7 @@ extras = {
     "forestdiffusion": base_requirements
     + read_requirements("generators/forestdiffusion.txt"),
     "unmaskingtrees": base_requirements
-    + read_requirements("generators/unmaskingtrees.txt")
+    + read_requirements("generators/unmaskingtrees.txt"),
 }
 
 # Create a "full" extra that includes all extras

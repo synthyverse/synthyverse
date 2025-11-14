@@ -6,6 +6,55 @@ from sklearn.preprocessing import OrdinalEncoder
 
 
 class ForestDiffusionGenerator(TabularBaseGenerator):
+    """Forest Diffusion.
+
+    Diffusion model leveraging XGBoost models to estimate the score function.
+    Uses the ForestDiffusion pypi package implementation. Can be a costly method for large datasets.
+    Paper: "Generating and imputing tabular data via diffusion and flow-based gradient-boosted trees" by Jolicoeur-Martineau et al. (2024).
+
+    Args:
+        target_column (str): Name of the target column.
+        duplicate_K (int): Number of duplicates for each sample. Default: 100.
+        noise_level (int): Noise level for diffusion. Default: 50.
+        diffusion_type (str): Type of diffusion. Options: "flow", "vp". Default: "flow".
+        n_jobs (int): Number of parallel jobs (-1 for all cores). Default: -1.
+        max_depth (int): Maximum depth of trees. Default: 7.
+        n_estimators (int): Number of tree estimators. Default: 100.
+        eta (float): Learning rate. Default: 0.3.
+        tree_method (str): Tree construction method. Options: "hist", "approx", "exact". Default: "hist".
+        reg_alpha (float): L1 regularization. Default: 0.0.
+        reg_lambda (float): L2 regularization. Default: 0.0.
+        subsample (float): Subsample ratio. Default: 1.0.
+        num_leaves (int): Number of leaves in trees. Default: 31.
+        eps (float): Epsilon parameter. Default: 1e-3.
+        beta_min (float): Minimum beta for diffusion. Default: 0.1.
+        beta_max (float): Maximum beta for diffusion. Default: 8.
+        n_z (int): Dimension of latent space. Default: 10.
+        gpu_hist (bool): Whether to use GPU histogram. Default: False.
+        random_state (int): Random seed for reproducibility. Default: 0.
+        **kwargs: Additional arguments passed to TabularBaseGenerator.
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.generators import ForestDiffusionGenerator
+        >>>
+        >>> # Load data
+        >>> X = pd.read_csv("data.csv")
+        >>> discrete_features = ["category_col"]
+        >>>
+        >>> # Create generator (requires target column)
+        >>> generator = ForestDiffusionGenerator(
+        ...     target_column="target",
+        ...     diffusion_type="flow",
+        ...     n_jobs=-1,
+        ...     random_state=42
+        ... )
+        >>>
+        >>> # Fit and generate
+        >>> generator.fit(X, discrete_features)
+        >>> X_syn = generator.generate(1000)
+    """
+
     name = "forestdiffusion"
     needs_target_column = True
 
@@ -30,7 +79,6 @@ class ForestDiffusionGenerator(TabularBaseGenerator):
         n_z: int = 10,
         gpu_hist: bool = False,
         random_state: int = 0,
-        max_rows_in_memory: int = 100_000,
         **kwargs,
     ):
         super().__init__(random_state=random_state, **kwargs)
@@ -53,15 +101,10 @@ class ForestDiffusionGenerator(TabularBaseGenerator):
         self.duplicate_K = duplicate_K
         self.diffusion_type = diffusion_type
         self.noise_level = noise_level
-        self.max_rows_in_memory = max_rows_in_memory
 
     def _fit_model(
         self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
     ):
-        # dynamically set n_batch based on max_rows_in_memory
-        # >= 1 so always use data iterator
-        self.n_batch = int(np.ceil(X.shape[0] / self.max_rows_in_memory))
-
         self.ori_col_order = X.columns
         self.discrete_features = discrete_features.copy()
         self.X = X.copy()

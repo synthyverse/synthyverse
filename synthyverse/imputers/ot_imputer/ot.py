@@ -10,6 +10,47 @@ from ..base import BaseImputer
 
 
 class OTImputer(BaseImputer):
+    """Optimal Transport (OT) imputer.
+
+    Using implementation from https://github.com/SamsungSAILMontreal/ForestDiffusion/blob/main/imputers.py
+
+    Args:
+        lr (float): Learning rate for optimization. Default: 1e-2.
+        opt (type): Optimizer class to use (default: RMSprop). Default: torch.optim.RMSprop.
+        niter (int): Number of optimization iterations. Default: 3000.
+        batchsize (int): Batch size for optimization. Default: 128.
+        n_pairs (int): Number of pairs to use per iteration. Default: 1.
+        noise (float): Initial noise level for missing values. Default: 0.1.
+        scaling (float): Scaling parameter for Sinkhorn algorithm. Default: 0.9.
+        epsilon_params (dict): Dictionary with parameters for epsilon selection:
+            - quant: Quantile for epsilon selection (default: 0.5)
+            - mult: Multiplier for epsilon (default: 0.05)
+            - max_points: Maximum points for epsilon estimation (default: 10000)
+        Default: {"quant": 0.5, "mult": 0.05, "max_points": 10000}.
+        random_state (int): Random seed for reproducibility. Default: 0.
+        **kwargs: Additional arguments passed to BaseImputer.
+
+    Example:
+        >>> import pandas as pd
+        >>> import torch
+        >>> from synthyverse.imputers import OTImputer
+        >>>
+        >>> # Load data with missing values
+        >>> X = pd.read_csv("data_with_missing.csv")
+        >>> discrete_features = ["category_col"]
+        >>>
+        >>> # Create and fit imputer
+        >>> imputer = OTImputer(
+        ...     lr=1e-2,
+        ...     niter=3000,
+        ...     batchsize=128,
+        ...     random_state=42
+        ... )
+        >>> imputer.fit(X, discrete_features)
+        >>>
+        >>> # Transform data
+        >>> X_imputed = imputer.transform(X)
+    """
 
     def __init__(
         self,
@@ -44,7 +85,6 @@ class OTImputer(BaseImputer):
         print("OT is fit at inference-time only...")
 
     def _transform(self, X: pd.DataFrame):
-
         # OT expects numerically encoded categoricals
         encoder = OrdinalEncoder()
         X[self.discrete_features] = encoder.fit_transform(X[self.discrete_features])
@@ -122,29 +162,21 @@ class OTImputer(BaseImputer):
         return v.sum(*args, **kwargs) / (~is_nan).float().sum(*args, **kwargs)
 
     def pick_epsilon(self, X, quant=0.5, mult=0.05, max_points=2000):
-        """
-            Returns a quantile (times a multiplier) of the halved pairwise squared distances in X.
-            Used to select a regularization parameter for Sinkhorn distances.
+        """Select epsilon parameter for Sinkhorn distances.
 
-        Parameters
-        ----------
-        X : torch.DoubleTensor or torch.cuda.DoubleTensor, shape (n, d)
-            Input data on which distances will be computed.
+        Returns a quantile (times a multiplier) of the halved pairwise squared
+        distances in X. Used to select a regularization parameter for Sinkhorn distances.
 
-        quant : float, default = 0.5
-            Quantile to return (default is median).
+        Args:
+            X: Input data tensor on which distances will be computed.
+            quant: Quantile to return (default: 0.5, median).
+            mult: Multiplier to apply to the quantiles.
+            max_points: If the length of X is larger than max_points, estimate
+                the quantile on a random subset of size max_points to avoid
+                memory overloads.
 
-        mult : float, default = 0.05
-            Mutiplier to apply to the quantiles.
-
-        max_points : int, default = 2000
-            If the length of X is larger than max_points, estimate the quantile on a random subset of size max_points to
-            avoid memory overloads.
-
-        Returns
-        -------
-            epsilon: float
-
+        Returns:
+            float: Epsilon value for Sinkhorn regularization.
         """
         means = self.nanmean(X, 0)
         X_ = X.clone()
@@ -159,24 +191,15 @@ class OTImputer(BaseImputer):
         return self.quantile(dists, quant, 0).item() * mult
 
     def quantile(self, X, q, dim=None):
-        """
-        Returns the q-th quantile.
+        """Return the q-th quantile.
 
-        Parameters
-        ----------
-        X : torch.DoubleTensor or torch.cuda.DoubleTensor, shape (n, d)
-            Input data.
+        Args:
+            X: Input data tensor.
+            q: Quantile level (starting from lower values).
+            dim: Dimension along which to compute quantiles. If None, the tensor
+                is flattened and one value is returned.
 
-        q : float
-            Quantile level (starting from lower values).
-
-        dim : int or None, default = None
-            Dimension allong which to compute quantiles. If None, the tensor is flattened and one value is returned.
-
-
-        Returns
-        -------
-            quantiles : torch.DoubleTensor
-
+        Returns:
+            torch.DoubleTensor: Quantile values.
         """
         return X.kthvalue(int(q * len(X)), dim=dim)[0]

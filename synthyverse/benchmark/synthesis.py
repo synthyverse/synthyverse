@@ -13,6 +13,47 @@ from ..utils.reproducibility import set_seed
 
 
 class TabularSynthesisBenchmark:
+    """Benchmark for evaluating tabular synthetic data generators.
+
+    Args:
+        generator_name (str): Name of the generator to benchmark. Default: "arf".
+        generator_params (dict): Dictionary of generator-specific parameters. Default: {}.
+        n_random_splits (int): Number of random train/test splits to evaluate. Default: 1.
+        n_inits (int): Number of generator training initializations per split. Default: 1.
+        n_generated_datasets (int): Number of synthetic datasets to generate per initialization (with varying sampling seeds). Default: 1.
+        metrics (Union[list, dict]): List or dictionary of metrics to evaluate. Default: ["classifier_test", "mle", "dcr"].
+        test_size (float): Proportion of data to use for testing (0.0 to 1.0). Default: 0.2.
+        val_size (float): Proportion of data to use for validation (0.0 to 1.0). Note that val_size+test_size must be < 1.0. Default: 0.1.
+        missing_imputation_method (str): Method for handling missing values. "drop" removes missing rows, other options perform imputation: "random", "mean", "median", "mode". Default: "drop".
+        retain_missingness (bool): Whether to retain missing values in generated datasets. Default: False.
+        encode_mixed_numerical_features (bool): Whether to encode mixed numerical-discrete features by one hot encoding discrete values and randomly imputing numerical values. Default: False.
+        quantile_transform_numericals (bool): Whether to apply quantile transformation to numerical features to normalize them. Default: False.
+        constraints (Union[str, list]): List of constraint strings which should hold in the generated data. Note that the constraints should already hold in the training datasets. Default: [].
+        max_syn_size (int): Maximum size of synthetic datasets to generate. Can be used to limit evaluation time. Default: 1000000000.
+        workspace (str): Directory for storing intermediate files. Default: "workspace".
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.benchmark import TabularSynthesisBenchmark
+        >>>
+        >>> # Load your data
+        >>> X = pd.read_csv("data.csv")
+        >>> discrete_features = ["category_col"]
+        >>> target_column = "target"
+        >>>
+        >>> # Create benchmark
+        >>> benchmark = TabularSynthesisBenchmark(
+        ...     generator_name="arf",
+        ...     generator_params={"num_trees": 50},
+        ...     metrics=["classifier_test", "mle", "dcr"],
+        ...     n_random_splits=5,
+        ...     n_inits=3
+        ... )
+        >>>
+        >>> # Run benchmark
+        >>> results = benchmark.run(X, target_column, discrete_features)
+    """
+
     def __init__(
         self,
         generator_name: str = "arf",
@@ -20,7 +61,7 @@ class TabularSynthesisBenchmark:
         n_random_splits: int = 1,
         n_inits: int = 1,
         n_generated_datasets: int = 1,
-        metrics: list = ["classifier_test", "mle", "dcr"],
+        metrics: Union[list, dict] = ["classifier_test", "mle", "dcr"],
         test_size: float = 0.2,
         val_size: float = 0.1,
         missing_imputation_method: str = "drop",
@@ -68,6 +109,17 @@ class TabularSynthesisBenchmark:
         discrete_columns: list,
         result_format: str = "frame",  # "frame" or "dict"
     ):
+        """Run the synthesis benchmark.
+
+        Args:
+            X: Full dataset as a pandas DataFrame.
+            target_column: Name of the target column.
+            discrete_columns: List of discrete/categorical column names.
+            result_format: Format of results ("frame" for DataFrame, "dict" for nested dict).
+
+        Returns:
+            pd.DataFrame or dict: Benchmark results in the specified format.
+        """
         os.makedirs(self.workspace, exist_ok=True)
 
         results = {}
@@ -192,9 +244,14 @@ class TabularSynthesisBenchmark:
         return results
 
     def clean_directory(self, path: str, remove_self: bool = False) -> None:
-        """
-        Remove all files and subdirectories inside a directory.
-        If remove_self=True, remove the directory itself as well.
+        """Remove all files and subdirectories inside a directory.
+
+        Args:
+            path: Path to the directory to clean.
+            remove_self: If True, remove the directory itself as well.
+
+        Raises:
+            FileNotFoundError: If the directory does not exist.
         """
         if not os.path.exists(path):
             raise FileNotFoundError(f"Directory '{path}' does not exist.")

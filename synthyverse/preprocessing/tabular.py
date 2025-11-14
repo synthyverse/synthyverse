@@ -11,9 +11,40 @@ from sklearn.preprocessing import (
 
 
 class TabularPreprocessor:
-    """
-    Preprocessing class for tabular data. Mainly geared towards preprocessing for tabularsynthetic data generation.
-    However, many of the class methods are general and can be used for other purposes (e.g. ML tasks and data cleaning).
+    """Preprocessing class for tabular data.
+
+    Mainly geared towards preprocessing for tabular synthetic data generation.
+    This class is already implemented within the synthyverse API, so you should not need to use it directly.
+    However, many of the class methods are general and can be used for other purposes (e.g., ML tasks and data cleaning), if you so desire.
+
+
+    Args:
+        discrete_features (list): List of column names that are discrete/categorical. Default: [].
+        random_state (int): Random seed for reproducibility. Default: 0.
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.preprocessing import TabularPreprocessor
+        >>>
+        >>> # Load data
+        >>> X = pd.read_csv("data.csv")
+        >>> discrete_features = ["category_col"]
+        >>>
+        >>> # Create preprocessor
+        >>> preprocessor = TabularPreprocessor(
+        ...     discrete_features=discrete_features,
+        ...     random_state=42
+        ... )
+        >>>
+        >>> # Execute preprocessing pipeline
+        >>> X_prep = preprocessor.pipeline(
+        ...     X,
+        ...     missing_imputation_method="mean",
+        ...     quantile_transform_numericals=True
+        ... )
+        >>>
+        >>> # After generation, inverse transform
+        >>> X_syn_original = preprocessor.inverse_pipeline(X_syn_prep)
     """
 
     def __init__(self, discrete_features: list = [], random_state: int = 0):
@@ -30,14 +61,31 @@ class TabularPreprocessor:
         quantile_transform_numericals: bool = False,
         constraints: list = [],
     ):
-        """
-        Executes a preprocessing pipeline for tabular synthetic data generation. Operations include:
-        - imputing missing values - most generative models cannot natively handle missing values
-        - encoding mixed numerical features - most generative models cannot natively handle discontinuous numerical distributions
-        - quantile transforming numerical features - most generative models work better with normally distributed numerical features
-        - applying constraints - through pre- and postprocessing we can enforce intercolumn constraints.
-        This method also retains information on the original dataset, e.g., numerical precision and data types.
-        This way the inverse pipeline can be executed to ensure same format synthetic data post-generation.
+        """Execute a preprocessing pipeline for tabular synthetic data generation.
+
+        Operations include:
+        -> Imputing or dropping missing values (most generative models cannot natively handle missing values)
+        -> Encoding mixed numerical features (most generative models cannot natively handle discontinuous numerical distributions)
+        -> Quantile transforming numerical features (most generative models work better with normally distributed numerical features)
+        -> Applying constraints (through pre- and postprocessing we can enforce intercolumn constraints)
+
+        This method also retains information on the original dataset, e.g., numerical precision
+        and data types. This way the inverse pipeline can be executed to ensure same format
+        synthetic data post-generation.
+
+        Args:
+            X: Input data as a pandas DataFrame.
+            missing_imputation_method: Method for handling missing values.
+                Options: "drop", "random", "mean", "median", "mode".
+            retain_missingness: If True, add indicator columns for missing values.
+            encode_mixed_numerical_features: If True, encode mixed numerical-categorical
+                features (e.g., zero-inflated features).
+            quantile_transform_numericals: If True, apply quantile transformation to
+                numerical features.
+            constraints: List of constraint strings to enforce.
+
+        Returns:
+            pd.DataFrame: Preprocessed data ready for generative model training.
         """
         self.encode_mixed_numerical_features = encode_mixed_numerical_features
         self.retain_missingness = retain_missingness
@@ -94,9 +142,19 @@ class TabularPreprocessor:
         return X_prep
 
     def inverse_pipeline(self, X: pd.DataFrame):
-        """
-        Inverse the preprocessing pipeline. This ensures the same format synthetic data post-generation.
-        For example in terms of columns, data types, numerical precision, constraints, etc.
+        """Inverse the preprocessing pipeline.
+
+        This ensures the same format synthetic data post-generation. For example in
+        terms of columns, data types, numerical precision, constraints, etc.
+
+        Args:
+            X: Preprocessed data to inverse transform.
+
+        Returns:
+            pd.DataFrame: Data with preprocessing reversed, matching original format.
+
+        Raises:
+            Exception: If pipeline has not been fitted yet.
         """
         if not self.pipeline_is_fitted:
             raise Exception(
@@ -138,18 +196,27 @@ class TabularPreprocessor:
         add_missing_indicator: bool = True,
         missing_indicator_suffix: str = "_MISSING",
     ):
-        """
-        Impute missing values in the dataframe.
-        Parameters:
-            X: pd.DataFrame
-            method: str
+        """Impute missing values in the dataframe.
+
+        Args:
+            X: Input dataframe with missing values.
+            method: Method for imputation. Options:
                 - "drop": drop missing rows
                 - "random": randomly impute missing values
                 - "mean": impute missing values with the mean
                 - "median": impute missing values with the median
                 - "mode": impute missing values with the mode
-            missing_indicator_suffix: str
-                - suffix to add to indicator columns for missing values (ensure these do not already exist in the data)
+            add_missing_indicator: If True, add indicator columns for missing values.
+            missing_indicator_suffix: Suffix to add to indicator columns for missing values.
+                Ensure these do not already exist in the data.
+
+        Returns:
+            tuple: Tuple of (imputed_X, missing_indicator_X) where missing_indicator_X
+                is None if add_missing_indicator is False.
+
+        Raises:
+            Exception: If method is "drop" and add_missing_indicator is True, or if
+                indicator suffix conflicts with existing columns.
         """
         self.missing_indicator_suffix = missing_indicator_suffix
 
@@ -209,8 +276,13 @@ class TabularPreprocessor:
         return imputed_X, missing_indicator_X
 
     def reinstate_missings(self, X: pd.DataFrame):
-        """
-        Reinstate missing values (which were previously imputed) in the dataframe.
+        """Reinstate missing values (which were previously imputed) in the dataframe.
+
+        Args:
+            X: Dataframe with missing indicator columns.
+
+        Returns:
+            pd.DataFrame: Dataframe with missing values reinstated based on indicators.
         """
         missing_cols = [
             col for col in X.columns if col.endswith(self.missing_indicator_suffix)
@@ -235,26 +307,29 @@ class TabularPreprocessor:
         numerical_transformer_hparams: dict = {},
         categorical_transformer_hparams: dict = {},
     ):
-        """ "
-        Method for scaling and/or numerical encoding of a dataset. Supports a variety of transformers.
-        Parameters:
-            X: pd.DataFrame
-            numerical_transformer: str
+        """Scale and/or numerically encode a dataset.
+
+        Supports a variety of transformers for both numerical and categorical features.
+
+        Args:
+            X: Input dataframe to transform.
+            numerical_transformer: Transformer for numerical features. Options:
                 - "standard": standard scaling
                 - "minmax": minmax scaling
                 - "quantile": quantile transformation
-                - "passthrough": passthrough
-                - "none": passthrough
-            categorical_transformer: str
+                - "passthrough": passthrough (no transformation)
+                - "none": passthrough (no transformation)
+            categorical_transformer: Transformer for categorical features. Options:
                 - "one-hot": one-hot encoding
                 - "ordinal": ordinal encoding
-                - "label": ordinal encoding
-                - "passthrough": passthrough
-                - "none": passthrough
-            numerical_transformer_hparams: dict
-                - hyperparameters for the numerical transformer
-            categorical_transformer_hparams: dict
-                - hyperparameters for the categorical transformer
+                - "label": ordinal encoding (alias for ordinal)
+                - "passthrough": passthrough (no transformation)
+                - "none": passthrough (no transformation)
+            numerical_transformer_hparams: Hyperparameters for the numerical transformer.
+            categorical_transformer_hparams: Hyperparameters for the categorical transformer.
+
+        Returns:
+            pd.DataFrame: Transformed dataframe with scaled/encoded features.
         """
         encoders = {
             "one-hot": OneHotEncoder(sparse_output=False),
@@ -308,12 +383,13 @@ class TabularPreprocessor:
         return X_transformed
 
     def inverse_scale(self, X: pd.DataFrame):
-        """
-        Inverse the scaling transformations applied to the dataframe.
-        Parameters:
-            X: pd.DataFrame
-            transformers: dict
-                - the transformers used to scale the dataframe
+        """Inverse the scaling transformations applied to the dataframe.
+
+        Args:
+            X: Scaled/encoded dataframe to inverse transform.
+
+        Returns:
+            pd.DataFrame: Dataframe with scaling/encoding reversed.
         """
 
         X_num = self.transformers["numerical"].inverse_transform(
@@ -343,22 +419,29 @@ class TabularPreprocessor:
         max_discrete_values: int = 3,
         discrete_suffix: str = "_MIXEDDISCRETE",
     ):
-        """
-        Encode features which are a mix of continuous values + discrete spikes. Common examples are zero-inflated features.
-        Discrete values are one-hot encoded, and their values replaced by random samples from the original column.
-        Parameters:
-            X: pd.DataFrame
-            min_spike_prop: float
-                - minimum proportion of same values which constitute a discrete spike
-            rounding: int
-                - number of decimal places to round before counting unique values
-            min_cont_unique: int
-                - minimum number of distinct (rounded) values for a column to be considered mixed (and not purely discrete)
-            max_discrete_values: int
-                - maximum number of discrete values to return per column
-            discrete_suffix: str
-                - suffix to add to the column names of the discrete values
+        """Encode features which are a mix of continuous values + discrete spikes.
 
+        Common examples are zero-inflated features. Discrete values are one-hot encoded,
+        and their values replaced by random samples from the original column.
+
+        Args:
+            X: Input dataframe.
+            min_spike_prop: Minimum proportion of same values which constitute a
+                discrete spike.
+            rounding: Number of decimal places to round before counting unique values.
+            min_cont_unique: Minimum number of distinct (rounded) values for a column
+                to be considered mixed (and not purely discrete).
+            max_discrete_values: Maximum number of discrete values to return per column.
+            discrete_suffix: Suffix to add to the column names of the discrete values.
+
+        Returns:
+            tuple: Tuple of (X_new, discretes, mixed_features) where:
+                - X_new: Dataframe with mixed features encoded
+                - discretes: Dataframe with discrete indicator columns (or None)
+                - mixed_features: Dictionary mapping column names to discrete spike values
+
+        Raises:
+            Exception: If discrete_suffix conflicts with existing columns.
         """
         self.discrete_suffix = discrete_suffix
         # dictionary of mixed feature-value pairs
@@ -399,8 +482,13 @@ class TabularPreprocessor:
         self,
         X: pd.DataFrame,
     ):
-        """
-        Return mixed discrete-numerical columns to their original state.
+        """Return mixed discrete-numerical columns to their original state.
+
+        Args:
+            X: Dataframe with encoded mixed features.
+
+        Returns:
+            pd.DataFrame: Dataframe with mixed features decoded to original format.
         """
         for key, values in self.mixed_features.items():
             for i, val in enumerate(values):
@@ -418,41 +506,6 @@ class TabularPreprocessor:
         min_cont_unique: int = 20,
         max_discrete_values: int = 3,
     ):
-        """
-        Detect numeric features that are a mix of continuous values + discrete spikes.
-
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Input data.
-        min_spike_prop : float, default 0.05
-            "How discrete" a spike must be: a value is considered a discrete spike in a column
-            if it accounts for at least this fraction of the non-missing rows in that column.
-            Raise this if you want *fewer* columns to qualify (stricter), lower it to be looser.
-        rounding : int, default 6
-            Number of decimal places to round before counting unique values (helps merge
-            near-identical floats like 0.30000000004).
-        min_cont_unique : int, default 10
-            Require at least this many distinct (rounded) values *outside* the detected spikes
-            for the column to be considered “mixed” rather than purely discrete.
-        max_discrete_values : int, default 3
-            Upper bound on how many spike values to return per column (safety against
-            pathological cases).
-
-        Returns
-        -------
-        dict[str, list[float]]
-            Mapping of column name -> sorted list of detected discrete spike values.
-            Only columns that meet the “mixed” criterion are included.
-
-        Notes
-        -----
-        - Typical zero-inflated columns will be captured by setting min_spike_prop
-        somewhere around 0.05–0.20 depending on your dataset size.
-        - If a column is *fully* discrete (e.g., only a handful of unique values total),
-        it will be *excluded* unless there are at least `min_cont_unique` unique
-        non-spike values remaining.
-        """
 
         result = {}
 
@@ -485,14 +538,20 @@ class TabularPreprocessor:
         return result
 
     def prep_constraints(self, X: pd.DataFrame, constraints: list):
-        """
-        Preprocess a dataframe s.t. constraints can be enforced post synthetic data generation.
-        For equality constraints, we can remove the "left" side of the constraint, as it can be computed post-hoc from the "right" side.
-        For inequality constraints, we can replace the "left" side with the diff to the right side.
-        Parameters:
-            X: pd.DataFrame
-            constraints: list
-                - list of constraints
+        """Preprocess a dataframe so constraints can be enforced post synthetic data generation.
+
+        For equality constraints, we can remove the "left" side of the constraint, as it
+        can be computed post-hoc from the "right" side. For inequality constraints, we can
+        replace the "left" side with the diff to the right side.
+
+        Args:
+            X: Input dataframe.
+            constraints: List of constraint strings (e.g., ["col1=col2+col3", "col1<col2"]).
+
+        Returns:
+            tuple: Tuple of (X_new, constraints_dict) where:
+                - X_new: Preprocessed dataframe with constraints prepared
+                - constraints_dict: Dictionary storing constraint information
         """
         X_new = X.copy()
         constraints_dict = {}
@@ -518,11 +577,18 @@ class TabularPreprocessor:
         return X_new, constraints_dict
 
     def apply_constraints(self, X: pd.DataFrame):
-        """
-        Apply constraints to the generated dataframe.
-        For equality constraints, we can compute the "left" side from the "right" side exactly.
-        For inequality constraints, we can add the "right" side to the diff and thus enforce the constraint.
-        Inequality constraints will only strictly hold if the generator outputs values within the range of the training data.
+        """Apply constraints to the generated dataframe.
+
+        For equality constraints, we can compute the "left" side from the "right" side
+        exactly. For inequality constraints, we can add the "right" side to the diff and
+        thus enforce the constraint. Inequality constraints will only strictly hold if the
+        generator outputs values within the range of the training data.
+
+        Args:
+            X: Generated dataframe to apply constraints to.
+
+        Returns:
+            pd.DataFrame: Dataframe with constraints applied.
         """
         X_new = X.copy()
 
@@ -546,14 +612,13 @@ class TabularPreprocessor:
 
 
 def calculate_column_precision(col_values: pd.Series) -> int:
-    """
-    Calculate the maximum precision within a numerical column.
+    """Calculate the maximum precision within a numerical column.
 
     Args:
-        col_values: Pandas Series containing numerical values
+        col_values: Pandas Series containing numerical values.
 
     Returns:
-        int: Maximum precision (number of decimal places) needed
+        int: Maximum precision (number of decimal places) needed.
     """
 
     # Convert to string and split by decimal point

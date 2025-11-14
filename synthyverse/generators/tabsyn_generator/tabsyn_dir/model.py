@@ -54,36 +54,14 @@ def geglu(x: Tensor) -> Tensor:
 
 
 class ReGLU(nn.Module):
-    """The ReGLU activation function from [shazeer2020glu].
-
-    Examples:
-        .. testcode::
-
-            module = ReGLU()
-            x = torch.randn(3, 4)
-            assert module(x).shape == (3, 2)
-
-    References:
-        * [shazeer2020glu] Noam Shazeer, "GLU Variants Improve Transformer", 2020
-    """
+    """The ReGLU activation function from [shazeer2020glu]."""
 
     def forward(self, x: Tensor) -> Tensor:
         return reglu(x)
 
 
 class GEGLU(nn.Module):
-    """The GEGLU activation function from [shazeer2020glu].
-
-    Examples:
-        .. testcode::
-
-            module = GEGLU()
-            x = torch.randn(3, 4)
-            assert module(x).shape == (3, 2)
-
-    References:
-        * [shazeer2020glu] Noam Shazeer, "GLU Variants Improve Transformer", 2020
-    """
+    """The GEGLU activation function from [shazeer2020glu]."""
 
     def forward(self, x: Tensor) -> Tensor:
         return geglu(x)

@@ -2,12 +2,26 @@ import gc, sys, os, functools
 
 
 def get_total_trainable_params(model):
+    """Calculate the total number of trainable parameters in a model.
+
+    Args:
+        model: PyTorch model with parameters.
+
+    Returns:
+        int: Total number of trainable parameters.
+    """
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 def free_up_memory():
-    """
-    Aggressively release Python-level CPU and GPU memory.
+    """Aggressively release Python-level CPU and GPU memory.
+
+    This function performs comprehensive memory cleanup across multiple frameworks:
+    - Python garbage collection
+    - PyTorch CUDA cache clearing
+    - TensorFlow/Keras session clearing
+    - JAX engine clearing
+    - Matplotlib figure closing
     """
 
     # --- 1. Drop Python references ----------------------------------------

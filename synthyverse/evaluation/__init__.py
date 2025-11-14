@@ -1,6 +1,6 @@
 try:
     from .eval import TabularMetricEvaluator
-except ImportError:
+except:
     TabularMetricEvaluator = None
 
 
@@ -11,19 +11,19 @@ try:
         Similarity,
         ImputationMAE_MAD,
     )
-except ImportError:
+except:
     ClassifierTest = None
     AlphaPrecisionBetaRecallAuthenticity = None
     Similarity = None
 
 try:
     from .utility import MLE
-except ImportError:
+except:
     MLE = None
 
 try:
     from .privacy import DCR, DOMIAS
-except ImportError:
+except:
     DCR = None
     DOMIAS = None
 
@@ -40,6 +40,17 @@ all_metrics = [
 
 
 def get_metric(metric_name: str):
+    """Get a metric class by name.
+
+    Args:
+        metric_name: Name of the metric to retrieve.
+
+    Returns:
+        class: Metric class corresponding to the name.
+
+    Raises:
+        ValueError: If metric name is not found.
+    """
     available_metrics = [m for m in all_metrics if m is not None]
     metric_map = {m.name: m for m in available_metrics}
     if metric_name not in metric_map.keys():

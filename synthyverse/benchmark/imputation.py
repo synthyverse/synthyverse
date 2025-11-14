@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
+from typing import Union
 
 
 from ..imputers import get_imputer
@@ -12,11 +13,44 @@ from .utils import format_results
 
 
 class TabularImputationBenchmark:
+    """Benchmarking class for evaluating tabular data imputation methods on Missing Completely At Random (MCAR) data.
+
+    Args:
+        imputer_name (str): Name of the imputer to benchmark. Default: "ice".
+        imputer_params (dict): Dictionary of imputer-specific parameters. Default: {}.
+        metrics (Union[list, dict]): List or dictionary of metrics to evaluate. Default: ["mae_mad"].
+        n_random_splits (int): Number of random train/test splits to evaluate. Default: 1.
+        n_imputations (int): Number of imputation runs per split. Default: 1.
+        test_size (float): Proportion of data to use for testing (0.0 to 1.0). Default: 0.2.
+        missingness_proportion (float): Proportion of values to make missing (MCAR) (0.0 to 1.0). Default: 0.2.
+        result_format (str): Format of results ("frame" for DataFrame, "dict" for nested dict). Default: "frame".
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.benchmark import TabularImputationBenchmark
+        >>>
+        >>> # Load your data
+        >>> X = pd.read_csv("data.csv")
+        >>> discrete_features = ["category_col"]
+        >>> target_column = "target"
+        >>>
+        >>> # Create benchmark
+        >>> benchmark = TabularImputationBenchmark(
+        ...     imputer_name="ice",
+        ...     metrics=["mae_mad"],
+        ...     n_random_splits=5,
+        ...     missingness_proportion=0.2
+        ... )
+        >>>
+        >>> # Run benchmark
+        >>> results = benchmark.run(X, discrete_features, target_column)
+    """
+
     def __init__(
         self,
         imputer_name: str = "ice",
         imputer_params: dict = {},
-        metrics: list = ["mae_mad"],
+        metrics: Union[list, dict] = ["mae_mad"],
         n_random_splits: int = 1,
         n_imputations: int = 1,
         test_size: float = 0.2,
@@ -34,6 +68,16 @@ class TabularImputationBenchmark:
         self.__dict__.update(locals())
 
     def run(self, X: pd.DataFrame, discrete_features: list, target_column: str):
+        """Run the imputation benchmark.
+
+        Args:
+            X: Full dataset as a pandas DataFrame.
+            discrete_features: List of discrete/categorical column names.
+            target_column: Name of the target column.
+
+        Returns:
+            pd.DataFrame or dict: Benchmark results in the specified format.
+        """
         # train test split
         stratify = None
         if target_column in discrete_features:

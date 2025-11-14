@@ -1,1 +1,4 @@
-from .tabular import TabularPreprocessor
+try:
+    from .tabular import TabularPreprocessor
+except:
+    TabularPreprocessor = None

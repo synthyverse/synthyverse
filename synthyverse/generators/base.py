@@ -4,6 +4,45 @@ from ..preprocessing.tabular import TabularPreprocessor
 
 
 class TabularBaseGenerator:
+    """Base class for tabular data generators.
+
+    This class provides a common interface for all tabular synthetic data generators.
+    It handles preprocessing, missing value imputation, and constraint enforcement.
+    It also provides the common API for training and generation across all generators.
+
+    Args:
+        constraints (Union[list, str]): List of constraint strings or single constraint string.
+            Constraints can be equality (e.g., "col1=col2+col3") or inequality
+            (e.g., "col1<col2"). Default: [].
+        missing_imputation_method (str): Method for handling missing values.
+            Options: "drop", "random", "mean", "median", "mode". Default: "drop".
+        retain_missingness (bool): Whether to propogate/generate missing values in the synthetic data. Default: False.
+        encode_mixed_numerical_features (bool): Whether to encode mixed numerical-categorical features.
+            If True, discrete spikes in numerical features are one-hot encoded and replaced by randomly imputed numerical values. Default: False.
+        quantile_transform_numericals (bool): Whether to apply quantile transformation (normalization) to
+            numerical features for better distribution matching. Can be useful for generative models which expect normally distributed data,
+            but which do not perform this preprocessing itself. Default: False.
+        random_state (int): Random seed for reproducibility. Default: 0.
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.generators import ARFGenerator
+        >>>
+        >>> # Load data
+        >>> X = pd.read_csv("data.csv")
+        >>> discrete_features = ["category_col"]
+        >>>
+        >>> # Create generator with constraints
+        >>> generator = ARFGenerator(
+        ...     constraints=["col1=col2+col3"],
+        ...     missing_imputation_method="mean",
+        ...     random_state=42
+        ... )
+        >>>
+        >>> # Fit and generate
+        >>> generator.fit(X, discrete_features)
+        >>> X_syn = generator.generate(1000)
+    """
 
     def __init__(
         self,
@@ -25,6 +64,16 @@ class TabularBaseGenerator:
         self.encode_mixed_numerical_features = encode_mixed_numerical_features
 
     def fit(self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None):
+        """Fit the generator on training data.
+
+        Args:
+            X: Training data as a pandas DataFrame.
+            discrete_features: List of column names that are discrete/categorical.
+            X_val: Optional validation data as a pandas DataFrame.
+
+        Returns:
+            self: Returns self for method chaining.
+        """
         self.base_discrete_features = discrete_features.copy()
         X_prep = X.copy()
 
@@ -64,6 +113,14 @@ class TabularBaseGenerator:
         return self
 
     def generate(self, n: int):
+        """Generate synthetic data.
+
+        Args:
+            n: Number of synthetic samples to generate.
+
+        Returns:
+            pd.DataFrame: Generated synthetic data with same format as training data.
+        """
         syn_X = self._generate_data(n)
 
         # inverse the preprocessing pipeline
@@ -72,7 +129,26 @@ class TabularBaseGenerator:
         return syn_X
 
     def _fit_model(self, X: pd.DataFrame, discrete_features: list = []):
+        """Fit the underlying generative model.
+
+        This method must be implemented by subclasses.
+
+        Args:
+            X: Preprocessed training data.
+            discrete_features: List of discrete feature names after preprocessing.
+        """
         raise NotImplementedError("Subclasses must implement _fit_model")
 
     def _generate_data(self, n: int) -> pd.DataFrame:
+        """Generate raw synthetic data from the fitted model.
+
+        This method must be implemented by subclasses. The output should be
+        preprocessed data that can be inverse transformed.
+
+        Args:
+            n: Number of samples to generate.
+
+        Returns:
+            pd.DataFrame: Preprocessed synthetic data.
+        """
         raise NotImplementedError("Subclasses must implement _generate_data")

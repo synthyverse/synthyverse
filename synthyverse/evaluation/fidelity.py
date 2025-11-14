@@ -12,8 +12,39 @@ from .utils import xgboost_hyperparams
 
 
 class ClassifierTest:
-    """
-    AUC score of XGB classifier which aims to distinguish synthetic from real data.
+    """AUC score of XGB classifier which aims to distinguish synthetic from real data.
+
+    Lower scores indicate better quality synthetic data (harder to distinguish from real).
+
+    Args:
+        X_val (pd.DataFrame, optional): Validation data for hyperparameter tuning. Default: None.
+        discrete_features (list): List of discrete/categorical feature names. Default: [].
+        random_state (int): Random seed for reproducibility. Default: 0.
+        clf_params (dict): XGBoost classifier parameters. Default: {"max_depth": 3, "tree_method": "hist"}.
+        tune (bool): Whether to tune hyperparameters. Default: False.
+        tuning_trials (int): Number of Optuna trials for hyperparameter tuning. Default: 32.
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.evaluation import ClassifierTest
+        >>>
+        >>> # Prepare data
+        >>> X_train = pd.DataFrame(...)
+        >>> X_test = pd.DataFrame(...)
+        >>> X_syn = pd.DataFrame(...)
+        >>> X_val = pd.DataFrame(...)
+        >>> discrete_features = ["category_col"]
+        >>>
+        >>> # Create metric
+        >>> metric = ClassifierTest(
+        ...     X_val=X_val,
+        ...     discrete_features=discrete_features,
+        ...     tune=True,
+        ...     random_state=42
+        ... )
+        >>>
+        >>> # Evaluate
+        >>> results = metric.evaluate(X_train, X_test, X_syn)
     """
 
     name = "classifier_test"
@@ -29,7 +60,6 @@ class ClassifierTest:
         discrete_features: list = [],
         random_state: int = 0,
         clf_params: dict = {
-            "objective": "binary:logistic",
             "max_depth": 3,
             "tree_method": "hist",
         },
@@ -47,6 +77,7 @@ class ClassifierTest:
         self.clf_params.update(
             {
                 "random_state": self.random_state,
+                "objective": "binary:logistic",
             }
         )
 
@@ -56,6 +87,16 @@ class ClassifierTest:
         test: pd.DataFrame,
         sd: pd.DataFrame,
     ):
+        """Evaluate synthetic data using classifier test.
+
+        Args:
+            train: Training data as a pandas DataFrame.
+            test: Test data as a pandas DataFrame.
+            sd: Synthetic data as a pandas DataFrame.
+
+        Returns:
+            dict: Dictionary with "classifiertest.auc" key and AUC score value.
+        """
 
         if self.tune:
             assert self.X_val is not None, "X_val must be provided when tune=True."
@@ -160,8 +201,29 @@ class ClassifierTest:
 
 
 class AlphaPrecisionBetaRecallAuthenticity:
-    """
-    alpha-Precision, Beta-Recall, Authenticity score from the Alaa et al. paper.
+    """Alpha-Precision, Beta-Recall, Authenticity score from the Alaa et al. paper.
+
+    These metrics measure the quality and authenticity of synthetic data generation.
+
+    Args:
+        discrete_features (list): List of discrete/categorical feature names. Default: [].
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.evaluation import AlphaPrecisionBetaRecallAuthenticity
+        >>>
+        >>> # Prepare data
+        >>> X_real = pd.DataFrame(...)
+        >>> X_syn = pd.DataFrame(...)
+        >>> discrete_features = ["category_col"]
+        >>>
+        >>> # Create metric
+        >>> metric = AlphaPrecisionBetaRecallAuthenticity(
+        ...     discrete_features=discrete_features
+        ... )
+        >>>
+        >>> # Evaluate
+        >>> results = metric.evaluate(X_real, X_syn)
     """
 
     name = "prauth"
@@ -177,6 +239,18 @@ class AlphaPrecisionBetaRecallAuthenticity:
         rd: pd.DataFrame,
         sd: pd.DataFrame,
     ):
+        """Evaluate synthetic data using alpha-precision, beta-recall, and authenticity.
+
+        Args:
+            rd: Real data as a pandas DataFrame.
+            sd: Synthetic data as a pandas DataFrame.
+
+        Returns:
+            dict: Dictionary with keys:
+                - "alphaprecision.naive.score": Alpha-precision score
+                - "betacoverage.naive.score": Beta-coverage score
+                - "authenticity.naive.score": Authenticity score
+        """
         numerical_features = [
             col for col in rd.columns if col not in self.discrete_features
         ]
@@ -271,9 +345,28 @@ class AlphaPrecisionBetaRecallAuthenticity:
 
 
 class Similarity:
-    """
-    Column Shapes and Column Pair Trends from the SDMetrics library.
-    Indicates quality of marginal distributions and correlations in synthetic data, respectively.
+    """Column Shapes and Column Pair Trends from the SDMetrics library.
+
+    Indicates quality of marginal distributions and correlations in synthetic data,
+    respectively.
+
+    Args:
+        discrete_features (list): List of discrete/categorical feature names. Default: [].
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.evaluation import Similarity
+        >>>
+        >>> # Prepare data
+        >>> X_real = pd.DataFrame(...)
+        >>> X_syn = pd.DataFrame(...)
+        >>> discrete_features = ["category_col"]
+        >>>
+        >>> # Create metric
+        >>> metric = Similarity(discrete_features=discrete_features)
+        >>>
+        >>> # Evaluate
+        >>> results = metric.evaluate(X_real, X_syn)
     """
 
     name = "similarity"
@@ -292,6 +385,17 @@ class Similarity:
         rd: pd.DataFrame,
         sd: pd.DataFrame,
     ):
+        """Evaluate synthetic data using SDMetrics similarity scores.
+
+        Args:
+            rd: Real data as a pandas DataFrame.
+            sd: Synthetic data as a pandas DataFrame.
+
+        Returns:
+            dict: Dictionary with keys:
+                - "similarity.shape": Column shapes similarity score
+                - "similarity.trend": Column pair trends similarity score
+        """
         dtypes = [
             "categorical" if x in self.discrete_features else "numerical"
             for x in rd.columns
@@ -315,6 +419,27 @@ class Similarity:
 
 
 class ImputationMAE_MAD:
+    """Mean Absolute Error and Median Absolute Deviation for imputation evaluation.
+
+    Args:
+        discrete_features (list): List of discrete/categorical feature names. Default: [].
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.evaluation import ImputationMAE_MAD
+        >>>
+        >>> # Prepare data
+        >>> X_real = pd.DataFrame(...)
+        >>> X_imputed = pd.DataFrame(...)
+        >>> discrete_features = ["category_col"]
+        >>>
+        >>> # Create metric
+        >>> metric = ImputationMAE_MAD(discrete_features=discrete_features)
+        >>>
+        >>> # Evaluate
+        >>> results = metric.evaluate(X_real, X_imputed)
+    """
+
     name = "mae_mad"
     data_requirement = "train"
     needs_discrete_features = True
@@ -323,6 +448,17 @@ class ImputationMAE_MAD:
         self.__dict__.update(locals())
 
     def evaluate(self, rd: pd.DataFrame, sd: pd.DataFrame):
+        """Evaluate imputation quality using MAE and MAD.
+
+        Args:
+            rd: Real data as a pandas DataFrame.
+            sd: Synthetic/imputed data as a pandas DataFrame.
+
+        Returns:
+            dict: Dictionary with keys:
+                - "imputation.mae": Mean Absolute Error
+                - "imputation.mad": Median Absolute Deviation
+        """
         # average over #observations BEFORE OHE
         n_miss = int(rd.shape[0] * rd.shape[1])
 

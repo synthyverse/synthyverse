@@ -1,13 +1,42 @@
 import pandas as pd
-import numpy as np
-from sklearn.preprocessing import OrdinalEncoder
 
 
 class BaseImputer:
+    """Base class for imputation methods.
+
+    This class provides a common interface for all imputation methods.
+    It handles preprocessing, precision preservation, and data type restoration.
+    It also provides the common API for training imputers and filling missing values.
+
+    Args:
+        random_state (int): Random seed for reproducibility. Default: 0.
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.imputers import ICEImputer
+        >>>
+        >>> # Load data with missing values
+        >>> X = pd.read_csv("data_with_missing.csv")
+        >>> discrete_features = ["category_col"]
+        >>>
+        >>> # Create and fit imputer
+        >>> imputer = ICEImputer(random_state=42)
+        >>> imputer.fit(X, discrete_features)
+        >>>
+        >>> # Transform data
+        >>> X_imputed = imputer.transform(X)
+    """
+
     def __init__(self, random_state: int = 0):
         self.__dict__.update(locals())
 
     def fit(self, X: pd.DataFrame, discrete_features: list):
+        """Fit the imputer on training data.
+
+        Args:
+            X: Training data as a pandas DataFrame.
+            discrete_features: List of column names that are discrete/categorical.
+        """
 
         self.discrete_features = discrete_features
         self.ori_cols = X.columns.tolist()
@@ -22,6 +51,15 @@ class BaseImputer:
         self._fit(X)
 
     def transform(self, X: pd.DataFrame):
+        """Transform data by imputing missing values.
+
+        Args:
+            X: Data with missing values to impute.
+
+        Returns:
+            pd.DataFrame: Data with imputed values, preserving original precision
+                and data types.
+        """
         imputed = self._transform(X)
         if not isinstance(imputed, pd.DataFrame):
             imputed = pd.DataFrame(imputed, columns=self.ori_cols)
@@ -35,21 +73,37 @@ class BaseImputer:
         return imputed
 
     def _fit(self, X: pd.DataFrame):
+        """Fit the underlying imputation model.
+
+        This method must be implemented by subclasses.
+
+        Args:
+            X: Training data with missing values.
+        """
         raise NotImplementedError("Subclasses must implement _fit")
 
     def _transform(self, X: pd.DataFrame):
+        """Perform the actual imputation transformation.
+
+        This method must be implemented by subclasses.
+
+        Args:
+            X: Data with missing values to impute.
+
+        Returns:
+            pd.DataFrame or np.ndarray: Imputed data.
+        """
         raise NotImplementedError("Subclasses must implement _transform")
 
 
 def calculate_column_precision(col_values: pd.Series) -> int:
-    """
-    Calculate the maximum precision within a numerical column.
+    """Calculate the maximum precision within a numerical column.
 
     Args:
-        col_values: Pandas Series containing numerical values
+        col_values: Pandas Series containing numerical values.
 
     Returns:
-        int: Maximum precision (number of decimal places) needed
+        int: Maximum precision (number of decimal places) needed.
     """
 
     # Convert to string and split by decimal point

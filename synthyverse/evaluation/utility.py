@@ -16,8 +16,44 @@ import optuna
 
 
 class MLE:
-    """
-    Machine Learning Efficacy from an XGBoost classifier.
+    """Machine Learning Efficacy from an XGBoost classifier.
+
+    Measures how well synthetic data can be used for downstream machine learning
+    tasks compared to real data.
+
+    Args:
+        X_val (pd.DataFrame, optional): Validation data for hyperparameter tuning. Default: None.
+        target_column (str): Name of the target column. Default: "target".
+        discrete_features (list): List of discrete/categorical feature names. Default: [].
+        random_state (int): Random seed for reproducibility. Default: 0.
+        train_set (str): Which dataset to train on ("synthetic" for TSTR, "real" for TRTS). Default: "synthetic".
+        model_params (dict): XGBoost model parameters. Default: {"max_depth": 3, "tree_method": "hist"}.
+        tune (bool): Whether to tune hyperparameters. Default: False.
+        tuning_trials (int): Number of Optuna trials for hyperparameter tuning. Default: 32.
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.evaluation import MLE
+        >>>
+        >>> # Prepare data
+        >>> X_train = pd.DataFrame(...)
+        >>> X_test = pd.DataFrame(...)
+        >>> X_syn = pd.DataFrame(...)
+        >>> X_val = pd.DataFrame(...)
+        >>> discrete_features = ["category_col"]
+        >>>
+        >>> # Create metric
+        >>> metric = MLE(
+        ...     X_val=X_val,
+        ...     target_column="target",
+        ...     discrete_features=discrete_features,
+        ...     train_set="synthetic",
+        ...     tune=True,
+        ...     random_state=42
+        ... )
+        >>>
+        >>> # Evaluate
+        >>> results = metric.evaluate(X_train, X_test, X_syn)
     """
 
     name = "mle"
@@ -60,6 +96,17 @@ class MLE:
         test: pd.DataFrame,
         sd: pd.DataFrame,
     ):
+        """Evaluate synthetic data utility using machine learning efficacy.
+
+        Args:
+            train: Training data as a pandas DataFrame.
+            test: Test data as a pandas DataFrame.
+            sd: Synthetic data as a pandas DataFrame.
+
+        Returns:
+            dict: Dictionary with MLE metric scores. Includes both synthetic-to-real
+                and real-to-real baseline scores.
+        """
 
         self.feature_types = [
             "c" if col in self.discrete_features else "q"
@@ -245,6 +292,16 @@ class MLE:
         return best
 
     def score_fn(self, y, preds):
+        """Calculate evaluation scores based on target type.
+
+        Args:
+            y: True target values.
+            preds: Predicted target values.
+
+        Returns:
+            dict: Dictionary with evaluation scores (AUC/F1/Accuracy for classification,
+                R2/RMSE for regression).
+        """
         if self.target_column in self.discrete_features:
             return {
                 "auc": roc_auc_score(y, preds, average="micro", multi_class="ovr"),

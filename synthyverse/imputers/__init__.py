@@ -1,20 +1,31 @@
 try:
     from .ice_imputer import ICEImputer
-except ImportError:
+except:
     ICEImputer = None
 
 try:
     from .missforest_imputer import MissForestImputer
-except ImportError:
+except:
     MissForestImputer = None
 
 try:
     from .ot_imputer import OTImputer
-except ImportError:
+except:
     OTImputer = None
 
 
 def get_imputer(imputer_name: str):
+    """Get an imputer class by name.
+
+    Args:
+        imputer_name: Name of the imputer to retrieve (case-insensitive).
+
+    Returns:
+        class: Imputer class corresponding to the name.
+
+    Raises:
+        ValueError: If imputer name is not found.
+    """
     imputer_name = imputer_name.lower()
     if imputer_name == "ice":
         return ICEImputer

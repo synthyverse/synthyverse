@@ -1,81 +1,91 @@
 try:
     from .arf_generator import ARFGenerator
-except ImportError:
+except:
     ARFGenerator = None
 
 try:
     from .bn_generator import BNGenerator
-except ImportError:
+except:
     BNGenerator = None
 
 try:
     from .ctgan_generator import CTGANGenerator
-except ImportError:
+except:
     CTGANGenerator = None
 
 try:
     from .tvae_generator import TVAEGenerator
-except ImportError:
+except:
     TVAEGenerator = None
 
 try:
     from .tabsyn_generator import TabSynGenerator
-except ImportError:
+except:
     TabSynGenerator = None
 
 try:
     from .cdtd_generator import CDTDGenerator
-except ImportError:
+except:
     CDTDGenerator = None
 
 try:
     from .tabargn_generator import TabARGNGenerator
-except ImportError:
+except:
     TabARGNGenerator = None
 
 try:
     from .tabddpm_generator import TabDDPMGenerator
-except ImportError:
+except:
     TabDDPMGenerator = None
 
 try:
     from .realtabformer_generator import RealTabFormerGenerator
-except ImportError:
+except:
     RealTabFormerGenerator = None
 
 try:
     from .ctabgan_generator import CTABGANGenerator
-except ImportError:
+except:
     CTABGANGenerator = None
 
 try:
     from .permutation_generator import PermutationGenerator
-except ImportError:
+except:
     PermutationGenerator = None
 
 try:
     from .forestdiffusion_generator import ForestDiffusionGenerator
-except ImportError:
+except:
     ForestDiffusionGenerator = None
 
 try:
     from .unmaskingtrees_generator import UnmaskingTreesGenerator
-except ImportError:
+except:
     UnmaskingTreesGenerator = None
 
 try:
     from .synthpop_generator import SynthpopGenerator
-except ImportError:
+except:
     SynthpopGenerator = None
 
 try:
     from .nrgboost_generator import NRGBoostGenerator
-except ImportError:
+except:
     NRGBoostGenerator = None
 
 
 def get_generator(generator_name: str):
+    """Get a generator class by name.
 
+    Args:
+        generator_name: Name of the generator to retrieve.
+
+    Returns:
+        class: Generator class corresponding to the name.
+
+    Raises:
+        ValueError: If generator name is not found.
+    """
     available_generators = [g for g in all_generators if g is not None]
 
     generator_map = {g.name: g for g in available_generators}

@@ -6,6 +6,44 @@ from . import get_metric
 
 
 class TabularMetricEvaluator:
+    """Evaluator for tabular synthetic data quality metrics.
+
+    This class provides a unified interface for evaluating synthetic data quality
+    across the dimensions fidelity, utility, and privacy, using various metrics.
+
+    Args:
+        metrics (Union[dict, list]): Dictionary mapping metric names to their parameters, or list of metric names (will use default parameters). Dictionaries can be used to specify metric hyperparameters, and compute different configurations of the same metric.
+        discrete_features (list): List of column names that are discrete/categorical. Default: [].
+        target_column (str): Name of the target column for supervised metrics. Default: "target".
+        random_state (int): Random seed for reproducibility. Default: 0.
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.evaluation import TabularMetricEvaluator
+        >>>
+        >>> # Prepare data
+        >>> X_train = pd.DataFrame(...)
+        >>> X_test = pd.DataFrame(...)
+        >>> X_syn = pd.DataFrame(...)
+        >>> discrete_features = ["category_col"]
+        >>> target_column = "target"
+        >>>
+        >>> # Define metrics
+        >>> metrics = ["mle"]
+        >>>
+        >>> # Compute different configurations of the same metric by adding a dash to the metric name
+        >>> metrics = {"mle-trts": {"train_set":"real"}, "mle-tstr": {"train_set":"synthetic", "tune":True}}
+        >>>
+        >>> # Create evaluator
+        >>> evaluator = TabularMetricEvaluator(
+        ...     metrics=metrics,
+        ...     discrete_features=discrete_features,
+        ...     target_column=target_column
+        ... )
+        >>>
+        >>> # Evaluate synthetic data
+        >>> results = evaluator.evaluate(X_train, X_test, X_syn)
+    """
 
     def __init__(
         self,
@@ -30,6 +68,17 @@ class TabularMetricEvaluator:
         X_syn: pd.DataFrame,
         X_val: pd.DataFrame = None,
     ):
+        """Evaluate synthetic data quality using specified metrics.
+
+        Args:
+            X_train: Training data as a pandas DataFrame.
+            X_test: Test data as a pandas DataFrame.
+            X_syn: Synthetic data as a pandas DataFrame.
+            X_val: Optional validation data as a pandas DataFrame.
+
+        Returns:
+            dict: Dictionary mapping metric names to their evaluation results.
+        """
         # drop missings in numericals
         numerical_features = [
             col for col in X_train.columns if col not in self.discrete_features

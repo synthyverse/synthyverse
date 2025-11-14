@@ -8,6 +8,56 @@ from ...utils.utils import get_total_trainable_params
 
 
 class CDTDGenerator(TabularBaseGenerator):
+    """Continuous Diffusion for mixed-type Tabular Data (CDTD).
+
+    CDTD uses continuous diffusion for mixed-type tabular data.
+    It provides several improvements to homogenize data types in the modelling process.
+    Uses the simple wrapper implementation from the original paper's authors (https://github.com/muellermarkus/cdtd_simple)
+    Paper: "Continuous Diffusion for Mixed-Type Tabular Data" by Markus et al. (2023).
+
+    Args:
+        cat_emb_dim (int): Embedding dimension for categorical features. Default: 16.
+        mlp_emb_dim (int): Embedding dimension for MLP layers. Default: 256.
+        mlp_n_layers (int): Number of MLP layers. Default: 5.
+        mlp_n_units (int): Number of units per MLP layer. Default: 1024.
+        sigma_data_cat (float): Data sigma for categorical features. Default: 1.0.
+        sigma_data_cont (float): Data sigma for continuous features. Default: 1.0.
+        sigma_min_cat (float): Minimum sigma for categorical features. Default: 0.0.
+        sigma_min_cont (float): Minimum sigma for continuous features. Default: 0.0.
+        sigma_max_cat (float): Maximum sigma for categorical features. Default: 100.0.
+        sigma_max_cont (float): Maximum sigma for continuous features. Default: 80.0.
+        cat_emb_init_sigma (float): Initial sigma for categorical embeddings. Default: 0.001.
+        timewarp_type (str): Type of time warping. Options: "single", "bytype", "all". Default: "bytype".
+        timewarp_weight_low_noise (float): Weight for low noise in time warping. Default: 1.0.
+        num_steps_train (int): Number of training steps (iterations, not epochs). Default: 30000.
+        num_steps_warmup (int): Number of warmup steps. Default: 1000.
+        batch_size (int): Batch size for training. Default: 4096.
+        lr (float): Learning rate. Default: 1e-3.
+        ema_decay (float): Exponential moving average decay. Default: 0.999.
+        log_steps (int): Steps between logging. Default: 100.
+        random_state (int): Random seed for reproducibility. Default: 0.
+        **kwargs: Additional arguments passed to TabularBaseGenerator.
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.generators import CDTDGenerator
+        >>>
+        >>> # Load data
+        >>> X = pd.read_csv("data.csv")
+        >>> discrete_features = ["category_col"]
+        >>>
+        >>> # Create generator
+        >>> generator = CDTDGenerator(
+        ...     timewarp_type="bytype",
+        ...     num_steps_train=30000,
+        ...     random_state=42
+        ... )
+        >>>
+        >>> # Fit and generate
+        >>> generator.fit(X, discrete_features)
+        >>> X_syn = generator.generate(1000)
+    """
+
     name = "cdtd"
 
     def __init__(
@@ -73,6 +123,13 @@ class CDTDGenerator(TabularBaseGenerator):
     def _fit_model(
         self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
     ):
+        """Fit the CDTD model on training data.
+
+        Args:
+            X: Preprocessed training data.
+            discrete_features: List of discrete feature names after preprocessing.
+            X_val: Optional validation data (not used by CDTD).
+        """
         self.discrete_features = discrete_features
 
         self.numerical_features = [
@@ -114,7 +171,6 @@ class CDTDGenerator(TabularBaseGenerator):
         )
 
     def _generate_data(self, n: int):
-
         # synthesize
         syn_X_discrete, syn_X_numerical = self.cdtd.sample(
             num_samples=n, **self.sample_params

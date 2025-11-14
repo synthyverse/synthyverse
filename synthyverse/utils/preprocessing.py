@@ -25,6 +25,25 @@ def scale(
     discrete_method: str = "one-hot",
     scaling_method: str = "standard",
 ):
+    """Scale and encode datasets for evaluation.
+
+    This function applies encoding to discrete features and scaling to numerical
+    features across training, test, and synthetic datasets. The encoders are
+    fitted on the union of all datasets to ensure consistent encoding.
+
+    Args:
+        X_train: Training data as a pandas DataFrame.
+        X_test: Test data as a pandas DataFrame.
+        X_syn: Synthetic data as a pandas DataFrame.
+        discrete_features: List of column names that are discrete/categorical.
+        discrete_method: Method for encoding discrete features.
+            Options: "one-hot", "ordinal".
+        scaling_method: Method for scaling numerical features.
+            Options: "standard", "minmax".
+
+    Returns:
+        tuple: Tuple of (X_train_scaled, X_test_scaled, X_syn_scaled) DataFrames.
+    """
 
     numerical_features = [
         col for col in X_train.columns if col not in discrete_features

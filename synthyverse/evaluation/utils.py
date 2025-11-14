@@ -14,10 +14,32 @@ def precision_recall(
     y_true,
     y_pred,
 ):
+    """Calculate precision and recall scores.
+
+    Args:
+        y_true: True binary labels.
+        y_pred: Predicted binary labels.
+
+    Returns:
+        tuple: Tuple of (precision, recall) scores.
+    """
     return precision_score(y_true, y_pred), recall_score(y_true, y_pred)
 
 
 def get_accuracy_metric(name: str):
+    """Get accuracy metric function and standardized name.
+
+    Captures as many variants of the metric name as possible.
+
+    Args:
+        name: Metric name (case-insensitive, supports variants).
+
+    Returns:
+        tuple: Tuple of (metric_function, standardized_name).
+
+    Raises:
+        ValueError: If metric name is not supported.
+    """
     # capture as many variants of the metric name as possible
     if name.lower().startswith("precision") and name.lower().endswith("recall"):
         return precision_recall, "precision-recall"
@@ -47,6 +69,14 @@ def get_accuracy_metric(name: str):
 
 
 def xgboost_hyperparams(trial):
+    """Generate XGBoost hyperparameters for Optuna trial.
+
+    Args:
+        trial: Optuna trial object.
+
+    Returns:
+        dict: Dictionary of XGBoost hyperparameters.
+    """
     return {
         "tree_method": "hist",
         "max_depth": trial.suggest_int("max_depth", 3, 10),

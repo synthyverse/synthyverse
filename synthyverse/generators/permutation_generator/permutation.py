@@ -4,6 +4,35 @@ import numpy as np
 
 
 class PermutationGenerator(TabularBaseGenerator):
+    """Permutation-based generator for tabular synthetic data.
+
+    Generates synthetic data by randomly permuting a fraction of values in each
+    column of the training data. This is a simple baseline generator, mostly used for testing purposes.
+
+    Args:
+        random_state (int): Random seed for reproducibility. Default: 0.
+        permutation_rate (float): Fraction of values to permute in each column (0.0 to 1.0). Default: 0.5.
+        **kwargs: Additional arguments passed to TabularBaseGenerator.
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.generators import PermutationGenerator
+        >>>
+        >>> # Load data
+        >>> X = pd.read_csv("data.csv")
+        >>> discrete_features = ["category_col"]
+        >>>
+        >>> # Create generator
+        >>> generator = PermutationGenerator(
+        ...     permutation_rate=0.5,
+        ...     random_state=42
+        ... )
+        >>>
+        >>> # Fit and generate
+        >>> generator.fit(X, discrete_features)
+        >>> X_syn = generator.generate(1000)
+    """
+
     name = "permutation"
 
     def __init__(self, random_state: int = 0, permutation_rate: float = 0.5, **kwargs):
