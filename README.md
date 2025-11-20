@@ -37,8 +37,6 @@ Templates provide installation for specific generators, the evaluation module, a
 
 **Note that the core installation without any template doesn't install any modules.**
 
-See the [overview of templates](https://github.com/synthyverse/synthyverse/blob/main/synthyverse/TEMPLATES.md).
-
 ## Available Installation Templates
 
 The following installation templates are available:
