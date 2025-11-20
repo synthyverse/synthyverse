@@ -39,6 +39,37 @@ Templates provide installation for specific generators, the evaluation module, a
 
 See the [overview of templates](https://github.com/synthyverse/synthyverse/blob/main/synthyverse/TEMPLATES.md).
 
+## Available Installation Templates
+
+The following installation templates are available:
+
+| Template Name | Installation Command |
+|---------------|----------------------|
+| `arf` | `pip install synthyverse[arf]` |
+| `bn` | `pip install synthyverse[bn]` |
+| `cdtd` | `pip install synthyverse[cdtd]` |
+| `ctabgan` | `pip install synthyverse[ctabgan]` |
+| `ctgan` | `pip install synthyverse[ctgan]` |
+| `eval` | `pip install synthyverse[eval]` |
+| `forestdiffusion` | `pip install synthyverse[forestdiffusion]` |
+| `forestlm` | `pip install synthyverse[forestlm]` |
+| `ice` | `pip install synthyverse[ice]` |
+| `missforest` | `pip install synthyverse[missforest]` |
+| `nrgboost` | `pip install synthyverse[nrgboost]` |
+| `ot` | `pip install synthyverse[ot]` |
+| `permutation` | `pip install synthyverse[permutation]` |
+| `realtabformer` | `pip install synthyverse[realtabformer]` |
+| `synthpop` | `pip install synthyverse[synthpop]` |
+| `tabargn` | `pip install synthyverse[tabargn]` |
+| `tabddpm` | `pip install synthyverse[tabddpm]` |
+| `tabsyn` | `pip install synthyverse[tabsyn]` |
+| `tvae` | `pip install synthyverse[tvae]` |
+| `unmaskingtrees` | `pip install synthyverse[unmaskingtrees]` |
+| `base` | `pip install synthyverse[base]` |
+| `full` | `pip install synthyverse[full]` |
+
+**Note:** You can install multiple templates by separating them with commas, e.g., `pip install synthyverse[ctgan,eval]`
+
 ### General Installation Template
 
 ```bash
