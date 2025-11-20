@@ -9,6 +9,7 @@ on:
       - 'setup.py'
       - 'requirements/**'
       - 'README.md'
+      - 'docs/source/getting_started.md'
       - '.github/workflows/update_templates.yml'
       - 'scripts/update_templates.py'
       - 'scripts/setup_utils.py'
@@ -48,7 +49,7 @@ jobs:
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-        git add README.md
+        git add README.md docs/source/getting_started.md
         git commit -m "docs: Update installation templates list [skip ci]"
         git push
 

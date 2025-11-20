@@ -27,6 +27,9 @@ html_theme = "furo"
 html_static_path = ["_static"]
 templates_path = ["_templates"]
 
+# Logo - path relative to conf.py
+html_logo = "_static/logo.png"
+
 # MyST Markdown
 myst_enable_extensions = ["deflist", "colon_fence", "substitution", "linkify"]
 

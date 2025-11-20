@@ -35,10 +35,24 @@ def get_extras():
     Returns:
         Dictionary mapping extra names to lists of requirements
     """
+    extras, _ = get_extras_with_categories()
+    return extras
+
+
+def get_extras_with_categories():
+    """
+    Extract extras from requirements directory with category information.
+
+    Returns:
+        Tuple of (extras_dict, category_dict) where:
+        - extras_dict: Dictionary mapping extra names to lists of requirements
+        - category_dict: Dictionary mapping extra names to their category (generators/evaluation/imputers)
+    """
     setup_dir = get_setup_dir()
     requirements_dir = os.path.join(setup_dir, "requirements")
 
     extras = {}
+    categories = {}
 
     # Process each subdirectory in requirements folder
     for subdir in ["generators", "evaluation", "imputers"]:
@@ -54,6 +68,7 @@ def get_extras():
             # Add base extra only for generators (to maintain backward compatibility)
             if subdir == "generators":
                 extras["base"] = base_requirements
+                categories["base"] = "generators"
 
         # Process all .txt files in the subdirectory
         for filename in os.listdir(subdir_path):
@@ -69,11 +84,13 @@ def get_extras():
 
                 # Combine with base requirements if they exist
                 extras[name] = base_requirements + file_requirements
+                categories[name] = subdir
 
     # Create a "full" extra that includes all extras
     extras["full"] = []
     for key in extras:
         extras["full"].extend(extras[key])
     extras["full"] = list(set(extras["full"]))
+    categories["full"] = "all"
 
-    return extras
+    return extras, categories
