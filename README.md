@@ -11,7 +11,7 @@ Welcome to the synthyverse!
 
 An extensive ecosystem for synthetic data generation and evaluation in Python.
 
-[Read the docs](synthyverse.readthedocs.io) for in-depth usage.
+[Read the docs](https://synthyverse.readthedocs.io) for in-depth usage.
 
 _The synthyverse is a work in progress. Please provide any suggestions through a GitHub Issue._
 
