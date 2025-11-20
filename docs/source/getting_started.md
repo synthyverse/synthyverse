@@ -39,7 +39,6 @@ The following installation templates are available:
 | `full` | All | `pip install synthyverse[full]` |
 
 **Note:** You can install multiple templates by separating them with commas, e.g., `pip install synthyverse[ctgan,eval]`
-
 ### General Installation Template
 
 ```bash
