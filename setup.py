@@ -1,4 +1,12 @@
 from setuptools import setup, find_packages
+import os
+import sys
+
+# Ensure scripts directory is in the path for imports
+scripts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts')
+if scripts_dir not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from scripts.setup_utils import get_extras
 
 version = "0.1.3"
