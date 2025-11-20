@@ -24,10 +24,8 @@ extensions = [
 
 # Theme
 html_theme = "furo"
-# Use absolute paths relative to conf.py location to ensure they work regardless of where Sphinx runs
-_conf_dir = os.path.dirname(os.path.abspath(__file__))
-html_static_path = [os.path.join(_conf_dir, "_static")]
-templates_path = [os.path.join(_conf_dir, "_templates")]
+html_static_path = ["_static"]
+templates_path = ["_templates"]
 
 # MyST Markdown
 myst_enable_extensions = ["deflist", "colon_fence", "substitution", "linkify"]
