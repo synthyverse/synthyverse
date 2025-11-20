@@ -18,6 +18,7 @@ class ForestDiffusionGenerator(TabularBaseGenerator):
         target_column (str): Name of the target column.
         duplicate_K (int): Number of duplicates for each sample. Default: 100.
         noise_level (int): Noise level for diffusion. Default: 50.
+        n_batch (int): Number of batches to use for XGBoost's data iterator. Default: 1.
         diffusion_type (str): Type of diffusion. Options: "flow", "vp". Default: "flow".
         n_jobs (int): Number of parallel jobs (-1 for all cores). Default: -1.
         max_depth (int): Maximum depth of trees. Default: 7.
@@ -80,6 +81,7 @@ class ForestDiffusionGenerator(TabularBaseGenerator):
         beta_max: float = 8,
         n_z: int = 10,
         gpu_hist: bool = False,
+        n_batch: int = 1,
         random_state: int = 0,
         **kwargs,
     ):
@@ -103,6 +105,7 @@ class ForestDiffusionGenerator(TabularBaseGenerator):
         self.duplicate_K = duplicate_K
         self.diffusion_type = diffusion_type
         self.noise_level = noise_level
+        self.n_batch = n_batch  # If >0 use the data iterator with the specified number of batches
 
     def _fit_model(
         self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None

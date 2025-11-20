@@ -19,9 +19,6 @@ class TabularBaseGenerator:
         retain_missingness (bool): Whether to propogate/generate missing values in the synthetic data. Default: False.
         encode_mixed_numerical_features (bool): Whether to encode mixed numerical-categorical features.
             If True, discrete spikes in numerical features are one-hot encoded and replaced by randomly imputed numerical values. Default: False.
-        quantile_transform_numericals (bool): Whether to apply quantile transformation (normalization) to
-            numerical features for better distribution matching. Can be useful for generative models which expect normally distributed data,
-            but which do not perform this preprocessing itself. Default: False.
         random_state (int): Random seed for reproducibility. Default: 0.
 
     Example:
@@ -50,7 +47,6 @@ class TabularBaseGenerator:
         missing_imputation_method: str = "drop",
         retain_missingness: bool = False,
         encode_mixed_numerical_features: bool = False,
-        quantile_transform_numericals: bool = False,
         random_state: int = 0,
     ):
         self.random_state = random_state
@@ -60,7 +56,6 @@ class TabularBaseGenerator:
             self.constraints = constraints
         self.missing_imputation_method = missing_imputation_method
         self.retain_missingness = retain_missingness
-        self.quantile_transform_numericals = quantile_transform_numericals
         self.encode_mixed_numerical_features = encode_mixed_numerical_features
 
     def fit(self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None):
@@ -89,7 +84,6 @@ class TabularBaseGenerator:
                 missing_imputation_method=self.missing_imputation_method,
                 retain_missingness=self.retain_missingness,
                 encode_mixed_numerical_features=self.encode_mixed_numerical_features,
-                quantile_transform_numericals=self.quantile_transform_numericals,
                 constraints=self.constraints,
             )
         else:
@@ -99,7 +93,6 @@ class TabularBaseGenerator:
             missing_imputation_method=self.missing_imputation_method,
             retain_missingness=self.retain_missingness,
             encode_mixed_numerical_features=self.encode_mixed_numerical_features,
-            quantile_transform_numericals=self.quantile_transform_numericals,
             constraints=self.constraints,
         )
 

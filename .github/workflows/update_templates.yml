@@ -1,0 +1,54 @@
+name: Update Installation Templates
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'setup.py'
+      - 'requirements/**'
+      - 'README.md'
+      - '.github/workflows/update_templates.yml'
+      - 'scripts/update_templates.py'
+      - 'scripts/setup_utils.py'
+
+jobs:
+  update-templates:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.8'
+    
+    - name: Run template update script
+      run: |
+        python scripts/update_templates.py
+    
+    - name: Check for changes
+      id: verify-changed-files
+      run: |
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "changed=true" >> $GITHUB_OUTPUT
+        else
+          echo "changed=false" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Commit changes
+      if: steps.verify-changed-files.outputs.changed == 'true'
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add README.md
+        git commit -m "docs: Update installation templates list [skip ci]"
+        git push
+

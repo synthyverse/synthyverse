@@ -19,6 +19,7 @@ Quick Start
    :caption: Getting Started
 
    getting_started
+   in_depth_usage
 
 API Reference
 -------------

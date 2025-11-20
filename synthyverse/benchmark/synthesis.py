@@ -27,7 +27,6 @@ class TabularSynthesisBenchmark:
         missing_imputation_method (str): Method for handling missing values. "drop" removes missing rows, other options perform imputation: "random", "mean", "median", "mode". Default: "drop".
         retain_missingness (bool): Whether to retain missing values in generated datasets. Default: False.
         encode_mixed_numerical_features (bool): Whether to encode mixed numerical-discrete features by one hot encoding discrete values and randomly imputing numerical values. Default: False.
-        quantile_transform_numericals (bool): Whether to apply quantile transformation to numerical features to normalize them. Default: False.
         constraints (Union[str, list]): List of constraint strings which should hold in the generated data. Note that the constraints should already hold in the training datasets. Default: [].
         max_syn_size (int): Maximum size of synthetic datasets to generate. Can be used to limit evaluation time. Default: 1000000000.
         workspace (str): Directory for storing intermediate files. Default: "workspace".
@@ -67,7 +66,6 @@ class TabularSynthesisBenchmark:
         missing_imputation_method: str = "drop",
         retain_missingness: bool = False,
         encode_mixed_numerical_features: bool = False,
-        quantile_transform_numericals: bool = False,
         constraints: Union[str, list] = [],
         max_syn_size: int = int(1e9),
         workspace: str = "workspace",
@@ -89,7 +87,6 @@ class TabularSynthesisBenchmark:
                 "missing_imputation_method": missing_imputation_method,
                 "retain_missingness": retain_missingness,
                 "encode_mixed_numerical_features": encode_mixed_numerical_features,
-                "quantile_transform_numericals": quantile_transform_numericals,
                 "constraints": constraints,
             }
         )

@@ -1,45 +1,10 @@
 from setuptools import setup, find_packages
-import os
+from scripts.setup_utils import get_extras
 
 version = "0.1.3"
 
-
-def read_requirements(filename):
-    # Get the directory where setup.py is located
-    setup_dir = os.path.dirname(os.path.abspath(__file__))
-    filepath = os.path.join(setup_dir, "requirements", filename)
-    with open(filepath, "r", encoding="utf-8") as f:
-        return [line.strip() for line in f if line.strip() and not line.startswith("#")]
-
-
 # Define extras dynamically from requirements folder
-base_requirements = read_requirements("generators/base.txt")
-extras = {
-    "eval": read_requirements("evaluation/eval.txt"),
-    "base": base_requirements,
-    "permutation": base_requirements + read_requirements("generators/permutation.txt"),
-    "ctgan": base_requirements + read_requirements("generators/ctgan.txt"),
-    "arf": base_requirements + read_requirements("generators/arf.txt"),
-    "bn": base_requirements + read_requirements("generators/bn.txt"),
-    "tvae": base_requirements + read_requirements("generators/tvae.txt"),
-    "tabddpm": base_requirements + read_requirements("generators/tabddpm.txt"),
-    "tabsyn": base_requirements + read_requirements("generators/tabsyn.txt"),
-    "cdtd": base_requirements + read_requirements("generators/cdtd.txt"),
-    "tabargn": base_requirements + read_requirements("generators/tabargn.txt"),
-    "realtabformer": base_requirements
-    + read_requirements("generators/realtabformer.txt"),
-    "ctabgan": base_requirements + read_requirements("generators/ctabgan.txt"),
-    "forestdiffusion": base_requirements
-    + read_requirements("generators/forestdiffusion.txt"),
-    "unmaskingtrees": base_requirements
-    + read_requirements("generators/unmaskingtrees.txt"),
-}
-
-# Create a "full" extra that includes all extras
-extras["full"] = []
-for key in extras:
-    extras["full"].extend(extras[key])
-extras["full"] = list(set(extras["full"]))
+extras = get_extras()
 
 core_dependencies = []  # Always-installed dependencies
 

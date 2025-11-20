@@ -39,8 +39,7 @@ class TabularPreprocessor:
         >>> # Execute preprocessing pipeline
         >>> X_prep = preprocessor.pipeline(
         ...     X,
-        ...     missing_imputation_method="mean",
-        ...     quantile_transform_numericals=True
+        ...     missing_imputation_method="mean"
         ... )
         >>>
         >>> # After generation, inverse transform
@@ -58,7 +57,6 @@ class TabularPreprocessor:
         missing_imputation_method: str = "drop",
         retain_missingness: bool = False,
         encode_mixed_numerical_features: bool = False,
-        quantile_transform_numericals: bool = False,
         constraints: list = [],
     ):
         """Execute a preprocessing pipeline for tabular synthetic data generation.
@@ -66,7 +64,6 @@ class TabularPreprocessor:
         Operations include:
         -> Imputing or dropping missing values (most generative models cannot natively handle missing values)
         -> Encoding mixed numerical features (most generative models cannot natively handle discontinuous numerical distributions)
-        -> Quantile transforming numerical features (most generative models work better with normally distributed numerical features)
         -> Applying constraints (through pre- and postprocessing we can enforce intercolumn constraints)
 
         This method also retains information on the original dataset, e.g., numerical precision
@@ -80,8 +77,6 @@ class TabularPreprocessor:
             retain_missingness: If True, add indicator columns for missing values.
             encode_mixed_numerical_features: If True, encode mixed numerical-categorical
                 features (e.g., zero-inflated features).
-            quantile_transform_numericals: If True, apply quantile transformation to
-                numerical features.
             constraints: List of constraint strings to enforce.
 
         Returns:
@@ -130,12 +125,10 @@ class TabularPreprocessor:
                 self.discrete_features.extend(mixed_discretes.columns.tolist())
                 X_prep = pd.concat([X_prep, mixed_discretes], axis=1)
 
-        # ensure all data is numerical and quantile transform numericals if desired
+        # ensure all data is numerical
         X_prep = self.scale(
             X_prep,
-            numerical_transformer=(
-                "quantile" if quantile_transform_numericals else "passthrough"
-            ),
+            numerical_transformer="passthrough",
             categorical_transformer="ordinal",
         )
         self.pipeline_is_fitted = True
