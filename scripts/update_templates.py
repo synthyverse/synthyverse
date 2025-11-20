@@ -6,6 +6,8 @@ import os
 import re
 import sys
 
+# Add parent directory to path so we can import scripts.setup_utils
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.setup_utils import get_extras
 
 
