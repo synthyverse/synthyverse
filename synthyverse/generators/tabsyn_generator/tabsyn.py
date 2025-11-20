@@ -16,10 +16,13 @@ class TabSynGenerator(TabularBaseGenerator):
 
     TabSyn trains a VAE to learn embeddings, then trains a diffusion model on the embeddings.
     Synthetic embeddings sampled from the diffusion model are decoded by the VAE to generate synthetic data.
+
     We use the implementation from the original paper. We adapt the code to allow it to follow the synthyverse API.
     We also provide the following fixes:
+
     i) early stopping the VAE based on validation loss instead of test loss
     ii) early stopping the VAE based on full reconstruction loss instead of only categorical cross-entropy
+
     Paper: "Mixed-type tabular data synthesis with score-based diffusion in latent space" by Zhang et al. (2023).
 
     Args:

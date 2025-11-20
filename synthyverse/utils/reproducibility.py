@@ -18,3 +18,21 @@ def set_seed(seed: int = 42):
         torch.cuda.manual_seed_all(seed)
     except:
         pass
+    try:
+        import tensorflow as tf
+
+        tf.random.set_seed(seed)
+    except:
+        pass
+    try:
+        import tensorflow.compat.v1 as tf
+
+        tf.set_random_seed(seed)
+    except:
+        pass
+    try:
+        import jax
+
+        jax.random.PRNGKey(seed)
+    except:
+        pass

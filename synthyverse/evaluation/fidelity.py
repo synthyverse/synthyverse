@@ -201,9 +201,9 @@ class ClassifierTest:
 
 
 class AlphaPrecisionBetaRecallAuthenticity:
-    """Alpha-Precision, Beta-Recall, Authenticity score from the Alaa et al. paper.
+    """Alpha-Precision, Beta-Recall, Authenticity score.
 
-    These metrics measure the quality and authenticity of synthetic data generation.
+    Paper: "How faithful is your synthetic data? sample-level metrics for evaluating and auditing generative models" by Alaa et al. (2022).
 
     Args:
         discrete_features (list): List of discrete/categorical feature names. Default: [].
@@ -345,7 +345,7 @@ class AlphaPrecisionBetaRecallAuthenticity:
 
 
 class Similarity:
-    """Column Shapes and Column Pair Trends from the SDMetrics library.
+    """Column Shapes and Column Pair Trends from the SDMetrics library (https://docs.sdv.dev/sdmetrics/)
 
     Indicates quality of marginal distributions and correlations in synthetic data,
     respectively.

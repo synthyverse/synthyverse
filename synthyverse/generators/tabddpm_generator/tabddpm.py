@@ -12,7 +12,9 @@ class TabDDPMGenerator(TabularBaseGenerator):
     """Tabular Denoising Diffusion Probabilistic Model (TabDDPM).
 
     TabDDPM combines continuous diffusion for numerical features with multinomial diffusion for categorical features.
+
     We use the implementation from SynthCity, with some modifications to allow manual specification of discrete features.
+
     Paper: "Tabddpm: Modelling tabular data with diffusion models" by Kotelnikov et al. (2023).
 
     Args:

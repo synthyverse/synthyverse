@@ -8,7 +8,9 @@ class TabARGNGenerator(TabularBaseGenerator):
     """Tabular AutoRegressive Generative Network (TabARGN).
 
     TabARGN uses masked transformers for tabular data generation.
+
     We use the implementation from the MostlyAI engine.
+
     Paper: "TabularARGN: A Flexible and Efficient Auto-Regressive Framework for Generating High-Fidelity Synthetic Data" by Tiwald et al. (2025).
 
     Args:

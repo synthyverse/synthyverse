@@ -244,15 +244,7 @@ class TabularSynthesisBenchmark:
         return results
 
     def clean_directory(self, path: str, remove_self: bool = False) -> None:
-        """Remove all files and subdirectories inside a directory.
 
-        Args:
-            path: Path to the directory to clean.
-            remove_self: If True, remove the directory itself as well.
-
-        Raises:
-            FileNotFoundError: If the directory does not exist.
-        """
         if not os.path.exists(path):
             raise FileNotFoundError(f"Directory '{path}' does not exist.")
 

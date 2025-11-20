@@ -10,9 +10,10 @@ from ...utils.utils import get_total_trainable_params
 class CDTDGenerator(TabularBaseGenerator):
     """Continuous Diffusion for mixed-type Tabular Data (CDTD).
 
-    CDTD uses continuous diffusion for mixed-type tabular data.
-    It provides several improvements to homogenize data types in the modelling process.
+    CDTD uses continuous diffusion for mixed-type tabular data. It provides several improvements to homogenize data types in the modelling process.
+
     Uses the simple wrapper implementation from the original paper's authors (https://github.com/muellermarkus/cdtd_simple)
+
     Paper: "Continuous Diffusion for Mixed-Type Tabular Data" by Markus et al. (2023).
 
     Args:

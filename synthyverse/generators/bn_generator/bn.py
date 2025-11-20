@@ -10,6 +10,7 @@ class BNGenerator(TabularBaseGenerator):
 
     Uses Bayesian networks to model dependencies between variables and generate
     synthetic data by sampling from the learned joint distribution.
+
     Uses the implementation from Synthcity (https://github.com/vanderschaarlab/synthcity/).
 
     Args:

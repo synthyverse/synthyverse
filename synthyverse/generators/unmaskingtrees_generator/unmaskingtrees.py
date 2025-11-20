@@ -9,7 +9,9 @@ class UnmaskingTreesGenerator(TabularBaseGenerator):
 
     Unmasking Trees is an autoregressive model which hierarchically partitions features into binary bins,
     to then recursively train XGBoost classifiers along the meta-tree hierarchy.
+
     We use the implementation from the utrees pypi package. Can be costly for large datasets.
+
     Paper: "Unmasking trees for tabular data" by C. McCarter (2024).
 
     Args:

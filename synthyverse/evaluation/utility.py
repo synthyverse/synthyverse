@@ -292,16 +292,6 @@ class MLE:
         return best
 
     def score_fn(self, y, preds):
-        """Calculate evaluation scores based on target type.
-
-        Args:
-            y: True target values.
-            preds: Predicted target values.
-
-        Returns:
-            dict: Dictionary with evaluation scores (AUC/F1/Accuracy for classification,
-                R2/RMSE for regression).
-        """
         if self.target_column in self.discrete_features:
             return {
                 "auc": roc_auc_score(y, preds, average="micro", multi_class="ovr"),

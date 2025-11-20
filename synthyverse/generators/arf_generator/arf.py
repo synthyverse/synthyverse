@@ -8,7 +8,9 @@ class ARFGenerator(TabularBaseGenerator):
     """Adversarial Random Forest (ARF).
 
     ARF leverages random forests in alternating rounds of generation/discrimination to estimate densities and generate synthetic data.
+
     Uses the arfpy package implementation.
+
     Paper: "Adversarial random forests for density estimation and generative modeling" by Watson et al. (2023).
 
     Args:

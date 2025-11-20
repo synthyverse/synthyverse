@@ -7,7 +7,9 @@ class RealTabFormerGenerator(TabularBaseGenerator):
     """Realistic Relational and Tabular Data using Transformers.
 
     Fine-tunes GPT-2 for tabular synthetic data generation.
+
     Uses the realtabformer pypi package implementation.
+
     Paper: "Realtabformer: Generating realistic relational and tabular data using transformers" by Solatorio et al. (2023).
 
     Args:

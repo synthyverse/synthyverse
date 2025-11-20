@@ -11,7 +11,9 @@ class TVAEGenerator(TabularBaseGenerator):
 
     Similar to CTGAN.
     Conditions on discrete columns, and uses mode-specific normalization for numerical columns.
+
     Uses the implementation from the ctgan package, which is also used in the Synthetic Data Vault.
+
     Paper: "Modeling tabular data using conditional gan" by Xu et al. (2019).
 
     Args:

@@ -8,7 +8,9 @@ class NRGBoostGenerator(TabularBaseGenerator):
     """ENeRgy-based Generative Boosting (NRGBoost).
 
     Turns gradient-boosted decision trees into energy-based generative models.
+
     Uses the nrgboost pypi package implementation.
+
     Paper: "NRGBoost: Energy-Based Generative Boosted Trees" by J. Bravo (2024).
 
     Args:

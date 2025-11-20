@@ -9,7 +9,9 @@ class ForestDiffusionGenerator(TabularBaseGenerator):
     """Forest Diffusion.
 
     Diffusion model leveraging XGBoost models to estimate the score function.
+
     Uses the ForestDiffusion pypi package implementation. Can be a costly method for large datasets.
+
     Paper: "Generating and imputing tabular data via diffusion and flow-based gradient-boosted trees" by Jolicoeur-Martineau et al. (2024).
 
     Args:
