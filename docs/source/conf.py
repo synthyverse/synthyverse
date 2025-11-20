@@ -100,6 +100,7 @@ autodoc_mock_imports = [
     "tomli",
     "jax",
     "six",
+    "scripts",
 ]
 
 # Cross-refs to other package docs: potentially to be added later
