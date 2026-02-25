@@ -49,10 +49,10 @@ The following installation templates are available:
 | `ctabgan` | Generator | `pip install synthyverse[ctabgan]` |
 | `ctgan` | Generator | `pip install synthyverse[ctgan]` |
 | `forestdiffusion` | Generator | `pip install synthyverse[forestdiffusion]` |
-| `forestlm` | Generator | `pip install synthyverse[forestlm]` |
 | `nrgboost` | Generator | `pip install synthyverse[nrgboost]` |
 | `permutation` | Generator | `pip install synthyverse[permutation]` |
 | `realtabformer` | Generator | `pip install synthyverse[realtabformer]` |
+| `smote` | Generator | `pip install synthyverse[smote]` |
 | `synthpop` | Generator | `pip install synthyverse[synthpop]` |
 | `tabargn` | Generator | `pip install synthyverse[tabargn]` |
 | `tabddpm` | Generator | `pip install synthyverse[tabddpm]` |
