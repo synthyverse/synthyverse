@@ -1,6 +1,0 @@
-geomloss
-torch
-numpy
-pandas
-scikit-learn
-tqdm

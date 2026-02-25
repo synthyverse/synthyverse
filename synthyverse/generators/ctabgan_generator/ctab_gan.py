@@ -11,7 +11,7 @@ class CTABGANGenerator(TabularBaseGenerator):
 
     This is the CTABGAN+ implementation from the original paper.
     Improves on previous conditional GANs through convolutional layers and elaborate preprocessing schemes.
-    Unlike the original implementation, we automatically detect which features are mixed numerical-discrete, simple gaussians, etc.
+    Unlike the original implementation, we automatically detect feature-type categories (e.g., gaussian-like columns) as part of preprocessing.
 
     Paper: "Ctab-gan+: Enhancing tabular data synthesis" by Zhao et al. (2024).
 

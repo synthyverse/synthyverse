@@ -6,7 +6,5 @@ API Reference
    :caption: API Reference
 
    generators
-   imputers
    evaluation
    benchmarking
-   preprocessing

@@ -111,7 +111,7 @@ class TabDDPMPlugin(Plugin):
         model_type: str = "mlp",
         model_params: dict = {},
         dim_embed: int = 128,
-        continuous_encoder: str = "quantile",
+        continuous_encoder: str = "standard",
         cont_encoder_params: dict = {},
         validation_size: float = 0,
         validation_metric: Optional[WeightedMetrics] = None,

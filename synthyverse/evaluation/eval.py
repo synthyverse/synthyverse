@@ -1,4 +1,6 @@
 from typing import Union
+import warnings
+
 import pandas as pd
 from sklearn.preprocessing import OrdinalEncoder
 
@@ -48,7 +50,7 @@ class TabularMetricEvaluator:
     def __init__(
         self,
         metrics: Union[dict, list],
-        discrete_features: list = [],
+        discrete_features: list = None,
         target_column: str = "target",
         random_state: int = 0,
     ):
@@ -57,7 +59,7 @@ class TabularMetricEvaluator:
             self.metrics = {metric: {} for metric in metrics}
         else:
             self.metrics = metrics
-        self.discrete_features = discrete_features.copy()
+        self.discrete_features = list(discrete_features) if discrete_features is not None else []
         self.target_column = target_column
         self.random_state = random_state
 
@@ -79,6 +81,10 @@ class TabularMetricEvaluator:
         Returns:
             dict: Dictionary mapping metric names to their evaluation results.
         """
+        X_train, X_test, X_syn = X_train.copy(), X_test.copy(), X_syn.copy()
+        if X_val is not None:
+            X_val = X_val.copy()
+
         # drop missings in numericals
         numerical_features = [
             col for col in X_train.columns if col not in self.discrete_features
@@ -143,27 +149,19 @@ class TabularMetricEvaluator:
             print(f"Evaluating metric: {metric__}")
             metric_ = metric__.split("-")[0].strip().lower()
             metric_cls = get_metric(metric_)
-            # Use class properties to determine which additional information needs to be passed to the metric
-            if hasattr(metric_cls, "needs_discrete_features") and getattr(
-                metric_cls, "needs_discrete_features", False
-            ):
-                self.metrics[metric__]["discrete_features"] = self.discrete_features
-            if hasattr(metric_cls, "needs_target_column") and getattr(
-                metric_cls, "needs_target_column", False
-            ):
-                self.metrics[metric__]["target_column"] = self.target_column
-            if hasattr(metric_cls, "needs_random_state") and getattr(
-                metric_cls, "needs_random_state", False
-            ):
-                self.metrics[metric__]["random_state"] = self.random_state
 
-            if hasattr(metric_cls, "needs_val_set") and getattr(
-                metric_cls, "needs_val_set", False
-            ):
-                self.metrics[metric__]["X_val"] = X_val
+            params = dict(self.metrics[metric__])
+            if getattr(metric_cls, "needs_discrete_features", False):
+                params["discrete_features"] = self.discrete_features
+            if getattr(metric_cls, "needs_target_column", False):
+                params["target_column"] = self.target_column
+            if getattr(metric_cls, "needs_random_state", False):
+                params["random_state"] = self.random_state
+            if getattr(metric_cls, "needs_val_set", False):
+                params["X_val"] = X_val
 
-            metric = metric_cls(**self.metrics[metric__])
-            # Use class property to determine which data to pass
+            metric = metric_cls(**params)
+
             data_req = getattr(metric_cls, "data_requirement", None)
             if data_req == "test":
                 metric_result = metric.evaluate(
@@ -178,12 +176,16 @@ class TabularMetricEvaluator:
             elif data_req == "train_and_test":
                 metric_result = metric.evaluate(X_train, X_test, X_syn)
             else:
-                raise Exception(
+                raise ValueError(
                     f"Metric {metric_} not (fully) implemented or missing data_requirement property"
                 )
 
-            # add result to dict (note that quantitative metrics have to output a dict, else they won't get added here)
-            if type(metric_result) == dict:
+            if isinstance(metric_result, dict):
                 dict_.update(metric_result)
+            else:
+                warnings.warn(
+                    f"Metric '{metric__}' returned {type(metric_result).__name__} "
+                    f"instead of dict — result discarded."
+                )
 
         return dict_

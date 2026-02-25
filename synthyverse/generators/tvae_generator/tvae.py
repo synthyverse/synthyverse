@@ -1,9 +1,6 @@
 from ctgan import TVAE
-from ctgan.synthesizers.tvae import Encoder
 from ..base import TabularBaseGenerator
 import pandas as pd
-
-from ...utils.utils import get_total_trainable_params
 
 
 class TVAEGenerator(TabularBaseGenerator):
@@ -93,19 +90,6 @@ class TVAEGenerator(TabularBaseGenerator):
         )
 
         self.model.fit(X, discrete_features)
-
-        decoder_params = get_total_trainable_params(self.model.decoder)
-        encoder_params = get_total_trainable_params(
-            Encoder(
-                self.model.transformer.output_dimensions,
-                self.model.compress_dims,
-                self.model.embedding_dim,
-            )
-        )
-
-        print(f"Number of decoder params: {decoder_params}")
-        print(f"Number of encoder params: {encoder_params}")
-        print(f"Total number of params: {decoder_params + encoder_params}")
 
     def _generate_data(self, n: int):
         return self.model.sample(n)

@@ -1,10 +1,9 @@
 import pandas as pd
-from sklearn.preprocessing import OrdinalEncoder, QuantileTransformer, StandardScaler
+from sklearn.preprocessing import StandardScaler, OrdinalEncoder
 import torch
 
 from ..base import TabularBaseGenerator
 from .cdtd_dir import CDTD
-from ...utils.utils import get_total_trainable_params
 
 
 class CDTDGenerator(TabularBaseGenerator):
@@ -78,6 +77,7 @@ class CDTDGenerator(TabularBaseGenerator):
         timewarp_weight_low_noise: float = 1.0,
         num_steps_train: int = 30_000,
         num_steps_warmup: int = 1000,
+        sampling_steps: int = 200,
         batch_size: int = 4096,
         lr: float = 1e-3,
         ema_decay: float = 0.999,
@@ -112,7 +112,7 @@ class CDTDGenerator(TabularBaseGenerator):
         }
 
         self.sample_params = {
-            "num_steps": 200,
+            "num_steps": sampling_steps,
             "batch_size": batch_size,
             "seed": self.random_state,
         }
@@ -139,20 +139,8 @@ class CDTDGenerator(TabularBaseGenerator):
         # retain original column order to output correct dataframe format after generation
         self.col_order = X.columns
 
-        # ordinally encode discrete columns
-        X_discrete = X[discrete_features].to_numpy().astype(str)
-        self.ord_encoder = OrdinalEncoder()
-        X_discrete = self.ord_encoder.fit_transform(X_discrete)
-
-        # quantile transform and standard scale numericals (tries to put 30 samples per bin, but caps range inside [10,1000])
+        # standard scale numericals
         X_numerical = X[self.numerical_features].to_numpy().astype(float)
-        self.quant_encoder = QuantileTransformer(
-            output_distribution="normal",
-            n_quantiles=max(min(X_numerical.shape[0] // 30, 1000), 10),
-            subsample=int(1e9),
-            random_state=self.random_state,
-        )
-        X_numerical = self.quant_encoder.fit_transform(X_numerical)
         self.scaler = StandardScaler()
         X_numerical = self.scaler.fit_transform(X_numerical)
 
@@ -161,10 +149,6 @@ class CDTDGenerator(TabularBaseGenerator):
 
         self.cdtd = CDTD(
             X_cat_train=X_discrete, X_cont_train=X_numerical, **self.cdtd_params
-        )
-
-        print(
-            f"Number of CDTD params: {get_total_trainable_params(self.cdtd.diff_model)}"
         )
 
         self.cdtd.fit(
@@ -176,11 +160,7 @@ class CDTDGenerator(TabularBaseGenerator):
         syn_X_discrete, syn_X_numerical = self.cdtd.sample(
             num_samples=n, **self.sample_params
         )
-
-        # postprocess to format expected by basegenerator
-        syn_X_discrete = self.ord_encoder.inverse_transform(syn_X_discrete)
         syn_X_numerical = self.scaler.inverse_transform(syn_X_numerical)
-        syn_X_numerical = self.quant_encoder.inverse_transform(syn_X_numerical)
 
         # combine to synthetic dataset
         syn_X = pd.concat(

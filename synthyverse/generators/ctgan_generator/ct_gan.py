@@ -1,9 +1,6 @@
 from ctgan import CTGAN
-from ctgan.synthesizers.ctgan import Discriminator
 from ..base import TabularBaseGenerator
 import pandas as pd
-
-from ...utils.utils import get_total_trainable_params
 
 
 class CTGANGenerator(TabularBaseGenerator):
@@ -98,7 +95,6 @@ class CTGANGenerator(TabularBaseGenerator):
         # round batch_size to be divisible by pac
         self.batch_size = self.batch_size // self.pac * self.pac
 
-        # TBD: force batch_size to be divisible by pac
         self.model = CTGAN(
             embedding_dim=self.embedding_dim,
             generator_dim=self.generator_dim,
@@ -117,19 +113,6 @@ class CTGANGenerator(TabularBaseGenerator):
         )
 
         self.model.fit(X, discrete_features)
-
-        n_generator_params = get_total_trainable_params(self.model._generator)
-        n_discriminator_params = get_total_trainable_params(
-            Discriminator(
-                self.model._transformer.output_dimensions
-                + self.model._data_sampler.dim_cond_vec(),
-                self.model._discriminator_dim,
-                pac=self.model.pac,
-            )
-        )
-        print(f"Number of generator params: {n_generator_params}")
-        print(f"Number of discriminator params: {n_discriminator_params}")
-        print(f"Total number of params: {n_generator_params + n_discriminator_params}")
 
     def _generate_data(self, n: int):
         return self.model.sample(n)

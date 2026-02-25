@@ -1,4 +1,4 @@
-import gc, sys, os, functools
+import gc, sys
 
 
 def get_total_trainable_params(model):

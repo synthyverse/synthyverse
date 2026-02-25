@@ -17,17 +17,16 @@ class TabularSynthesisBenchmark:
 
     Args:
         generator_name (str): Name of the generator to benchmark. Default: "arf".
-        generator_params (dict): Dictionary of generator-specific parameters. Default: {}.
+        generator_params (dict): Dictionary of generator-specific parameters. Default: None (empty dict).
         n_random_splits (int): Number of random train/test splits to evaluate. Default: 1.
         n_inits (int): Number of generator training initializations per split. Default: 1.
         n_generated_datasets (int): Number of synthetic datasets to generate per initialization (with varying sampling seeds). Default: 1.
-        metrics (Union[list, dict]): List or dictionary of metrics to evaluate. Default: ["classifier_test", "mle", "dcr"].
+        metrics (Union[list, dict]): List or dictionary of metrics to evaluate. Default: None (["classifier_test", "mle", "dcr"]).
         test_size (float): Proportion of data to use for testing (0.0 to 1.0). Default: 0.2.
         val_size (float): Proportion of data to use for validation (0.0 to 1.0). Note that val_size+test_size must be < 1.0. Default: 0.1.
         missing_imputation_method (str): Method for handling missing values. "drop" removes missing rows, other options perform imputation: "random", "mean", "median", "mode". Default: "drop".
         retain_missingness (bool): Whether to retain missing values in generated datasets. Default: False.
-        encode_mixed_numerical_features (bool): Whether to encode mixed numerical-discrete features by one hot encoding discrete values and randomly imputing numerical values. Default: False.
-        constraints (Union[str, list]): List of constraint strings which should hold in the generated data. Note that the constraints should already hold in the training datasets. Default: [].
+        constraints (Union[str, list]): List of constraint strings which should hold in the generated data. Note that the constraints should already hold in the training datasets. Default: None (empty list).
         max_syn_size (int): Maximum size of synthetic datasets to generate. Can be used to limit evaluation time. Default: 1000000000.
         workspace (str): Directory for storing intermediate files. Default: "workspace".
 
@@ -56,24 +55,30 @@ class TabularSynthesisBenchmark:
     def __init__(
         self,
         generator_name: str = "arf",
-        generator_params: dict = {},
+        generator_params: dict = None,
         n_random_splits: int = 1,
         n_inits: int = 1,
         n_generated_datasets: int = 1,
-        metrics: Union[list, dict] = ["classifier_test", "mle", "dcr"],
+        metrics: Union[list, dict] = None,
         test_size: float = 0.2,
         val_size: float = 0.1,
         missing_imputation_method: str = "drop",
         retain_missingness: bool = False,
-        encode_mixed_numerical_features: bool = False,
-        constraints: Union[str, list] = [],
+        constraints: Union[str, list] = None,
         max_syn_size: int = int(1e9),
         workspace: str = "workspace",
+        random_state: int = 0,
     ):
+        if generator_params is None:
+            generator_params = {}
+        if metrics is None:
+            metrics = ["classifier_test", "mle", "dcr"]
+        if constraints is None:
+            constraints = []
 
         self.generator_name = generator_name
         self.max_syn_size = max_syn_size
-        self.generator_params = generator_params
+        self.generator_params = dict(generator_params)
         self.generator_params.pop(
             "target_column", None
         )  # target column already provided if required
@@ -86,7 +91,6 @@ class TabularSynthesisBenchmark:
             {
                 "missing_imputation_method": missing_imputation_method,
                 "retain_missingness": retain_missingness,
-                "encode_mixed_numerical_features": encode_mixed_numerical_features,
                 "constraints": constraints,
             }
         )
@@ -98,6 +102,7 @@ class TabularSynthesisBenchmark:
         self.test_size = test_size
         self.val_size = val_size
         self.workspace = workspace
+        self.random_state = random_state
 
     def run(
         self,
@@ -132,7 +137,9 @@ class TabularSynthesisBenchmark:
         ):
             self.generator_params["target_column"] = target_column
 
-        for split_i in range(self.n_random_splits):
+        for split_i in range(
+            self.random_state, self.random_state + self.n_random_splits
+        ):
             # remove any previously tuned hyperparameters; they need to be re-tuned for different training splits
             shutil.rmtree("synthyverse_hyperparams_tuned", ignore_errors=True)
             results[f"split_{split_i}"] = {}
@@ -165,7 +172,7 @@ class TabularSynthesisBenchmark:
             else:
                 X_val = None
 
-            for init_i in range(self.n_inits):
+            for init_i in range(self.random_state, self.random_state + self.n_inits):
                 results[f"split_{split_i}"][f"init_{init_i}"] = {}
                 set_seed(init_i)
                 # reset workspace each time we fit the generator
@@ -181,7 +188,9 @@ class TabularSynthesisBenchmark:
                 )
 
                 # potentially generate multiple datasets
-                for generated_dataset_i in range(self.n_generated_datasets):
+                for generated_dataset_i in range(
+                    self.random_state, self.random_state + self.n_generated_datasets
+                ):
                     set_seed(generated_dataset_i)
                     results[f"split_{split_i}"][f"init_{init_i}"][
                         f"generated_dataset_{generated_dataset_i}"
@@ -197,7 +206,6 @@ class TabularSynthesisBenchmark:
                     # sample synthetic dataset and perform evaluation
                     n_train = min(self.max_syn_size, len(X_train))
                     n_test = min(self.max_syn_size, len(X_test))
-                    n_val = min(self.max_syn_size, len(X_val))
                     n = n_train + n_test
                     start_time = time()
                     X_syn = generator.generate(n)
@@ -210,6 +218,12 @@ class TabularSynthesisBenchmark:
                         target_column=target_column,
                         random_state=generated_dataset_i,
                     )
+                    X_val_sample = None
+                    if X_val is not None:
+                        n_val = min(self.max_syn_size, len(X_val))
+                        X_val_sample = X_val.sample(
+                            n_val, replace=False, random_state=generated_dataset_i
+                        )
                     start_time = time()
                     metric_results = evaluator.evaluate(
                         X_train.sample(
@@ -219,9 +233,7 @@ class TabularSynthesisBenchmark:
                             n_test, replace=False, random_state=generated_dataset_i
                         ),
                         X_syn,
-                        X_val.sample(
-                            n_val, replace=False, random_state=generated_dataset_i
-                        ),
+                        X_val_sample,
                     )
                     results[f"split_{split_i}"][f"init_{init_i}"][
                         f"generated_dataset_{generated_dataset_i}"

@@ -6,4 +6,3 @@ Benchmarking
    :titlesonly:
 
    benchmarking/synthesis
-   benchmarking/imputation

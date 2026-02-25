@@ -2,7 +2,6 @@ from ..base import TabularBaseGenerator
 import pandas as pd
 from .fd_dir.fd import ForestDiffusionModel
 import numpy as np
-from sklearn.preprocessing import OrdinalEncoder
 
 
 class ForestDiffusionGenerator(TabularBaseGenerator):
@@ -81,8 +80,8 @@ class ForestDiffusionGenerator(TabularBaseGenerator):
         beta_max: float = 8,
         n_z: int = 10,
         gpu_hist: bool = False,
-        n_batch: int = 1,
         random_state: int = 0,
+        n_batch: int = 1,
         **kwargs,
     ):
         super().__init__(random_state=random_state, **kwargs)
@@ -105,48 +104,42 @@ class ForestDiffusionGenerator(TabularBaseGenerator):
         self.duplicate_K = duplicate_K
         self.diffusion_type = diffusion_type
         self.noise_level = noise_level
-        self.n_batch = n_batch  # If >0 use the data iterator with the specified number of batches
+        self.n_batch = n_batch
 
     def _fit_model(
         self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
     ):
         self.ori_col_order = X.columns
         self.discrete_features = discrete_features.copy()
-        self.X = X.copy()
-
-        # ordinally encode all features
-        self.ordinal_encoder = OrdinalEncoder()
-        self.X[self.discrete_features] = self.ordinal_encoder.fit_transform(
-            self.X[self.discrete_features]
-        )
+        x = X.copy()
 
         # separate target column in case of classification
         if self.target_column in self.discrete_features:
-            self.y = self.X[self.target_column]
-            self.X = self.X.drop(columns=[self.target_column])
-            self.y = self.y.to_numpy()
+            y = x[self.target_column]
+            x = x.drop(columns=[self.target_column])
+            y = y.to_numpy()
         else:
-            self.y = None
+            y = None
 
         bin_features = []
         cat_features = []
-        for col in self.X.columns:
+        for col in x.columns:
             if col in self.discrete_features:
-                if self.X[col].nunique() == 2:
+                if x[col].nunique() == 2:
                     bin_features.append(col)
                 else:
                     cat_features.append(col)
 
-        bin_indexes = [self.X.columns.get_loc(x) for x in bin_features]
-        cat_indexes = [self.X.columns.get_loc(x) for x in cat_features]
+        bin_indexes = [x.columns.get_loc(col) for col in bin_features]
+        cat_indexes = [x.columns.get_loc(col) for col in cat_features]
         int_indexes = []  # already handled by basegenerator
 
-        self.X = self.X.to_numpy()
+        x = x.to_numpy()
 
         self.model = ForestDiffusionModel(
-            self.X,  # Numpy dataset
+            x,  # Numpy dataset
             X_covs=None,  # Numpy dataset of additional covariates/features in order to sample X | X_covs (Optional); note that these variables will not be transformed, please apply your own z-scoring or min-max scaling if desired.
-            label_y=self.y,  # must be a categorical/binary variable; if provided will learn multiple models for each label y
+            label_y=y,  # must be a categorical/binary variable; if provided will learn multiple models for each label y
             n_t=self.noise_level,  # number of noise level
             model="xgboost",  # xgboost, random_forest, lgbm, catboost
             diffusion_type=self.diffusion_type,  # vp, flow (flow is better, but only vp can be used for imputation)
@@ -174,9 +167,6 @@ class ForestDiffusionGenerator(TabularBaseGenerator):
             n_batch=self.n_batch,  # If >0 use the data iterator with the specified number of batches
             seed=self.random_state,
         )
-        # free some memory
-        del self.X
-        del self.y
 
     def _generate_data(self, n: int):
         syn = self.model.generate(batch_size=n)
@@ -194,10 +184,5 @@ class ForestDiffusionGenerator(TabularBaseGenerator):
             syn = syn[self.ori_col_order]
         else:
             syn = pd.DataFrame(syn, columns=self.ori_col_order)
-
-        # remove ordinal encoding
-        syn[self.discrete_features] = self.ordinal_encoder.inverse_transform(
-            syn[self.discrete_features]
-        )
 
         return syn

@@ -32,9 +32,6 @@ The following installation templates are available:
 | `tvae` | Generator | `pip install synthyverse[tvae]` |
 | `unmaskingtrees` | Generator | `pip install synthyverse[unmaskingtrees]` |
 | `base` | Generator | `pip install synthyverse[base]` |
-| `ice` | Imputer | `pip install synthyverse[ice]` |
-| `missforest` | Imputer | `pip install synthyverse[missforest]` |
-| `ot` | Imputer | `pip install synthyverse[ot]` |
 | `eval` | Evaluation | `pip install synthyverse[eval]` |
 | `full` | All | `pip install synthyverse[full]` |
 

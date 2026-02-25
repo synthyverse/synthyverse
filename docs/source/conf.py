@@ -13,6 +13,7 @@ extensions = [
     "myst_parser",
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
+    "sphinx.ext.doctest",
     "sphinx.ext.napoleon",
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
@@ -26,6 +27,7 @@ extensions = [
 html_theme = "furo"
 html_static_path = ["_static"]
 templates_path = ["_templates"]
+exclude_patterns = ["api/generated/**"]
 
 # Logo - path relative to conf.py
 html_logo = "_static/logo.png"
@@ -34,7 +36,8 @@ html_logo = "_static/logo.png"
 myst_enable_extensions = ["deflist", "colon_fence", "substitution", "linkify"]
 
 # Autosummary / Autodoc
-autosummary_generate = True
+# Curated API docs only: do not generate autosummary stub pages.
+autosummary_generate = False
 autodoc_default_options = {
     "members": True,
     "inherited-members": True,
@@ -52,7 +55,7 @@ napoleon_use_rtype = True
 napoleon_include_init_with_doc = False
 napoleon_attr_annotations = True
 
-# skips these imports during doc build (TBD: automate reading all pacakge imports)
+# skips these imports during doc build (TBD: automate reading all package imports)
 autodoc_mock_imports = [
     "pandas",
     "numpy",
@@ -101,6 +104,8 @@ autodoc_mock_imports = [
     "jax",
     "six",
     "scripts",
+    "imbalanced-learn",
+    "imblearn",
 ]
 
 # Cross-refs to other package docs: potentially to be added later

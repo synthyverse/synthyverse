@@ -4,12 +4,11 @@ All generators in synthyverse inherit from a base generator class (currently `Ta
 
 ## Overview
 
-The Base Generator provides four key capabilities:
+The Base Generator provides three key capabilities:
 
 1. **Constraints**: Enforce inter-column constraints in synthetic data
 2. **Missing Value Imputation**: Handle missing values in your training data
 3. **Retain Missingness**: Preserve missing value patterns in synthetic data
-4. **Encode Mixed Numerical-Discrete Features**: Handle features with mixed characteristics (e.g., zero-inflated, discrete spikes)
 
 All of these parameters can be passed to any generator when instantiating it:
 
@@ -21,7 +20,6 @@ generator = ARFGenerator(
     constraints=["col1=col2+col3"],
     missing_imputation_method="mean",
     retain_missingness=True,
-    encode_mixed_numerical_features=True,
     random_state=42
 )
 ```
@@ -51,6 +49,8 @@ generator = CTGANGenerator(
 **How it works**: During preprocessing, the left-hand side feature is removed from the data (since it can be computed exactly from the right-hand side). After generation, the left-hand side is recomputed from the generated right-hand side values.
 
 **Important**: The constraints must already hold in your training data. The generator will enforce them in synthetic data, but cannot learn relationships that don't exist in the training set.
+
+**Important (missing values)**: Constraint setting may not work as expected when you choose to impute missing values in the training data (`missing_imputation_method` other than `"drop"`). Imputed values can violate the intended relationships, so constraints learned from imputed training data may be unreliable.
 
 ### Inequality Constraints
 
@@ -127,7 +127,7 @@ generator = TabSynGenerator(
 
 ## Retain Missingness
 
-By default, missing values are imputed and synthetic data will not contain missing values. However, you can preserve missing value patterns in synthetic data by setting `retain_missingness=True`.
+By default, missing values are dropped or imputed and synthetic data will not contain missing values. However, you can preserve missing value patterns in synthetic data by setting `retain_missingness=True`.
 
 ### How It Works
 
@@ -161,55 +161,6 @@ X_syn = generator.generate(1000)  # May contain NaN values
 
 **Note**: You must still specify a `missing_imputation_method` (the generator needs complete data for training), but the missingness pattern will be preserved in the output. Other libraries often choose random imputation when retaining missingness to ensure similarly shaped marginal distributions. 
 
-## Encode Mixed Features
-
-Some features have mixed characteristics (e.g., discrete spikes in otherwise continuous features) that are not well-handled by some generative models. The `encode_mixed_numerical_features` parameter handles these automatically.
-
-### What Are Mixed Features?
-
-Mixed features (currently implemented for numerical tabular features) are features that contain:
-- Continuous values (e.g., 0.5, 1.2, 3.7)
-- Discrete spikes (e.g., many zeros, or specific values like 100)
-
-Common examples:
-- Zero-inflated features (many zeros, some positive values)
-- Features with default values (many 0s or -1s, some actual values)
-- Features with special codes (e.g., -999 for "not applicable")
-
-### How It Works
-
-When `encode_mixed_numerical_features=True` (for tabular data):
-
-1. The preprocessor detects discrete spikes (values that appear in ≥30% of instances)
-2. Discrete spikes are encoded as separate indicator features (one-hot encoded for tabular data)
-3. The original feature values at spike positions are replaced with random samples
-4. After generation, spikes are reinstated based on the learned patterns
-
-The exact encoding method may vary for different data types.
-
-### Example
-
-```python
-# Handle zero-inflated and mixed-type features
-generator = CTGANGenerator(
-    encode_mixed_numerical_features=True,
-    random_state=42
-)
-
-generator.fit(X, discrete_features)
-X_syn = generator.generate(1000)
-```
-
-### Detection Criteria
-
-For tabular data, a feature is considered "mixed" if:
-- It has at least one value that appears in ≥30% of instances (discrete spike)
-- It still has at least 20 distinct values outside the spikes (continuous component)
-- Up to 3 discrete spikes per feature are detected
-
-Detection criteria may vary for other data types.
-
-
 ## Complete Example
 
 Here's a comprehensive example using all Base Generator parameters for tabular data:
@@ -232,7 +183,6 @@ generator = ARFGenerator(
     constraints=["total=item1+item2+item3", "age>=18"],
     missing_imputation_method="mean",
     retain_missingness=True,
-    encode_mixed_numerical_features=True,
     random_state=42
 )
 
@@ -243,16 +193,14 @@ X_syn = generator.generate(1000)
 # The synthetic data will:
 # - Enforce the constraints
 # - Have missing values if retain_missingness=True
-# - Properly handle mixed numerical features
 ```
 
 ## Tips and Best Practices
 
 1. **Start Simple**: Begin with default parameters, then add complexity as needed
-2. **Check Your Data**: Ensure constraints hold in training data before using them
 3. **Missing Data**: Use `retain_missingness=True` only if missingness is informative
-4. **Mixed Features**: Enable `encode_mixed_numerical_features` if you have features with discrete spikes or mixed characteristics
-5. **Performance**: Some preprocessing steps (especially encoding mixed features) can increase training time
+4. **Using Constraints**: Expect constraint setting to be most reliable when i) constraints already hold before training, and ii) no imputation is needed. If missing values are imputed, the imputed training values may violate constraints
+5. **Performance**: Some preprocessing steps can increase training time, for example, by increasing dimensionality. 
 6. **Generator-Specific Considerations**: Some generators already handle some of the issues which these preprocessing schemes aim to address, so be sure to check your generator's documentation beforehand
 
 

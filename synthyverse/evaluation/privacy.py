@@ -1,12 +1,16 @@
 import pandas as pd
 import numpy as np
-from typing import Union
 from sklearn.preprocessing import StandardScaler, OneHotEncoder, MinMaxScaler
 from sklearn.decomposition import PCA
 from sklearn.neighbors import KernelDensity
-from sklearn.metrics import pairwise_distances_argmin_min
-
-from .utils import get_accuracy_metric
+from sklearn.metrics import (
+    pairwise_distances_argmin_min,
+    roc_auc_score,
+    f1_score,
+    accuracy_score,
+    precision_score,
+    recall_score,
+)
 
 
 class DCR:
@@ -44,17 +48,20 @@ class DCR:
     name = "dcr"
     data_requirement = "train_and_test"
     needs_discrete_features = True
+    needs_random_state = True
 
     def __init__(
         self,
-        discrete_features: list = [],
+        discrete_features: list = None,
         subsample_test_size: bool = True,
         max_rows: int = 50000,
+        random_state: int = 0,
     ):
         super().__init__()
-        self.discrete_features = discrete_features
+        self.discrete_features = discrete_features if discrete_features is not None else []
         self.subsample_test_size = subsample_test_size
         self.max_rows = max_rows
+        self.random_state = random_state
 
     def evaluate(self, train: pd.DataFrame, test: pd.DataFrame, sd: pd.DataFrame):
         """Evaluate synthetic data privacy using DCR metric.
@@ -85,25 +92,36 @@ class DCR:
         ), "Test set must be smaller than or equal to train size to compute DCR"
 
         # scale the data to fixed range
-        ohe = OneHotEncoder(sparse_output=False)
-        ohe.fit(
-            pd.concat(
-                [
-                    train[self.discrete_features],
-                    test[self.discrete_features],
-                    sd[self.discrete_features],
-                ],
-                axis=0,
+        ohe = None
+        if self.discrete_features:
+            ohe = OneHotEncoder(sparse_output=False)
+            ohe.fit(
+                pd.concat(
+                    [
+                        train[self.discrete_features],
+                        test[self.discrete_features],
+                        sd[self.discrete_features],
+                    ],
+                    axis=0,
+                )
             )
-        )
-        scaler = MinMaxScaler()
-        scaler.fit(train[numerical_features])
+
+        scaler = None
+        if numerical_features:
+            scaler = MinMaxScaler()
+            scaler.fit(train[numerical_features])
+
         data = {}
         for df, name in zip([train, test, sd[: len(train)]], ["train", "test", "syn"]):
-            cat = ohe.transform(df[self.discrete_features])
-            cat = cat / 2  # scaling for Gower distance
-            num = scaler.transform(df[numerical_features])
-            data[name] = np.concatenate((cat, num), axis=1)
+            parts = []
+            if ohe is not None:
+                cat = ohe.transform(df[self.discrete_features])
+                cat = cat / 2  # scaling for Gower distance
+                parts.append(cat)
+            if scaler is not None:
+                num = scaler.transform(df[numerical_features])
+                parts.append(num)
+            data[name] = np.concatenate(parts, axis=1)
 
         # subsample the dataset to either max rows or test size
         num_rows_subsample = (
@@ -117,8 +135,10 @@ class DCR:
         closer_to_train = []
         closer_to_test = []
 
+        rng = np.random.default_rng(self.random_state)
+
         def choose(x: np.ndarray, n: int) -> np.ndarray:
-            return x[np.random.choice(len(x), n, replace=False)]
+            return x[rng.choice(len(x), n, replace=False)]
 
         for _ in range(num_iterations):
             syn_curr = choose(data["syn"], num_rows_subsample)
@@ -163,7 +183,7 @@ class DOMIAS:
         n_components (Union[int, float]): Number of PCA components. Float in (0,1] = variance target,
             int = exact components. Default: 0.95.
         random_state (int): Random seed for reproducibility. Default: 0.
-        metric (str): Evaluation metric ("roc_auc", "f1", "accuracy", "precision-recall", "etc.). Default: "roc_auc".
+        metric (str): Evaluation metric. One of "roc_auc", "f1", "accuracy", "precision-recall". Default: "roc_auc".
         predict_top (float): Proportion of top predictions to consider as members. Can be lowered to increase attack precision at the cost of recall. Only relevant for threshold-based metrics, e.g., "precision-recall". Default: 0.5.
 
     Example:
@@ -196,7 +216,7 @@ class DOMIAS:
 
     def __init__(
         self,
-        discrete_features: list = [],
+        discrete_features: list = None,
         ref_prop: float = 0.5,
         member_prop: float = 1.0,
         n_components: (
@@ -207,7 +227,7 @@ class DOMIAS:
         predict_top: float = 0.5,
     ):
         super().__init__()
-        self.discrete_features = discrete_features
+        self.discrete_features = discrete_features if discrete_features is not None else []
         self.ref_prop = ref_prop
         self.member_prop = member_prop
         self.n_components = n_components
@@ -237,18 +257,20 @@ class DOMIAS:
         ]
 
         # ----- One-hot (fit on union to fix category spaces) -----
-        onehot_encoder = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
-        onehot_encoder.fit(
-            pd.concat(
-                [
-                    train[self.discrete_features],
-                    test[self.discrete_features],
-                    syn[self.discrete_features],
-                ],
-                axis=0,
-                ignore_index=True,
+        onehot_encoder = None
+        if self.discrete_features:
+            onehot_encoder = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
+            onehot_encoder.fit(
+                pd.concat(
+                    [
+                        train[self.discrete_features],
+                        test[self.discrete_features],
+                        syn[self.discrete_features],
+                    ],
+                    axis=0,
+                    ignore_index=True,
+                )
             )
-        )
 
         def encode(df: pd.DataFrame) -> np.ndarray:
             if self.discrete_features:
@@ -329,12 +351,27 @@ class DOMIAS:
         # if you need linear ratio
         P_rel = np.exp(logP_rel)
 
-        # ----- Metrics / thresholding (unchanged) -----
+        # ----- Resolve metric function -----
+        _metric_funcs = {
+            "roc_auc": lambda y_true, y_score: roc_auc_score(y_true, y_score),
+            "f1": f1_score,
+            "accuracy": accuracy_score,
+            "precision-recall": lambda y_true, y_pred: (
+                precision_score(y_true, y_pred),
+                recall_score(y_true, y_pred),
+            ),
+        }
+        if self.metric not in _metric_funcs:
+            raise ValueError(
+                f"Metric '{self.metric}' not supported. "
+                f"Choose from: {list(_metric_funcs.keys())}"
+            )
+        metric_func = _metric_funcs[self.metric]
+
         if self.metric != "roc_auc":
             threshold = np.percentile(P_rel, 100 * (1 - self.predict_top))
             P_rel = P_rel > threshold
 
-        metric_func, self.metric = get_accuracy_metric(self.metric)
         score = metric_func(Y_test, P_rel)
 
         domias = {}
@@ -353,8 +390,7 @@ class DOMIAS:
             domias[docstring + f".metric={self.metric}"] = score
 
         if self.metric != "roc_auc":
-            # naive baseline: predict all as members
-            P_rel_naive = np.ones_like(P_rel)
+            P_rel_naive = np.ones(len(Y_test))
             naive_score = metric_func(Y_test, P_rel_naive)
             if self.metric == "precision-recall":
                 naive_precision, naive_recall = naive_score

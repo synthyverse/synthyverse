@@ -1,6 +1,0 @@
-xgboost==3.0
-scikit-learn
-pandas
-numpy
-tqdm
-scipy

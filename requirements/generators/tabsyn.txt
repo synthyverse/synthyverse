@@ -4,8 +4,3 @@ numpy
 pandas
 scipy
 scikit-learn
-category_encoders
-zero
-icecream
-tomli-w
-tomli

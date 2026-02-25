@@ -46,7 +46,7 @@ def get_extras_with_categories():
     Returns:
         Tuple of (extras_dict, category_dict) where:
         - extras_dict: Dictionary mapping extra names to lists of requirements
-        - category_dict: Dictionary mapping extra names to their category (generators/evaluation/imputers)
+        - category_dict: Dictionary mapping extra names to their category (generators/evaluation)
     """
     setup_dir = get_setup_dir()
     requirements_dir = os.path.join(setup_dir, "requirements")
@@ -55,7 +55,7 @@ def get_extras_with_categories():
     categories = {}
 
     # Process each subdirectory in requirements folder
-    for subdir in ["generators", "evaluation", "imputers"]:
+    for subdir in ["generators", "evaluation"]:
         subdir_path = os.path.join(requirements_dir, subdir)
         if not os.path.isdir(subdir_path):
             continue

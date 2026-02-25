@@ -18,16 +18,13 @@ def generate_templates_table(extras, categories):
     category_display = {
         "generators": "Generator",
         "evaluation": "Evaluation",
-        "imputers": "Imputer",
         "all": "All",
     }
 
-    # Define category sort order: generators first, then imputers, then evaluation
     category_order = {
         "generators": 0,
-        "imputers": 1,
-        "evaluation": 2,
-        "all": 3,
+        "evaluation": 1,
+        "all": 2,
     }
 
     # Sort extras: first by category order, then alphabetically within category
