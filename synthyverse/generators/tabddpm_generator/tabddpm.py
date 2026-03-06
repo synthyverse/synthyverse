@@ -136,3 +136,17 @@ class TabDDPMGenerator(TabularBaseGenerator):
 
     def _generate_data(self, n: int):
         return self.model.generate(n).dataframe()
+
+    def _cleanup_additional_state_for_save(self) -> None:
+        if not hasattr(self, "model"):
+            return
+
+        # Training curves can be large and are not needed for sampling.
+        for attr in ("loss_history", "validation_history"):
+            if hasattr(self.model, attr):
+                setattr(self.model, attr, None)
+
+        if hasattr(self.model, "model"):
+            for attr in ("loss_history", "val_history"):
+                if hasattr(self.model.model, attr):
+                    setattr(self.model.model, attr, None)

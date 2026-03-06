@@ -58,7 +58,9 @@ class DCR:
         random_state: int = 0,
     ):
         super().__init__()
-        self.discrete_features = discrete_features if discrete_features is not None else []
+        self.discrete_features = (
+            discrete_features if discrete_features is not None else []
+        )
         self.subsample_test_size = subsample_test_size
         self.max_rows = max_rows
         self.random_state = random_state
@@ -160,9 +162,9 @@ class DCR:
             score = min(1, closer_to_test_ * 2)
             scores.append(score)
         return {
-            "dcr.score": np.mean(scores),
-            "dcr.closer_to_train": np.mean(closer_to_train),
-            "dcr.closer_to_test": np.mean(closer_to_test),
+            "dcr.score": float(np.mean(scores)),
+            "dcr.closer_to_train": float(np.mean(closer_to_train)),
+            "dcr.closer_to_test": float(np.mean(closer_to_test)),
         }
 
 
@@ -227,7 +229,9 @@ class DOMIAS:
         predict_top: float = 0.5,
     ):
         super().__init__()
-        self.discrete_features = discrete_features if discrete_features is not None else []
+        self.discrete_features = (
+            discrete_features if discrete_features is not None else []
+        )
         self.ref_prop = ref_prop
         self.member_prop = member_prop
         self.n_components = n_components

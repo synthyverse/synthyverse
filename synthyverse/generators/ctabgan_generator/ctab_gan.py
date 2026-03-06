@@ -1,5 +1,6 @@
 from ..base import TabularBaseGenerator
 import pandas as pd
+import numpy as np
 from scipy.stats import normaltest
 
 from .ctabgan_dir.synthesizer.ctabgan_synthesizer import CTABGANSynthesizer
@@ -224,3 +225,25 @@ class CTABGANGenerator(TabularBaseGenerator):
                 result.append(col)
 
         return result
+
+    def _cleanup_additional_state_for_save(self) -> None:
+        # DataPrep keeps the full training dataframe; only column names are needed.
+        if hasattr(self, "data_prep") and hasattr(self.data_prep, "df"):
+            self.data_prep.df = self.data_prep.df.head(0).copy()
+
+        if not hasattr(self, "model"):
+            return
+
+        # Transformer caches train data and intermediate masks from fitting only.
+        if hasattr(self.model, "transformer"):
+            if hasattr(self.model.transformer, "train_data"):
+                self.model.transformer.train_data = pd.DataFrame()
+            if hasattr(self.model.transformer, "filter_arr"):
+                self.model.transformer.filter_arr = []
+
+        # These are used for training-time conditional sampling, not inference sampling.
+        if hasattr(self.model, "cond_generator"):
+            if hasattr(self.model.cond_generator, "model"):
+                self.model.cond_generator.model = []
+            if hasattr(self.model.cond_generator, "p"):
+                self.model.cond_generator.p = np.zeros((0, 0))

@@ -25,3 +25,5 @@ For detailed information on using these Base Generator parameters (constraints, 
    generators/tabsyn
    generators/tvae
    generators/unmaskingtrees
+   generators/xgenboost_ar
+   generators/xgenboost_diffusion

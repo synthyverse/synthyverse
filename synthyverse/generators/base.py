@@ -1,8 +1,23 @@
-from typing import Dict, Union
+import copy
+import pickle
+from pathlib import Path
+from typing import Dict, Tuple, TypeVar, Union
 
 import numpy as np
 import pandas as pd
+from sklearn.impute import MissingIndicator
 from sklearn.preprocessing import FunctionTransformer, OrdinalEncoder
+
+from ..utils.missingness import (
+    apply_fitted_numeric_imputer,
+    apply_random_imputation,
+    fit_random_imputation_samples,
+    fit_transform_numeric_imputer,
+    validate_missing_imputation_method,
+)
+
+
+TTabularBaseGenerator = TypeVar("TTabularBaseGenerator", bound="TabularBaseGenerator")
 
 
 class TabularBaseGenerator:
@@ -49,6 +64,47 @@ class TabularBaseGenerator:
         syn_X = self._inverse_preprocessing(syn_X)
 
         return syn_X
+
+    def save_model(self, path: Union[str, Path]) -> Path:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Work on a copy so the in-memory trained model remains untouched.
+        model_to_save = copy.deepcopy(self)
+        model_to_save._cleanup_for_save()
+
+        with path.open("wb") as file:
+            pickle.dump(model_to_save, file, protocol=pickle.HIGHEST_PROTOCOL)
+
+        return path
+
+    @classmethod
+    def load_model(
+        cls: type[TTabularBaseGenerator], path: Union[str, Path]
+    ) -> TTabularBaseGenerator:
+        path = Path(path)
+        with path.open("rb") as file:
+            model = pickle.load(file)
+
+        if not isinstance(model, cls):
+            raise TypeError(
+                f"Loaded model type {type(model).__name__} does not match expected type {cls.__name__}."
+            )
+        return model
+
+    def _cleanup_for_save(self) -> None:
+        for attr in self._transient_attributes_for_save():
+            if hasattr(self, attr):
+                delattr(self, attr)
+        self._cleanup_additional_state_for_save()
+
+    def _transient_attributes_for_save(self) -> Tuple[str, ...]:
+        # Random/imputation sampling pools are only needed during preprocessing transforms.
+        return ("_rng", "imputation_samples_")
+
+    def _cleanup_additional_state_for_save(self) -> None:
+        # Subclasses can override to strip large, generation-irrelevant objects.
+        return None
 
     def _fit_model(
         self,
@@ -117,16 +173,14 @@ class TabularBaseGenerator:
         self.missing_indicator_suffix_ = "_MISSING"
         self.has_missingness_ = self.retain_missingness
         self.imputation_method_ = self.missing_imputation_method
-        self.missing_numeric_columns_ = [
-            col
-            for col in X.columns
-            if col not in self.base_discrete_features and X[col].isna().any()
+        self.numerical_features_ = [
+            col for col in X.columns if col not in self.base_discrete_features
         ]
-        self.missing_indicator_columns_ = [
-            f"{col}{self.missing_indicator_suffix_}"
-            for col in self.missing_numeric_columns_
-        ]
-        self.imputation_values_: Dict[str, float] = {}
+        self.missing_numeric_columns_ = []
+        self.missing_indicator_columns_ = []
+        self.missing_indicator_ = None
+        self.numeric_imputer_ = None
+        self.all_missing_numeric_columns_ = []
         self.imputation_samples_: Dict[str, np.ndarray] = {}
 
         if self.imputation_method_ == "drop" and self.has_missingness_:
@@ -134,78 +188,124 @@ class TabularBaseGenerator:
                 "Cannot drop missing rows and retain missingness indicators."
             )
 
+        try:
+            validate_missing_imputation_method(self.imputation_method_)
+        except ValueError as exc:
+            raise Exception(str(exc)) from exc
+
+        if self.has_missingness_ and len(self.numerical_features_) > 0:
+            self.missing_indicator_ = MissingIndicator(
+                features="missing-only",
+                error_on_new=False,
+            )
+            indicator_values = self.missing_indicator_.fit_transform(
+                X[self.numerical_features_]
+            )
+            self.missing_numeric_columns_ = [
+                self.numerical_features_[i] for i in self.missing_indicator_.features_
+            ]
+            self.missing_indicator_columns_ = [
+                f"{col}{self.missing_indicator_suffix_}"
+                for col in self.missing_numeric_columns_
+            ]
+            if len(self.missing_indicator_columns_) > 0:
+                indicator_df = pd.DataFrame(
+                    indicator_values.astype(int),
+                    columns=self.missing_indicator_columns_,
+                    index=X.index,
+                )
+            else:
+                indicator_df = pd.DataFrame(index=X.index)
+        else:
+            indicator_df = pd.DataFrame(index=X.index)
+
         X_new = X.copy()
-        numerical_features = [
-            col for col in X_new.columns if col not in self.base_discrete_features
-        ]
+        if len(self.numerical_features_) == 0:
+            if self.has_missingness_:
+                X_new = pd.concat([X_new, indicator_df.reindex(X_new.index)], axis=1)
+                self.discrete_features_.extend(self.missing_indicator_columns_)
+            return X_new
 
         if self.imputation_method_ == "drop":
-            X_new = X_new.dropna(subset=numerical_features)
-        else:
-            for col in numerical_features:
-                observed = X_new[col].dropna().values
-                if observed.size == 0:
-                    observed = np.array([0.0])
-                self.imputation_samples_[col] = observed
-
-                if self.imputation_method_ == "mean":
-                    self.imputation_values_[col] = X_new[col].mean()
-                elif self.imputation_method_ == "median":
-                    self.imputation_values_[col] = X_new[col].median()
-                elif self.imputation_method_ == "mode":
-                    mode = X_new[col].mode()
-                    self.imputation_values_[col] = (
-                        mode.iloc[0] if len(mode) > 0 else observed[0]
-                    )
-
-                miss_mask = X_new[col].isna()
-                if miss_mask.any():
-                    X_new.loc[miss_mask, col] = self._impute_values(
-                        col, miss_mask.sum()
-                    )
+            X_new = X_new.dropna(subset=self.numerical_features_)
+        elif self.imputation_method_ == "keep":
+            pass
+        elif self.imputation_method_ == "random":
+            self.imputation_samples_ = fit_random_imputation_samples(
+                X_new, self.numerical_features_
+            )
+            X_new = apply_random_imputation(
+                X_new,
+                self.numerical_features_,
+                self.imputation_samples_,
+                self._rng,
+            )
+        elif self.imputation_method_ in {
+            "mean",
+            "median",
+            "most_frequent",
+            "missforest",
+        }:
+            X_new, self.numeric_imputer_, self.all_missing_numeric_columns_ = (
+                fit_transform_numeric_imputer(
+                    X=X_new,
+                    numerical_features=self.numerical_features_,
+                    imputation_method=self.imputation_method_,
+                    random_state=self.random_state,
+                )
+            )
 
         if self.has_missingness_:
-            for col in self.missing_numeric_columns_:
-                X_new[f"{col}{self.missing_indicator_suffix_}"] = (
-                    X[col].isna().astype(int)
-                )
+            indicator_df = indicator_df.reindex(X_new.index, fill_value=0)
+            X_new = pd.concat([X_new, indicator_df], axis=1)
             self.discrete_features_.extend(self.missing_indicator_columns_)
 
         return X_new
 
     def _transform_missingness(self, X: pd.DataFrame) -> pd.DataFrame:
         X_new = X.copy()
-        numerical_features = [
-            col for col in X_new.columns if col not in self.base_discrete_features
-        ]
+        if len(self.numerical_features_) == 0:
+            return X_new
 
         if self.imputation_method_ == "drop":
-            X_new = X_new.dropna(subset=numerical_features)
-        else:
-            for col in numerical_features:
-                miss_mask = X_new[col].isna()
-                if miss_mask.any():
-                    X_new.loc[miss_mask, col] = self._impute_values(
-                        col, miss_mask.sum()
-                    )
+            X_new = X_new.dropna(subset=self.numerical_features_)
+        elif self.imputation_method_ == "keep":
+            pass
+        elif self.imputation_method_ == "random":
+            X_new = apply_random_imputation(
+                X_new,
+                self.numerical_features_,
+                self.imputation_samples_,
+                self._rng,
+            )
+        elif self.imputation_method_ in {
+            "mean",
+            "median",
+            "most_frequent",
+            "missforest",
+        }:
+            X_new = apply_fitted_numeric_imputer(
+                X=X_new,
+                numerical_features=self.numerical_features_,
+                imputer=self.numeric_imputer_,
+                imputation_method=self.imputation_method_,
+                all_missing_numeric_columns=self.all_missing_numeric_columns_,
+            )
 
         if self.has_missingness_:
-            for col in self.missing_numeric_columns_:
-                indicator_col = f"{col}{self.missing_indicator_suffix_}"
-                X_new[indicator_col] = (
-                    X[col].isna().astype(int) if col in X.columns else 0
+            if self.missing_indicator_ is not None:
+                indicator_values = self.missing_indicator_.transform(
+                    X[self.numerical_features_]
                 )
+                indicator_df = pd.DataFrame(
+                    indicator_values.astype(int),
+                    columns=self.missing_indicator_columns_,
+                    index=X.index,
+                )
+                indicator_df = indicator_df.reindex(X_new.index, fill_value=0)
+                X_new = pd.concat([X_new, indicator_df], axis=1)
 
         return X_new
-
-    def _impute_values(self, col: str, n_values: int) -> np.ndarray:
-        if self.imputation_method_ == "random":
-            return self._rng.choice(
-                self.imputation_samples_[col], size=n_values, replace=True
-            )
-        if self.imputation_method_ in {"mean", "median", "mode"}:
-            return np.repeat(self.imputation_values_[col], n_values)
-        raise Exception(f"Unknown missing imputation method: {self.imputation_method_}")
 
     def _reinstate_missings(self, X: pd.DataFrame) -> pd.DataFrame:
         if not self.has_missingness_ or len(self.missing_indicator_columns_) == 0:
@@ -378,6 +478,7 @@ class TabularBaseGenerator:
             pd.concat(parts, axis=1) if len(parts) > 0 else pd.DataFrame(index=X.index)
         )
         return X_transformed[self.prescaling_col_order_]
+
 
 def calculate_column_precision(col_values: pd.Series) -> int:
     str_values = col_values.dropna().astype(str)

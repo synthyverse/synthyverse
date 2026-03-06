@@ -48,6 +48,7 @@ class UnmaskingTreesGenerator(TabularBaseGenerator):
     """
 
     name = "unmaskingtrees"
+    handles_missingness = True
 
     def __init__(
         self,

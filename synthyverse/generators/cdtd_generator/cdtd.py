@@ -171,3 +171,12 @@ class CDTDGenerator(TabularBaseGenerator):
         syn_X = syn_X[self.col_order]
 
         return syn_X
+
+    def _cleanup_additional_state_for_save(self) -> None:
+        if not hasattr(self, "cdtd"):
+            return
+
+        # Optimizer/scheduler/EMA buffers are only needed during training.
+        for attr in ("optimizer", "scheduler", "ema_diff_model"):
+            if hasattr(self.cdtd, attr):
+                setattr(self.cdtd, attr, None)

@@ -22,7 +22,7 @@ setup(
     description="Synthetic data generation and evaluation library",
     author="Jim Achterberg, Saif Ul Islam, Zia Ur Rehman",
     author_email=" ",
-    packages=find_packages(),
+    packages=find_packages(include=["synthyverse*"]),
     install_requires=core_dependencies,
     extras_require=extras,
     python_requires=">=3.8",

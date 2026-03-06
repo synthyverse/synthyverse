@@ -61,6 +61,7 @@ autodoc_mock_imports = [
     "numpy",
     "scikit-learn",
     "sklearn",
+    "sklearn_extra",
     "torch",
     "pytorch",
     "pytorch_lightning",

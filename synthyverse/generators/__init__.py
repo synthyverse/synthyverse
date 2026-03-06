@@ -31,7 +31,9 @@ except Exception as exc:
 try:
     from .ctgan_generator import CTGANGenerator
 except Exception as exc:
-    CTGANGenerator = _make_unavailable_generator("CTGANGenerator", "ctgan", "ctgan", exc)
+    CTGANGenerator = _make_unavailable_generator(
+        "CTGANGenerator", "ctgan", "ctgan", exc
+    )
 
 try:
     from .tvae_generator import TVAEGenerator
@@ -41,7 +43,9 @@ except Exception as exc:
 try:
     from .tabsyn_generator import TabSynGenerator
 except Exception as exc:
-    TabSynGenerator = _make_unavailable_generator("TabSynGenerator", "tabsyn", "tabsyn", exc)
+    TabSynGenerator = _make_unavailable_generator(
+        "TabSynGenerator", "tabsyn", "tabsyn", exc
+    )
 
 try:
     from .cdtd_generator import CDTDGenerator
@@ -114,7 +118,19 @@ except Exception as exc:
 try:
     from .smote_generator import SMOTEGenerator
 except Exception as exc:
-    SMOTEGenerator = _make_unavailable_generator("SMOTEGenerator", "smote", "smote", exc)
+    SMOTEGenerator = _make_unavailable_generator(
+        "SMOTEGenerator", "smote", "smote", exc
+    )
+
+try:
+    from .xgenboost_generator import XGB_AR_Generator, XGB_Diffusion_Generator
+except Exception as exc:
+    XGB_AR_Generator = _make_unavailable_generator(
+        "XGB_AR_Generator", "xgenboost_ar", "xgenboost", exc
+    )
+    XGB_Diffusion_Generator = _make_unavailable_generator(
+        "XGB_Diffusion_Generator", "xgenboost_diffusion", "xgenboost", exc
+    )
 
 
 def get_generator(generator_name: str):
@@ -153,4 +169,6 @@ all_generators = [
     NRGBoostGenerator,
     SynthpopGenerator,
     SMOTEGenerator,
+    XGB_AR_Generator,
+    XGB_Diffusion_Generator,
 ]

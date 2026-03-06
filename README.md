@@ -49,18 +49,20 @@ The following installation templates are available:
 | `ctabgan` | Generator | `pip install synthyverse[ctabgan]` |
 | `ctgan` | Generator | `pip install synthyverse[ctgan]` |
 | `forestdiffusion` | Generator | `pip install synthyverse[forestdiffusion]` |
-| `forestlm` | Generator | `pip install synthyverse[forestlm]` |
 | `nrgboost` | Generator | `pip install synthyverse[nrgboost]` |
 | `permutation` | Generator | `pip install synthyverse[permutation]` |
 | `realtabformer` | Generator | `pip install synthyverse[realtabformer]` |
+| `smote` | Generator | `pip install synthyverse[smote]` |
 | `synthpop` | Generator | `pip install synthyverse[synthpop]` |
 | `tabargn` | Generator | `pip install synthyverse[tabargn]` |
 | `tabddpm` | Generator | `pip install synthyverse[tabddpm]` |
 | `tabsyn` | Generator | `pip install synthyverse[tabsyn]` |
 | `tvae` | Generator | `pip install synthyverse[tvae]` |
 | `unmaskingtrees` | Generator | `pip install synthyverse[unmaskingtrees]` |
+| `xgenboost` | Generator | `pip install synthyverse[xgenboost]` |
 | `base` | Generator | `pip install synthyverse[base]` |
 | `eval` | Evaluation | `pip install synthyverse[eval]` |
+| `leaderboard` | Evaluation | `pip install synthyverse[leaderboard]` |
 | `full` | All | `pip install synthyverse[full]` |
 
 **Note:** You can install multiple templates by separating them with commas, e.g., `pip install synthyverse[ctgan,eval]`

@@ -88,7 +88,8 @@ The following methods are available for tabular data (current implementation):
 - **`"random"`**: Randomly sample from existing values
 - **`"mean"`**: Fill with the mean value
 - **`"median"`**: Fill with the median value
-- **`"mode"`**: Fill with the most frequent value
+- **`"most_frequent"`**: Fill with the most frequent value
+- **`"missforest"`**: Iterative imputation using random forests
 
 ### Examples
 
@@ -123,7 +124,7 @@ generator = TabSynGenerator(
 
 - Use `"random"` to preserve the shape of the original distribution
 - Use `"drop"` if missing values are rare and you have sufficient data
-- Use `"mean"`, `"median"`, or `"mode"` if you wish to use a simple imputation
+- Use `"mean"`, `"median"`, or `"most_frequent"` if you wish to use a simple imputation
 
 ## Retain Missingness
 

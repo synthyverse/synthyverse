@@ -59,6 +59,7 @@ class ForestDiffusionGenerator(TabularBaseGenerator):
 
     name = "forestdiffusion"
     needs_target_column = True
+    handles_missingness = True
 
     def __init__(
         self,
@@ -186,3 +187,12 @@ class ForestDiffusionGenerator(TabularBaseGenerator):
             syn = pd.DataFrame(syn, columns=self.ori_col_order)
 
         return syn
+
+    def _cleanup_additional_state_for_save(self) -> None:
+        if not hasattr(self, "model"):
+            return
+
+        # These are only needed for imputation workflows, not generation.
+        for attr in ("X1", "X_covs"):
+            if hasattr(self.model, attr):
+                setattr(self.model, attr, None)

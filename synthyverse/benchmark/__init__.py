@@ -1,4 +1,8 @@
 try:
     from .synthesis import TabularSynthesisBenchmark
-except:
+except Exception:
     TabularSynthesisBenchmark = None
+
+__all__ = [
+    "TabularSynthesisBenchmark",
+]
