@@ -62,7 +62,6 @@ The following installation templates are available:
 | `xgenboost` | Generator | `pip install synthyverse[xgenboost]` |
 | `base` | Generator | `pip install synthyverse[base]` |
 | `eval` | Evaluation | `pip install synthyverse[eval]` |
-| `leaderboard` | Evaluation | `pip install synthyverse[leaderboard]` |
 | `full` | All | `pip install synthyverse[full]` |
 
 **Note:** You can install multiple templates by separating them with commas, e.g., `pip install synthyverse[ctgan,eval]`
