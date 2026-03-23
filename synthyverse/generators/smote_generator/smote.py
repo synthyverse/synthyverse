@@ -120,7 +120,7 @@ class SMOTEGenerator(TabularBaseGenerator):
         if min_count < 2:
             raise ValueError(
                 f"SMOTE cannot run: smallest class has {min_count} sample(s). "
-                "Need at least 2. Consider RandomOverSampler or duplication for tiny classes."
+                "Need at least 2."
             )
 
         # cap k_neighbors so that k_neighbors <= min_count - 1

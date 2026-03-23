@@ -1,5 +1,5 @@
 import pandas as pd
-from sklearn.preprocessing import StandardScaler, OrdinalEncoder
+from sklearn.preprocessing import QuantileTransformer, StandardScaler
 import torch
 
 from ..base import TabularBaseGenerator
@@ -13,7 +13,7 @@ class CDTDGenerator(TabularBaseGenerator):
 
     Uses the simple wrapper implementation from the original paper's authors (https://github.com/muellermarkus/cdtd_simple)
 
-    Paper: "Continuous Diffusion for Mixed-Type Tabular Data" by Markus et al. (2023).
+    Paper: "Continuous Diffusion for Mixed-Type Tabular Data" by Mueller et al. (2023).
 
     Args:
         cat_emb_dim (int): Embedding dimension for categorical features. Default: 16.
@@ -77,7 +77,6 @@ class CDTDGenerator(TabularBaseGenerator):
         timewarp_weight_low_noise: float = 1.0,
         num_steps_train: int = 30_000,
         num_steps_warmup: int = 1000,
-        sampling_steps: int = 200,
         batch_size: int = 4096,
         lr: float = 1e-3,
         ema_decay: float = 0.999,
@@ -112,7 +111,7 @@ class CDTDGenerator(TabularBaseGenerator):
         }
 
         self.sample_params = {
-            "num_steps": sampling_steps,
+            "num_steps": 200,
             "batch_size": batch_size,
             "seed": self.random_state,
         }
@@ -124,13 +123,6 @@ class CDTDGenerator(TabularBaseGenerator):
     def _fit_model(
         self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
     ):
-        """Fit the CDTD model on training data.
-
-        Args:
-            X: Preprocessed training data.
-            discrete_features: List of discrete feature names after preprocessing.
-            X_val: Optional validation data (not used by CDTD).
-        """
         self.discrete_features = discrete_features
 
         self.numerical_features = [
@@ -139,8 +131,18 @@ class CDTDGenerator(TabularBaseGenerator):
         # retain original column order to output correct dataframe format after generation
         self.col_order = X.columns
 
-        # standard scale numericals
+        # discrete columns alreaady integer-encoded by BaseGenerator
+        X_discrete = X[discrete_features].to_numpy()
+
+        # quantile transform and standard scale numericals (tries to put 30 samples per bin, but caps range inside [10,1000])
         X_numerical = X[self.numerical_features].to_numpy().astype(float)
+        self.quant_encoder = QuantileTransformer(
+            output_distribution="normal",
+            n_quantiles=max(min(X_numerical.shape[0] // 30, 1000), 10),
+            subsample=int(1e9),
+            random_state=self.random_state,
+        )
+        X_numerical = self.quant_encoder.fit_transform(X_numerical)
         self.scaler = StandardScaler()
         X_numerical = self.scaler.fit_transform(X_numerical)
 
@@ -156,11 +158,15 @@ class CDTDGenerator(TabularBaseGenerator):
         )
 
     def _generate_data(self, n: int):
+
         # synthesize
         syn_X_discrete, syn_X_numerical = self.cdtd.sample(
             num_samples=n, **self.sample_params
         )
+
+        # postprocess to format expected by basegenerator
         syn_X_numerical = self.scaler.inverse_transform(syn_X_numerical)
+        syn_X_numerical = self.quant_encoder.inverse_transform(syn_X_numerical)
 
         # combine to synthetic dataset
         syn_X = pd.concat(
@@ -171,12 +177,3 @@ class CDTDGenerator(TabularBaseGenerator):
         syn_X = syn_X[self.col_order]
 
         return syn_X
-
-    def _cleanup_additional_state_for_save(self) -> None:
-        if not hasattr(self, "cdtd"):
-            return
-
-        # Optimizer/scheduler/EMA buffers are only needed during training.
-        for attr in ("optimizer", "scheduler", "ema_diff_model"):
-            if hasattr(self.cdtd, attr):
-                setattr(self.cdtd, attr, None)

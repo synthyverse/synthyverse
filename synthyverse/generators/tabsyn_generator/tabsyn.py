@@ -2,7 +2,7 @@ from ..base import TabularBaseGenerator
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import QuantileTransformer
 from torch import nn
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -11,6 +11,9 @@ from torch.utils.data import TensorDataset
 from tqdm import tqdm
 from .vae import Model_VAE, Encoder_model, Decoder_model
 from .diffusion import MLPDiffusion, Model, sample
+
+
+CE_LOSS_FN = nn.CrossEntropyLoss()
 
 
 class TabSynGenerator(TabularBaseGenerator):
@@ -69,6 +72,7 @@ class TabSynGenerator(TabularBaseGenerator):
 
     name = "tabsyn"
     needs_target_column = True
+    needs_validation_set = True
 
     def __init__(
         self,
@@ -145,7 +149,14 @@ class TabSynGenerator(TabularBaseGenerator):
         else:
             x_val = X_val.copy()
 
-        self.scaler = StandardScaler()
+        # scale numerical features (categoricals are already integer encoded by the basegenerator)
+
+        self.scaler = QuantileTransformer(
+            output_distribution="normal",
+            n_quantiles=max(min(len(x) // 30, 1000), 10),
+            subsample=int(1e9),
+            random_state=self.random_state,
+        )
         self.numerical_features = [
             col for col in x.columns if col not in self.discrete_features
         ]
@@ -286,16 +297,19 @@ class TabSynGenerator(TabularBaseGenerator):
         x_val_cat = x_val[self.discrete_features].values
         x_val_cat = torch.from_numpy(x_val_cat).long()
 
+        x_val_num = x_val_num.to(self.device)
+        x_val_cat = x_val_cat.to(self.device)
+
         best_val_loss = float("inf")
 
         pbar = tqdm(range(self.vae_params["NUM_EPOCHS"]))
 
         for _ in pbar:
-
+            vae.train()
             for batch_num, batch_cat in train_loader:
                 batch_num = batch_num.to(self.device)
                 batch_cat = batch_cat.to(self.device)
-                vae.train()
+
                 optimizer.zero_grad()
 
                 Recon_X_num, Recon_X_cat, mu_z, std_z = vae(batch_num, batch_cat)
@@ -305,20 +319,11 @@ class TabSynGenerator(TabularBaseGenerator):
                 )
 
                 loss = loss_mse + loss_ce + beta * loss_kld
-                pbar.set_postfix(
-                    {
-                        "Train MSE": loss_mse.item(),
-                        "Train CE": loss_ce.item(),
-                        "Train KLD": loss_kld.item(),
-                    }
-                )
                 loss.backward()
                 optimizer.step()
 
             vae.eval()
             with torch.no_grad():
-                x_val_num = x_val_num.to(self.device)
-                x_val_cat = x_val_cat.to(self.device)
                 Recon_X_num, Recon_X_cat, mu_z, std_z = vae(x_val_num, x_val_cat)
 
                 val_mse_loss, val_ce_loss, val_kl_loss, val_acc = self._compute_loss(
@@ -348,6 +353,8 @@ class TabSynGenerator(TabularBaseGenerator):
         with torch.no_grad():
             pre_encoder.load_weights(vae)
             self.pre_decoder.load_weights(vae)
+            pre_encoder.to(self.device), self.pre_decoder.to(self.device)
+            pre_encoder.eval(), self.pre_decoder.eval()
 
             train_z = []
             for batch_num, batch_cat in train_loader:
@@ -430,7 +437,6 @@ class TabSynGenerator(TabularBaseGenerator):
         return model
 
     def _compute_loss(self, X_num, X_cat, Recon_X_num, Recon_X_cat, mu_z, logvar_z):
-        ce_loss_fn = nn.CrossEntropyLoss()
         mse_loss = (X_num - Recon_X_num).pow(2).mean()
         ce_loss = 0
         acc = 0
@@ -438,7 +444,7 @@ class TabSynGenerator(TabularBaseGenerator):
 
         for idx, x_cat in enumerate(Recon_X_cat):
             if x_cat is not None:
-                ce_loss += ce_loss_fn(x_cat, X_cat[:, idx])
+                ce_loss += CE_LOSS_FN(x_cat, X_cat[:, idx])
                 x_hat = x_cat.argmax(dim=-1)
             acc += (x_hat == X_cat[:, idx]).float().sum()
             total_num += x_hat.shape[0]

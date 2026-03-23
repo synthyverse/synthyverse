@@ -208,14 +208,6 @@ class CTABGANGenerator(TabularBaseGenerator):
 
         Uses D'Agostino & Pearson's normality test to identify columns that
         appear to follow a Gaussian distribution.
-
-        Args:
-            df: Input data.
-            alpha: Significance level. A column is considered Gaussian-like if
-                test p-value > alpha (fail to reject normality).
-
-        Returns:
-            list: List of column names that appear Gaussian-like.
         """
 
         result = []
