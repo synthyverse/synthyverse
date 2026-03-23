@@ -6,8 +6,7 @@ import pandas as pd
 class TVAEGenerator(TabularBaseGenerator):
     """Tabular Variational Autoencoder (TVAE).
 
-    Similar to CTGAN.
-    Conditions on discrete columns, and uses mode-specific normalization for numerical columns.
+    Similar to CTGAN; uses mode-specific normalization for numerical columns.
 
     Uses the implementation from the ctgan package, which is also used in the Synthetic Data Vault.
 
