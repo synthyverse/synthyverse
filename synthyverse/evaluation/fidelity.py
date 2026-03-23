@@ -34,7 +34,7 @@ class ClassifierTest:
         discrete_features (list): List of discrete/categorical feature names. Default: [].
         random_state (int): Random seed for reproducibility. Default: 0.
         model_name (str): Classifier name. Use "xgboost" for native XGBoost,
-            or any sklearn classifier class name discoverable via all_estimators.
+            or any sklearn classifier class name discoverable via sklearn.utils.discovery.all_estimators.
         clf_params (dict): Classifier parameters passed to the selected estimator.
         tune (bool): Whether to tune hyperparameters. Default: False.
         tuning_trials (int): Number of Optuna trials for hyperparameter tuning. Default: 32.
@@ -96,6 +96,7 @@ class ClassifierTest:
         }
 
         self.clf_params = clf_params if clf_params is not None else {}
+
     def evaluate(
         self,
         train: pd.DataFrame,
@@ -313,7 +314,9 @@ class ClassifierTest:
             if categories_ref is None:
                 x[col] = x[col].astype("category")
             else:
-                x[col] = pd.Categorical(x[col], categories=categories_ref[col].cat.categories)
+                x[col] = pd.Categorical(
+                    x[col], categories=categories_ref[col].cat.categories
+                )
         return x
 
     def _predict_binary_scores(self, model, x):
@@ -732,7 +735,7 @@ class Correlations:
     Args:
         discrete_features (list): List of discrete/categorical feature names. Default: [].
         numerical_correlation (str): Correlation method for numerical-numerical pairs.
-            One of "spearman" or "pearson". Default: "spearman".
+            One of "spearman" or "pearson". Default: "pearson".
 
     Example:
         >>> import pandas as pd
@@ -760,7 +763,7 @@ class Correlations:
     def __init__(
         self,
         discrete_features: list = [],
-        numerical_correlation: str = "spearman",
+        numerical_correlation: str = "pearson",
     ):
         super().__init__()
         self.discrete_features = discrete_features

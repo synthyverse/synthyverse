@@ -38,7 +38,7 @@ class MLE:
         random_state (int): Random seed for reproducibility. Default: 0.
         train_set (str): Which dataset to train on ("synthetic" for TSTR, "real" for TRTS). Default: "synthetic".
         model_name (str): Estimator name. Use "xgboost" for native XGBoost,
-            or any sklearn estimator class name discoverable via all_estimators.
+            or any sklearn estimator class name discoverable via sklearn.utils.discovery.all_estimators.
         model_params (dict): Model parameters passed to the selected estimator.
         tune (bool): Whether to tune hyperparameters. Default: False.
         tuning_trials (int): Number of Optuna trials for hyperparameter tuning. Default: 32.
@@ -162,7 +162,9 @@ class MLE:
                 else "regressor"
             )
             model_slug = self.model_name_lc.replace(" ", "_")
-            param_file = f"synthyverse_hyperparams_tuned/mle_{task_type}_{model_slug}.json"
+            param_file = (
+                f"synthyverse_hyperparams_tuned/mle_{task_type}_{model_slug}.json"
+            )
             if os.path.exists(param_file):
                 with open(param_file, "r") as f:
                     params = json.load(f)
@@ -226,7 +228,9 @@ class MLE:
 
     def _tune(self, train: pd.DataFrame):
         estimator_type = (
-            "classifier" if self.target_column in self.discrete_features else "regressor"
+            "classifier"
+            if self.target_column in self.discrete_features
+            else "regressor"
         )
 
         def objective(trial: optuna.Trial):
@@ -281,7 +285,8 @@ class MLE:
 
     def _resolve_sklearn_estimator(self, estimator_type: str):
         estimators = {
-            name.lower(): cls for name, cls in all_estimators(type_filter=estimator_type)
+            name.lower(): cls
+            for name, cls in all_estimators(type_filter=estimator_type)
         }
         cls = estimators.get(self.model_name_lc)
         if cls is None:
@@ -344,7 +349,9 @@ class MLE:
             )
 
         estimator_type = (
-            "classifier" if self.target_column in self.discrete_features else "regressor"
+            "classifier"
+            if self.target_column in self.discrete_features
+            else "regressor"
         )
         model_cls = self._resolve_sklearn_estimator(estimator_type)
 
@@ -384,7 +391,9 @@ class MLE:
                 denom = np.sum(exp_scores, axis=1, keepdims=True)
                 preds = exp_scores / np.clip(denom, 1e-12, None)
         else:
-            classes = np.arange(self.num_classes) if self.num_classes else np.array([0, 1])
+            classes = (
+                np.arange(self.num_classes) if self.num_classes else np.array([0, 1])
+            )
             idx = np.searchsorted(classes, hard_preds)
             idx = np.clip(idx, 0, len(classes) - 1)
             preds = np.zeros((len(hard_preds), len(classes)))
