@@ -1,8 +1,9 @@
 Utility Metrics
 ================
 
-.. autoclass:: synthyverse.evaluation.utility.MLE
-   :members:
-   :inherited-members:
-   :show-inheritance:
+.. toctree::
+   :maxdepth: 1
+   :titlesonly:
+
+   utility/mle
 

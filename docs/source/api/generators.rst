@@ -1,29 +1,22 @@
 Generators
 ==========
 
-All generators inherit from a base generator class (currently :class:`~synthyverse.generators.base.TabularBaseGenerator` for tabular data), which provides powerful preprocessing capabilities including constraints and missing value handling.
+Low-level generators inherit from :class:`~synthyverse.generators.base.BaseGenerator` and expose a common ``fit`` / ``generate`` interface. Shared preprocessing, constraints, and schema restoration are handled by :class:`~synthyverse.generators.base.DataProcessor` or the higher-level :class:`~synthyverse.generators.base.SynthyverseGenerator` wrapper.
 
-For detailed information on using these Base Generator parameters (constraints, missing_imputation_method, retain_missingness), see the :doc:`../in_depth_usage` guide.
+For detailed examples of low-level generators, preprocessing, persistence, and wrappers, see the :doc:`../in_depth_usage` guide.
 
 .. toctree::
    :maxdepth: 1
    :titlesonly:
 
+   generators/base
    generators/arf
    generators/bn
-   generators/ctabgan
    generators/ctgan
    generators/cdtd
-   generators/forestdiffusion
-   generators/nrgboost
    generators/permutation
-   generators/realtabformer
    generators/smote
-   generators/synthpop
    generators/tabargn
    generators/tabddpm
    generators/tabsyn
    generators/tvae
-   generators/unmaskingtrees
-   generators/xgenboost_ar
-   generators/xgenboost_diffusion

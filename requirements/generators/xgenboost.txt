@@ -1,8 +1,0 @@
-xgboost==2.1.4
-scikit-learn
-scikit-learn-extra
-pandas
-numpy
-tqdm
-scipy
-joblib

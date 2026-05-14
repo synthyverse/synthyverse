@@ -1,9 +1,11 @@
 from ctgan import TVAE
-from ..base import TabularBaseGenerator
 import pandas as pd
 
+from ..base import BaseGenerator
+from ..persistence import load_generator_state, save_generator_state
 
-class TVAEGenerator(TabularBaseGenerator):
+
+class TVAEGenerator(BaseGenerator):
     """Tabular Variational Autoencoder (TVAE).
 
     Similar to CTGAN; uses mode-specific normalization for numerical columns.
@@ -23,7 +25,6 @@ class TVAEGenerator(TabularBaseGenerator):
         cuda (bool): Whether to use CUDA if available. Default: True.
         verbose (bool): Whether to print training progress. Default: True.
         random_state (int): Random seed for reproducibility. Default: 0.
-        **kwargs: Additional arguments passed to TabularBaseGenerator.
 
     Example:
         >>> import pandas as pd
@@ -60,10 +61,8 @@ class TVAEGenerator(TabularBaseGenerator):
         cuda=True,
         verbose=True,
         random_state: int = 0,
-        **kwargs,
     ):
-        super().__init__(random_state=random_state, **kwargs)
-
+        self.random_state = random_state
         self.embedding_dim = embedding_dim
         self.compress_dims = compress_dims
         self.decompress_dims = decompress_dims
@@ -74,7 +73,7 @@ class TVAEGenerator(TabularBaseGenerator):
         self.cuda = cuda
         self.verbose = verbose
 
-    def _fit_model(
+    def _fit(
         self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
     ):
         self.model = TVAE(
@@ -86,9 +85,30 @@ class TVAEGenerator(TabularBaseGenerator):
             verbose=self.verbose,
             epochs=self.epochs,
             cuda=self.cuda,
+            loss_factor=self.loss_factor,
         )
 
         self.model.fit(X, discrete_features)
 
-    def _generate_data(self, n: int):
+        return self
+
+    def _generate(self, n: int):
         return self.model.sample(n)
+
+    def save(self, path):
+        return save_generator_state(
+            path,
+            {
+                "model": self.model,
+            },
+        )
+
+    @classmethod
+    def load(cls, path):
+        state = load_generator_state(path)
+        generator = cls.__new__(cls)
+        if isinstance(state, dict):
+            generator.__dict__.update(state)
+        else:
+            generator.model = state
+        return generator

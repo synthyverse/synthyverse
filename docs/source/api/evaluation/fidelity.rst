@@ -1,28 +1,18 @@
 Fidelity Metrics
 ================
 
-.. autoclass:: synthyverse.evaluation.fidelity.ClassifierTest
-   :members:
-   :inherited-members:
-   :show-inheritance:
+.. toctree::
+   :maxdepth: 1
+   :titlesonly:
 
-.. autoclass:: synthyverse.evaluation.fidelity.AlphaPrecisionBetaRecallAuthenticity
-   :members:
-   :inherited-members:
-   :show-inheritance:
-
-.. autoclass:: synthyverse.evaluation.fidelity.ShapeTrend
-   :members:
-   :inherited-members:
-   :show-inheritance:
-
-.. autoclass:: synthyverse.evaluation.fidelity.Marginals
-   :members:
-   :inherited-members:
-   :show-inheritance:
-
-.. autoclass:: synthyverse.evaluation.fidelity.Correlations
-   :members:
-   :inherited-members:
-   :show-inheritance:
-
+   fidelity/classifier_test
+   fidelity/alpha_precision_beta_recall
+   fidelity/prdc
+   fidelity/wasserstein
+   fidelity/shape_trend
+   fidelity/marginals
+   fidelity/correlations
+   fidelity/arm
+   fidelity/nmi
+   fidelity/domain_constraint
+   fidelity/feature_wise_plots

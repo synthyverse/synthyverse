@@ -7,14 +7,14 @@ scripts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"
 if scripts_dir not in sys.path:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from scripts.setup_utils import get_extras
+from scripts.setup_utils import get_extras, read_requirements
 
 version = "0.1.6"
 
 # Define extras dynamically from requirements folder
 extras = get_extras()
 
-core_dependencies = []  # Always-installed dependencies
+core_dependencies = read_requirements("generators/base.txt")  # Always-installed dependencies
 
 setup(
     name="synthyverse",

@@ -1,13 +1,13 @@
 Privacy Metrics
 ================
 
-.. autoclass:: synthyverse.evaluation.privacy.DCR
-   :members:
-   :inherited-members:
-   :show-inheritance:
+.. toctree::
+   :maxdepth: 1
+   :titlesonly:
 
-.. autoclass:: synthyverse.evaluation.privacy.DOMIAS
-   :members:
-   :inherited-members:
-   :show-inheritance:
-
+   privacy/aia
+   privacy/dcr
+   privacy/domias
+   privacy/dpi
+   privacy/classifier_mia
+   privacy/ensemble_mia

@@ -1,15 +1,22 @@
-from ..base import TabularBaseGenerator
 import pandas as pd
 import torch
 import os
 import shutil
+from pathlib import Path
 
 from .tabddpm_dir.plugin import TabDDPMPlugin
 from synthcity.plugins.core.dataloader import GenericDataLoader
+from synthcity.utils.serialization import load_from_file, save_to_file
+from ..base import BaseGenerator
+from ..persistence import (
+    load_generator_state_or_default,
+    restore_generator,
+    save_generator_state,
+)
 
 
-class TabDDPMGenerator(TabularBaseGenerator):
-    """Tabular Denoising Diffusion Probabilistic Model (TabDDPM).
+class TabDDPMGenerator(BaseGenerator):
+    """Tabular Denoising Diffusion Probabilistic Model (TabDDPM) generator.
 
     TabDDPM combines continuous diffusion for numerical features with multinomial diffusion for categorical features.
 
@@ -31,7 +38,6 @@ class TabDDPMGenerator(TabularBaseGenerator):
         model_params (dict): Dictionary of model parameters. Default: {"n_layers_hidden": 3, "n_units_hidden": 256, "dropout": 0.0}.
         dim_embed (int): Embedding dimension. Default: 128.
         random_state (int): Random seed for reproducibility. Default: 0.
-        **kwargs: Additional arguments passed to TabularBaseGenerator.
 
     Example:
         >>> import pandas as pd
@@ -55,7 +61,6 @@ class TabDDPMGenerator(TabularBaseGenerator):
     """
 
     name = "tabddpm"
-    needs_target_column = True
 
     def __init__(
         self,
@@ -69,16 +74,10 @@ class TabDDPMGenerator(TabularBaseGenerator):
         scheduler: str = "cosine",
         log_interval: int = 100,
         model_type: str = "mlp",
-        model_params: dict = {
-            "n_layers_hidden": 3,
-            "n_units_hidden": 256,
-            "dropout": 0.0,
-        },
+        model_params: dict = {},
         dim_embed: int = 128,
         random_state: int = 0,
-        **kwargs,
     ):
-        super().__init__(random_state=random_state, **kwargs)
         self.epochs = epochs
         self.lr = lr
         self.weight_decay = weight_decay
@@ -95,9 +94,7 @@ class TabDDPMGenerator(TabularBaseGenerator):
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def _fit_model(
-        self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
-    ):
+    def _fit(self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None):
         workspace = "tabddpm_workspace"
         os.makedirs(workspace, exist_ok=True)
 
@@ -134,19 +131,22 @@ class TabDDPMGenerator(TabularBaseGenerator):
         # delete workspace
         shutil.rmtree(workspace)
 
-    def _generate_data(self, n: int):
+    def _generate(self, n: int):
         return self.model.generate(n).dataframe()
 
-    def _cleanup_additional_state_for_save(self) -> None:
-        if not hasattr(self, "model"):
-            return
+    def save(self, path):
+        path = Path(path)
+        path.mkdir(parents=True, exist_ok=True)
+        save_to_file(path / "model.pkl", self.model)
+        return save_generator_state(
+            path,
+            {},
+        )
 
-        # Training curves can be large and are not needed for sampling.
-        for attr in ("loss_history", "validation_history"):
-            if hasattr(self.model, attr):
-                setattr(self.model, attr, None)
-
-        if hasattr(self.model, "model"):
-            for attr in ("loss_history", "val_history"):
-                if hasattr(self.model.model, attr):
-                    setattr(self.model.model, attr, None)
+    @classmethod
+    def load(cls, path):
+        path = Path(path)
+        model = load_from_file(path / "model.pkl")
+        state = load_generator_state_or_default(path)
+        state["model"] = model
+        return restore_generator(cls, state)

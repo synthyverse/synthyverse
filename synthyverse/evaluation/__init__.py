@@ -18,29 +18,37 @@ def _make_unavailable_metric(
 
 
 try:
-    from .eval import TabularMetricEvaluator
-except Exception as exc:
-    TabularMetricEvaluator = _make_unavailable_metric(
-        "TabularMetricEvaluator", "tabular_metric_evaluator", exc
-    )
-
-
-try:
     from .fidelity import (
         ClassifierTest,
-        AlphaPrecisionBetaRecallAuthenticity,
+        AlphaPrecisionBetaRecall,
+        PRDC,
+        Wasserstein,
         ShapeTrend,
         Marginals,
         Correlations,
+        ARM,
+        NMI,
+        FeatureWisePlots,
+        DomainConstraint,
     )
 except Exception as exc:
     ClassifierTest = _make_unavailable_metric("ClassifierTest", "classifier_test", exc)
-    AlphaPrecisionBetaRecallAuthenticity = _make_unavailable_metric(
-        "AlphaPrecisionBetaRecallAuthenticity", "prauth", exc
+    AlphaPrecisionBetaRecall = _make_unavailable_metric(
+        "AlphaPrecisionBetaRecall", "alphaprecisionbetarecall", exc
     )
+    PRDC = _make_unavailable_metric("PRDC", "prdc", exc)
+    Wasserstein = _make_unavailable_metric("Wasserstein", "wasserstein", exc)
     ShapeTrend = _make_unavailable_metric("ShapeTrend", "shapetrend", exc)
     Marginals = _make_unavailable_metric("Marginals", "marginals", exc)
     Correlations = _make_unavailable_metric("Correlations", "correlations", exc)
+    ARM = _make_unavailable_metric("ARM", "arm", exc)
+    NMI = _make_unavailable_metric("NMI", "nmi", exc)
+    FeatureWisePlots = _make_unavailable_metric(
+        "FeatureWisePlots", "featurewiseplots", exc
+    )
+    DomainConstraint = _make_unavailable_metric(
+        "DomainConstraint", "domainconstraint", exc
+    )
 
 try:
     from .utility import MLE
@@ -48,21 +56,35 @@ except Exception as exc:
     MLE = _make_unavailable_metric("MLE", "mle", exc)
 
 try:
-    from .privacy import DCR, DOMIAS
+    from .privacy import AIA, DCR, DOMIAS, DPI, ClassifierMIA, EnsembleMIA
 except Exception as exc:
+    AIA = _make_unavailable_metric("AIA", "aia", exc)
     DCR = _make_unavailable_metric("DCR", "dcr", exc)
-    DOMIAS = _make_unavailable_metric("DOMIAS", "domias", exc)
+    DOMIAS = _make_unavailable_metric("DOMIAS", "mia.domias", exc)
+    DPI = _make_unavailable_metric("DPI", "mia.dpi", exc)
+    ClassifierMIA = _make_unavailable_metric("ClassifierMIA", "mia.classifier", exc)
+    EnsembleMIA = _make_unavailable_metric("EnsembleMIA", "mia.ensemble", exc)
 
 
 all_metrics = [
     ClassifierTest,
-    AlphaPrecisionBetaRecallAuthenticity,
+    AlphaPrecisionBetaRecall,
+    PRDC,
+    Wasserstein,
     ShapeTrend,
     Marginals,
     Correlations,
+    ARM,
+    NMI,
+    FeatureWisePlots,
     MLE,
+    AIA,
     DCR,
     DOMIAS,
+    DPI,
+    ClassifierMIA,
+    EnsembleMIA,
+    DomainConstraint,
 ]
 
 

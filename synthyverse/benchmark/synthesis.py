@@ -1,702 +1,998 @@
-from sklearn.model_selection import train_test_split
-import pandas as pd
-from time import time
+import inspect
+import json
 import os
-import shutil
-import copy
-from uuid import uuid4
-from typing import Any, Dict, List, Tuple, Union
+import pickle
+import sys
+import threading
+from pathlib import Path
+from time import perf_counter
+from typing import Any, Dict, Iterable, Optional, Union
 
-from .utils import format_results
-from ..evaluation.eval import TabularMetricEvaluator
-from ..generators import get_generator
-from ..generators.base import TabularBaseGenerator
-from ..utils.utils import free_up_memory
-from ..utils.reproducibility import set_seed
+import pandas as pd
+from sklearn.model_selection import train_test_split
 
-DEFAULT_BENCHMARK_METRICS = ("classifier_test", "mle", "dcr")
+from synthyverse.generators import DataProcessor, TabularSchema, get_generator
+from synthyverse.utils.reproducibility import set_seed
+from synthyverse.utils.utils import free_up_memory
+
+
+RESULT_COLUMNS = ["metric name", "metric value", "train_seed", "set"]
+SCHEMA_FILENAME = "schema.pkl"
+BYTES_PER_MIB = 1024 * 1024
+_PROCESS_MEMORY_READER = None
 
 
 class TabularSynthesisBenchmark:
-    """Benchmark for evaluating tabular synthetic data generators.
+    """Benchmark a tabular synthetic data generator on a real dataset.
+
+    ``TabularSynthesisBenchmark`` manages the complete workflow for comparing a
+    generator against real tabular data. It creates reproducible train,
+    validation, and test splits, preprocesses the data, trains or loads the
+    configured generator, samples synthetic datasets, and evaluates metrics.
+
+    The benchmark can be run in two ways:
+
+    * call ``run()`` to train and evaluate in one step;
+    * call ``train()`` and ``eval()`` separately to reuse saved models or run
+      different metrics later.
+
+    For each train seed, the benchmark stores the fitted data processor and the
+    trained generator under ``save_dir``. Dataset-level schema information is
+    stored once and can be reused across runs. Results are returned as a
+    long-format ``pandas.DataFrame`` and can also be written to CSV.
 
     Args:
-        generator (Union[str, TabularBaseGenerator]): Generator identifier. Can be a synthyverse generator name or a custom generator instance.
-        generator_params (dict): Dictionary of generator-specific parameters. Default: None (empty dict).
-        n_random_splits (int): Number of random train/test splits to evaluate. Default: 1.
-        n_inits (int): Number of generator training initializations per split. Default: 1.
-        test_size (float): Proportion of data to use for testing (0.0 to 1.0). Default: 0.2.
-        val_size (float): Proportion of data to use for validation (0.0 to 1.0). Set to 0.0 to disable the validation split. Note that val_size+test_size must be < 1.0. Default: 0.1.
-        missing_imputation_method (str): Method for handling missing values. "drop" removes missing rows, other options perform imputation: "random", "mean", "median", "most_frequent", "missforest". Default: "drop".
-        retain_missingness (bool): Whether to retain missing values in generated datasets. Default: False.
-        constraints (Union[str, list]): List of constraint strings which should hold in the generated data. Note that the constraints should already hold in the training datasets. Default: None (empty list).
-        workspace (str): Directory for storing intermediate files. Default: "workspace".
+        X (pd.DataFrame): Real tabular dataset to benchmark on.
+        save_dir (str or Path): Directory used for benchmark artifacts. Models
+            are saved under ``save_dir/models`` and preprocessing artifacts are
+            saved under ``save_dir/processors``.
+        generator (str): Name of the generator to benchmark. The name is
+            resolved with ``get_generator``.
+        generator_params (dict): Keyword arguments used to initialize the
+            generator.
+        categorical_features (list): Names of categorical/discrete columns in
+            the original dataset.
+        target_column (str or None): Column used for stratified splits and
+            supervised metrics. Use ``None`` when there is no target column.
+        random_state (int): First seed used for train splits and synthetic set
+            sampling. Additional train seeds are consecutive integers starting
+            from this value. Default: 42.
+        constraints (list or str, optional): Optional data constraints passed to
+            ``DataProcessor``. Default: None.
+        missing_imputation_method (str): Missing-value strategy passed to
+            ``DataProcessor``. Options include ``"drop"``, ``"keep"``,
+            ``"mean"``, ``"median"``, ``"most_frequent"``, and
+            ``"missforest"``. Default: ``"drop"``.
+        monitor_memory (bool): Whether to record peak CPU and, when available,
+            CUDA memory usage during training and sampling. Default: False.
+        reuse_schema (bool): Whether to reuse a saved dataset schema from
+            ``save_dir`` when available. Default: True.
+        reuse_processors (bool): Whether to reuse saved preprocessing artifacts
+            for each train seed when available. Default: True.
+        max_eval_samples (int or None): Default maximum number of rows per real
+            and synthetic dataset passed to evaluation metrics. Real train,
+            test, and validation datasets are subsampled per synthetic set with
+            the same varying seed used for sampling synthetic data. Synthetic
+            train and test datasets are generated directly at the capped size.
+            Default: None.
 
     Example:
         >>> import pandas as pd
-        >>> from synthyverse.benchmark import TabularSynthesisBenchmark
+        >>> from synthyverse.benchmark.synthesis import TabularSynthesisBenchmark
         >>>
-        >>> # Load your data
-        >>> X = pd.read_csv("data.csv")
-        >>> discrete_columns = ["category_col"]
-        >>> target_column = "target"
-        >>>
-        >>> # Create benchmark
+        >>> X = pd.read_csv("data/cohort.csv")
         >>> benchmark = TabularSynthesisBenchmark(
-        ...     generator="arf",
-        ...     generator_params={"num_trees": 50},
-        ...     n_random_splits=3,
-        ...     n_inits=3
+        ...     X=X,
+        ...     save_dir="dataset/bn",
+        ...     generator="bn",
+        ...     generator_params={"struct_max_indegree": 2},
+        ...     categorical_features=["sex", "mortality"],
+        ...     target_column="mortality",
+        ...     random_state=42,
         ... )
         >>>
-        >>> # Train and evaluate models
-        >>> trained_models = benchmark.train(X, target_column, discrete_columns)
-        >>> results = benchmark.eval(
-        ...     X,
-        ...     trained_models,
-        ...     metrics=["classifier_test", "mle", "dcr"],
-        ...     n_generated_datasets=1,
-        ... )
+        >>> benchmark.train(n_train_seeds=3)
+        >>> results = benchmark.eval(metrics=["wasserstein", "dcr"], n_train_seeds=3)
 
-        >>> # Or, train and evaluate models in one step:
-        >>> results, trained_models = benchmark.train_and_eval(X, target_column, discrete_columns)
-        >>> results
+        Train now and evaluate later by creating a new benchmark with the same
+        dataset, generator settings, and ``save_dir``:
+
+        >>> benchmark = TabularSynthesisBenchmark(
+        ...     X=X,
+        ...     save_dir="dataset/bn",
+        ...     generator="bn",
+        ...     generator_params={"struct_max_indegree": 2},
+        ...     categorical_features=["sex", "mortality"],
+        ...     target_column="mortality",
+        ...     random_state=42,
+        ... )
+        >>> benchmark.train(n_train_seeds=3)
+        >>>
+        >>> reloaded_benchmark = TabularSynthesisBenchmark(
+        ...     X=X,
+        ...     save_dir="dataset/bn",
+        ...     generator="bn",
+        ...     generator_params={"struct_max_indegree": 2},
+        ...     categorical_features=["sex", "mortality"],
+        ...     target_column="mortality",
+        ...     random_state=42,
+        ... )
+        >>> results = reloaded_benchmark.eval(
+        ...     metrics=["wasserstein", "dcr"],
+        ...     n_train_seeds=3,
+        ... )
     """
 
     def __init__(
         self,
-        generator: Union[str, TabularBaseGenerator] = "arf",
-        generator_params: dict = None,
-        n_random_splits: int = 1,
-        n_inits: int = 1,
-        test_size: float = 0.2,
-        val_size: float = 0.1,
-        missing_imputation_method: str = "drop",
-        retain_missingness: bool = False,
-        constraints: Union[str, list] = None,
-        workspace: str = "workspace",
-        random_state: int = 0,
-    ):
-        if generator_params is None:
-            generator_params = {}
-        if constraints is None:
-            constraints = []
-
-        self._custom_generator_template = None
-        if isinstance(generator, str):
-            self.generator = generator
-        elif isinstance(generator, TabularBaseGenerator):
-            self._custom_generator_template = generator
-            custom_name = getattr(generator, "name", generator.__class__.__name__)
-            self.generator = str(custom_name).replace(" ", "_")
-        else:
-            raise TypeError(
-                "generator must be either a generator name (str) or an instance of TabularBaseGenerator."
-            )
-
-        self.generator_params = dict(generator_params)
-        self.generator_params.pop(
-            "target_column", None
-        )  # target column already provided if required
-        self.generator_params.pop(
-            "workspace", None
-        )  # workspace already provided if needed
-        self.generator_params.pop("random_state", None)  # use loop-based random_states
-
-        self.generator_params.update(
-            {
-                "missing_imputation_method": missing_imputation_method,
-                "retain_missingness": retain_missingness,
-                "constraints": constraints,
-            }
-        )
-
-        self.n_random_splits = n_random_splits
-        self.n_inits = n_inits
-        self.test_size = test_size
-        self.val_size = val_size
-        self.missing_imputation_method = missing_imputation_method
-        self.retain_missingness = retain_missingness
-        self.constraints = constraints
-        self._trained_target_column = None
-        self._trained_discrete_columns = None
-        self.workspace = workspace
-        self.random_state = random_state
-        self._benchmark_instance_id = uuid4().hex
-
-    def _get_generator_setup(self, target_column: str):
-        if self._custom_generator_template is not None:
-            generator_ = self._custom_generator_template.__class__
-            return generator_, {}
-
-        generator_ = get_generator(self.generator)
-        generator_params = dict(self.generator_params)
-
-        # add workspace if needed
-        if getattr(generator_, "needs_workspace", False):
-            generator_params["workspace"] = self.workspace
-        # add target column if needed
-        if getattr(generator_, "needs_target_column", False):
-            generator_params["target_column"] = target_column
-
-        # do not impute missing values if the generator natively handles missingness
-        if (
-            getattr(generator_, "handles_missingness", False)
-            and generator_params["missing_imputation_method"] != "drop"
-        ):
-            generator_params["missing_imputation_method"] = "keep"
-
-        return generator_, generator_params
-
-    def _create_generator_instance(
-        self,
-        generator_: type,
-        generator_params: dict,
-        init_i: int,
-        target_column: str,
-        workspace: Union[str, None] = None,
-    ):
-        if self._custom_generator_template is None:
-            return generator_(random_state=init_i, **generator_params)
-
-        try:
-            generator = copy.deepcopy(self._custom_generator_template)
-        except Exception as exc:
-            raise TypeError(
-                "Custom generator instance must be deepcopy-able for repeated benchmark training."
-            ) from exc
-
-        # Harmonize benchmark-level preprocessing and seed settings on the copied instance.
-        if hasattr(generator, "random_state"):
-            generator.random_state = init_i
-        if hasattr(generator, "missing_imputation_method"):
-            generator.missing_imputation_method = self.missing_imputation_method
-        if hasattr(generator, "retain_missingness"):
-            generator.retain_missingness = self.retain_missingness
-        if hasattr(generator, "constraints"):
-            generator.constraints = copy.deepcopy(self.constraints)
-
-        if hasattr(generator_, "needs_workspace") and getattr(
-            generator_, "needs_workspace", False
-        ):
-            if hasattr(generator, "workspace"):
-                generator.workspace = self.workspace if workspace is None else workspace
-        if hasattr(generator_, "needs_target_column") and getattr(
-            generator_, "needs_target_column", False
-        ):
-            if hasattr(generator, "target_column"):
-                generator.target_column = target_column
-
-        return generator
-
-    def _split_data(
-        self,
         X: pd.DataFrame,
-        target_column: str,
-        discrete_columns: list,
-        split_i: int,
-        test_size: Union[float, None] = None,
-        val_size: Union[float, None] = None,
+        save_dir: Union[str, Path],
+        generator: str,
+        generator_params: Dict[str, Any],
+        categorical_features: list[str],
+        target_column: Optional[str],
+        random_state: int = 42,
+        constraints: Optional[Union[list[str], str]] = None,
+        missing_imputation_method: str = "drop",
+        monitor_memory: bool = False,
+        reuse_schema: bool = True,
+        reuse_processors: bool = True,
+        max_eval_samples: Optional[int] = None,
     ):
-        if test_size is None:
-            test_size = self.test_size
-        if val_size is None:
-            val_size = self.val_size
+        self.X = X.copy()
+        self.generator = generator
+        self.generator_params = dict(generator_params or {})
+        self.save_dir = Path(save_dir)
+        self.random_state = random_state
+        self.categorical_features = list(categorical_features)
+        self.target_column = target_column
+        self.constraints = self._normalize_constraints(constraints)
+        self.missing_imputation_method = missing_imputation_method
+        self.monitor_memory = monitor_memory
+        self.reuse_schema = reuse_schema
+        self.reuse_processors = reuse_processors
+        self.max_eval_samples = self._validate_max_eval_samples(max_eval_samples)
+        self._schema: Optional[TabularSchema] = None
 
-        # split data according to current seed
-        stratify = None
-        if target_column in discrete_columns:
-            stratify = X[target_column]
-        X_train, X_test = train_test_split(
-            X, stratify=stratify, test_size=test_size, random_state=split_i
+    def train(
+        self,
+        n_train_seeds: int = 1,
+        test_size: float = 0.2,
+        val_size: float = 0.2,
+        full_determinism: bool = False,
+        results_save_path: Union[str, Path] = "results",
+        write_results: bool = True,
+        append_results: bool = False,
+    ) -> pd.DataFrame:
+        """Train generators for one or more reproducible data splits.
+
+        For each train seed, this method creates the train, validation, and test
+        split, fits or loads the corresponding ``DataProcessor``, trains the
+        configured generator, and saves the trained generator under
+        ``save_dir/models``.
+
+        Use this method when you want to train models now and evaluate them
+        later with ``eval()``. The same ``test_size`` and ``val_size`` should be
+        used during evaluation so that the saved artifacts match the recreated
+        splits.
+
+        Args:
+            n_train_seeds (int): Number of consecutive train split seeds to
+                train. Default: 1.
+            test_size (float): Fraction of data reserved for testing.
+                Default: 0.2.
+            val_size (float): Fraction of data reserved for validation. This is
+                interpreted as a fraction of the full dataset. Use ``0`` to skip
+                validation data. Default: 0.2.
+            full_determinism (bool): Whether to request stricter deterministic
+                behavior from ``set_seed``. Default: False.
+            results_save_path (str or Path): Directory or CSV path for training
+                results. If a directory is provided, results are written to
+                ``<results_save_path>/<generator>.csv``. Default: ``"results"``.
+            write_results (bool): Whether to write training results to CSV.
+                Default: True.
+            append_results (bool): Whether to append to an existing result CSV.
+                Default: False.
+
+        Returns:
+            pd.DataFrame: Training result rows with columns ``metric name``,
+            ``metric value``, ``train_seed``, and ``set``.
+
+        Example:
+            >>> train_results = benchmark.train(n_train_seeds=3)
+        """
+        self._validate_split_config(test_size, val_size)
+        results_path = self._resolve_results_path(results_save_path)
+        result_rows = self._load_result_rows(results_path) if append_results else []
+        new_rows = []
+
+        for train_seed in self._train_seeds(self.random_state, n_train_seeds):
+            split = self._make_split(
+                train_seed=train_seed,
+                test_size=test_size,
+                val_size=val_size,
+                full_determinism=full_determinism,
+            )
+            processor, processed = self._load_or_fit_processor(train_seed, split)
+
+            generator_cls = get_generator(self.generator)
+            generator, training_time, memory_monitor = self._fit_generator(
+                generator_cls=generator_cls,
+                train_seed=train_seed,
+                processor=processor,
+                X_train=processed["train_model"],
+                X_val=processed["val_model"],
+                full_determinism=full_determinism,
+            )
+            generator.save(self._model_dir(train_seed))
+
+            rows = [
+                {
+                    "metric name": "training_time_seconds",
+                    "metric value": training_time,
+                    "train_seed": train_seed,
+                    "set": pd.NA,
+                }
+            ]
+            rows.extend(memory_metric_rows("training", memory_monitor, train_seed))
+            result_rows.extend(rows)
+            new_rows.extend(rows)
+            if write_results:
+                self._save_results(result_rows, results_path)
+
+            free_up_memory()
+
+        return pd.DataFrame(new_rows, columns=RESULT_COLUMNS)
+
+    def eval(
+        self,
+        metrics: Union[dict, list],
+        n_train_seeds: int = 1,
+        n_sets: int = 1,
+        test_size: float = 0.2,
+        val_size: float = 0.2,
+        full_determinism: bool = False,
+        results_save_path: Union[str, Path] = "results",
+        append_results: bool = True,
+        max_eval_samples: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """Evaluate saved generators against real train and test data.
+
+        For each train seed, this method recreates the data split, loads the
+        saved ``DataProcessor`` and generator, samples one or more synthetic
+        train/test dataset pairs, postprocesses the samples back to the original
+        data representation, and evaluates the requested metrics.
+
+        Call ``train()`` before using this method unless compatible saved models
+        already exist in ``save_dir``. The ``test_size`` and ``val_size`` values
+        should match the values used for training.
+
+        Args:
+            metrics (dict or list): Metrics passed to
+                ``TabularMetricEvaluator``.
+            n_train_seeds (int): Number of consecutive train split seeds to
+                evaluate. Matching saved models must exist for these seeds.
+                Default: 1.
+            n_sets (int): Number of synthetic datasets to sample per saved
+                generator. Default: 1.
+            test_size (float): Fraction of data reserved for testing.
+                Default: 0.2.
+            val_size (float): Fraction of data reserved for validation. This is
+                interpreted as a fraction of the full dataset. Use ``0`` when
+                the models were trained without validation data. Default: 0.2.
+            full_determinism (bool): Whether to request stricter deterministic
+                behavior from ``set_seed``. Default: False.
+            results_save_path (str or Path): Directory or CSV path for
+                evaluation results. If a directory is provided, results are
+                written to ``<results_save_path>/<generator>.csv``.
+                Default: ``"results"``.
+            append_results (bool): Whether to append evaluation rows to an
+                existing result CSV. Default: True.
+            max_eval_samples (int or None): Optional per-call override for the
+                benchmark's default evaluation sample cap. Default: None.
+
+        Returns:
+            pd.DataFrame: Evaluation result rows with sampling time, optional
+            memory usage, and metric values.
+
+        Example:
+            >>> results = benchmark.eval(
+            ...     metrics=["wasserstein", "dcr"],
+            ...     n_train_seeds=3,
+            ...     n_sets=2,
+            ... )
+        """
+        self._validate_split_config(test_size, val_size)
+        self._validate_metrics(metrics)
+        max_eval_samples = self._effective_max_eval_samples(max_eval_samples)
+        results_path = self._resolve_results_path(results_save_path)
+        result_rows = self._load_result_rows(results_path) if append_results else []
+        new_rows = []
+
+        generator_cls = get_generator(self.generator)
+        for train_seed in self._train_seeds(self.random_state, n_train_seeds):
+            split = self._make_split(
+                train_seed=train_seed,
+                test_size=test_size,
+                val_size=val_size,
+                full_determinism=full_determinism,
+            )
+            processor, processed = self._load_or_fit_processor(train_seed, split)
+            generator = self._load_generator(generator_cls, train_seed)
+
+            rows = self._evaluate_generator(
+                generator=generator,
+                processor=processor,
+                processed=processed,
+                metrics=metrics,
+                n_sets=n_sets,
+                train_seed=train_seed,
+                full_determinism=full_determinism,
+                max_eval_samples=max_eval_samples,
+            )
+            result_rows.extend(rows)
+            new_rows.extend(rows)
+            self._save_results(result_rows, results_path)
+            free_up_memory()
+
+        return pd.DataFrame(new_rows, columns=RESULT_COLUMNS)
+
+    def run(
+        self,
+        metrics: Union[dict, list],
+        n_train_seeds: int = 1,
+        n_sets: int = 1,
+        test_size: float = 0.2,
+        val_size: float = 0.2,
+        full_determinism: bool = False,
+        results_save_path: Union[str, Path] = "results",
+        max_eval_samples: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """Train generators and evaluate them in one benchmark run.
+
+        This convenience method calls ``train()`` followed by ``eval()`` using
+        the same split settings.
+
+        Args:
+            metrics (dict or list): Metrics passed to
+                ``TabularMetricEvaluator``.
+            n_train_seeds (int): Number of consecutive train split seeds to
+                train and evaluate. Default: 1.
+            n_sets (int): Number of synthetic datasets to sample per saved
+                generator. Default: 1.
+            test_size (float): Fraction of data reserved for testing.
+                Default: 0.2.
+            val_size (float): Fraction of data reserved for validation. This is
+                interpreted as a fraction of the full dataset. Use ``0`` to skip
+                validation data. Default: 0.2.
+            full_determinism (bool): Whether to request stricter deterministic
+                behavior from ``set_seed``. Default: False.
+            results_save_path (str or Path): Directory or CSV path for all
+                benchmark results. If a directory is provided, results are
+                written to ``<results_save_path>/<generator>.csv``.
+                Default: ``"results"``.
+            max_eval_samples (int or None): Optional per-call override for the
+                benchmark's default evaluation sample cap. Default: None.
+
+        Returns:
+            pd.DataFrame: Combined training and evaluation result rows.
+
+        Example:
+            >>> metrics = ["wasserstein", "dcr"]
+            >>> results = benchmark.run(metrics=metrics, n_train_seeds=3, n_sets=2)
+        """
+        max_eval_samples = self._effective_max_eval_samples(max_eval_samples)
+        results_path = self._resolve_results_path(results_save_path)
+        train_results = self.train(
+            n_train_seeds=n_train_seeds,
+            test_size=test_size,
+            val_size=val_size,
+            full_determinism=full_determinism,
+            results_save_path=results_path,
+            write_results=True,
+            append_results=False,
         )
-        X_train, X_test = X_train.reset_index(drop=True), X_test.reset_index(drop=True)
+        eval_results = self.eval(
+            metrics=metrics,
+            n_train_seeds=n_train_seeds,
+            n_sets=n_sets,
+            test_size=test_size,
+            val_size=val_size,
+            full_determinism=full_determinism,
+            results_save_path=results_path,
+            append_results=True,
+            max_eval_samples=max_eval_samples,
+        )
+        return pd.concat([train_results, eval_results], ignore_index=True)
+
+    def _make_split(
+        self,
+        train_seed: int,
+        test_size: float,
+        val_size: float,
+        full_determinism: bool,
+    ) -> Dict[str, Optional[pd.DataFrame]]:
+        set_seed(train_seed, full_determinism)
+        stratify = self._stratify_values(self.X)
+        X_train, X_test = train_test_split(
+            self.X,
+            test_size=test_size,
+            random_state=train_seed,
+            stratify=stratify,
+        )
+
         if val_size > 0:
-            stratify = None
-            if target_column in discrete_columns:
-                stratify = X_train[target_column]
+            val_fraction_of_train = val_size / (1 - test_size)
             X_train, X_val = train_test_split(
                 X_train,
-                stratify=stratify,
-                test_size=val_size
-                / (1 - test_size),  # val_size is a proportion of the training set
-                random_state=split_i,
-            )
-            X_train, X_val = X_train.reset_index(drop=True), X_val.reset_index(
-                drop=True
+                test_size=val_fraction_of_train,
+                random_state=train_seed,
+                stratify=self._stratify_values(X_train),
             )
         else:
             X_val = None
 
-        return X_train, X_test, X_val
+        return {"train": X_train, "test": X_test, "val": X_val}
 
-    def _get_model_workspace_path(
-        self, split_i: int, init_i: int, generator: Union[str, None] = None
-    ):
-        if generator is None:
-            generator = self.generator
-        return os.path.join(
-            self.workspace,
-            f"{generator}_split_{split_i}_init_{init_i}_workspace",
-        )
-
-    def _attach_training_context_to_model(
+    def _load_or_fit_processor(
         self,
-        model: TabularBaseGenerator,
-        split_i: int,
-        init_i: int,
-        target_column: str,
-        discrete_columns: list,
-        training_time: float,
-    ) -> None:
-        model._benchmark_split_random_state = split_i
-        model._benchmark_init_random_state = init_i
-        model._benchmark_target_column = target_column
-        model._benchmark_discrete_columns = list(discrete_columns)
-        model._benchmark_test_size = self.test_size
-        model._benchmark_val_size = self.val_size
-        model._benchmark_base_random_state = self.random_state
-        model._benchmark_training_time = training_time
-        model._benchmark_instance_id = self._benchmark_instance_id
+        train_seed: int,
+        split: Dict[str, Optional[pd.DataFrame]],
+    ) -> tuple[DataProcessor, Dict[str, Optional[pd.DataFrame]]]:
+        processor_dir = self._processor_dir(train_seed)
+        processor_file = processor_dir / "processor.pkl"
+        schema = self._load_or_create_schema()
 
-    @staticmethod
-    def _extract_seed_from_key(prefix: str, key: Any) -> Union[int, None]:
-        if not isinstance(key, str):
-            return None
-        expected_prefix = f"{prefix}_"
-        if not key.startswith(expected_prefix):
-            return None
-        seed_str = key[len(expected_prefix) :]
-        if seed_str.startswith("-"):
-            digit_seed = seed_str[1:]
+        if self.reuse_processors and processor_file.exists():
+            processor = DataProcessor.load(processor_dir)
+            self._validate_cached_processor(processor, train_seed)
+            processed = processor.preprocess(X=split["train"], X_val=split["val"])
+            print(f"Loaded DataProcessor from {processor_file}")
         else:
-            digit_seed = seed_str
-        if not digit_seed.isdigit():
-            return None
-        return int(seed_str)
+            processor = DataProcessor(
+                constraints=self.constraints,
+                missing_imputation_method=self.missing_imputation_method,
+                random_state=train_seed,
+            )
+            processed = processor.preprocess(
+                X=split["train"],
+                discrete_features=self.categorical_features,
+                X_val=split["val"],
+            )
+            self._apply_schema(processor, schema)
+            processor.save(processor_dir)
+            print(f"Saved DataProcessor to {processor_file}")
 
-    def _collect_model_entries(
+        self._apply_schema(processor, schema)
+
+        if split["val"] is None:
+            X_train_model = processed
+            X_val_model = None
+        else:
+            X_train_model, X_val_model = processed
+
+        X_test_model = processor.preprocess(X=split["test"])
+
+        return processor, {
+            "train_model": X_train_model,
+            "test_model": X_test_model,
+            "val_model": X_val_model,
+            "train_eval": processor.postprocess(X_train_model),
+            "test_eval": processor.postprocess(X_test_model),
+            "val_eval": (
+                processor.postprocess(X_val_model) if X_val_model is not None else None
+            ),
+        }
+
+    def _fit_generator(
         self,
-        trained_models: Union[TabularBaseGenerator, Dict[str, Any]],
-        split_seed: Union[int, None] = None,
-        init_seed: Union[int, None] = None,
-    ) -> List[Dict[str, Any]]:
-        entries = []
-        if isinstance(trained_models, TabularBaseGenerator):
-            entries.append(
+        generator_cls,
+        train_seed: int,
+        processor: DataProcessor,
+        X_train: pd.DataFrame,
+        X_val: Optional[pd.DataFrame],
+        full_determinism: bool,
+    ):
+        set_seed(train_seed, full_determinism)
+        params = dict(self.generator_params)
+        signature = inspect.signature(generator_cls.__init__)
+        signature_params = signature.parameters
+
+        if "target_column" in signature_params and "target_column" not in params:
+            params["target_column"] = self.target_column
+        if (
+            self._accepts_kwarg(signature, "random_state")
+            and "random_state" not in params
+        ):
+            params["random_state"] = train_seed
+
+        generator = generator_cls(**params)
+        train_start_time = perf_counter()
+        memory_monitor = None
+        if self.monitor_memory:
+            with PeakMemoryMonitor() as memory_monitor:
+                generator.fit(
+                    X=X_train,
+                    discrete_features=processor.categorical_features,
+                    X_val=X_val,
+                )
+        else:
+            generator.fit(
+                X=X_train,
+                discrete_features=processor.categorical_features,
+                X_val=X_val,
+            )
+        training_time = perf_counter() - train_start_time
+        return generator, training_time, memory_monitor
+
+    def _load_generator(self, generator_cls, train_seed: int):
+        model_dir = self._model_dir(train_seed)
+        if not model_dir.exists():
+            raise FileNotFoundError(
+                f"No saved generator found for train_seed={train_seed} at {model_dir}. "
+                "Run train() first, or check save_dir/generator/random_state."
+            )
+        return generator_cls.load(model_dir)
+
+    def _evaluate_generator(
+        self,
+        generator,
+        processor: DataProcessor,
+        processed: Dict[str, Optional[pd.DataFrame]],
+        metrics: Union[dict, list],
+        n_sets: int,
+        train_seed: int,
+        full_determinism: bool,
+        max_eval_samples: Optional[int],
+    ) -> list[dict[str, Any]]:
+        from synthyverse.evaluation.eval import TabularMetricEvaluator
+
+        result_rows = []
+        for set_index in range(n_sets):
+            set_seed_value = self.random_state + set_index
+            set_seed(set_seed_value, full_determinism)
+            X_train_eval = self._subsample_eval_dataset(
+                processed["train_eval"], set_seed_value, max_eval_samples
+            )
+            X_test_eval = self._subsample_eval_dataset(
+                processed["test_eval"], set_seed_value, max_eval_samples
+            )
+            X_val_eval = self._subsample_eval_dataset(
+                processed["val_eval"], set_seed_value, max_eval_samples
+            )
+            n_train_syn = len(X_train_eval)
+            n_test_syn = len(X_test_eval)
+
+            sampling_start_time = perf_counter()
+            memory_monitor = None
+            if self.monitor_memory:
+                with PeakMemoryMonitor() as memory_monitor:
+                    X_syn = generator.generate(n_train_syn)
+                    X_syn_test = generator.generate(n_test_syn)
+                    X_syn = processor.postprocess(X_syn)
+                    X_syn_test = processor.postprocess(X_syn_test)
+            else:
+                X_syn = generator.generate(n_train_syn)
+                X_syn_test = generator.generate(n_test_syn)
+                X_syn = processor.postprocess(X_syn)
+                X_syn_test = processor.postprocess(X_syn_test)
+            sampling_time = perf_counter() - sampling_start_time
+
+            evaluator = TabularMetricEvaluator(
+                metrics=metrics,
+                discrete_features=processor.categorical_features,
+                target_column=self.target_column,
+                random_state=set_seed_value,
+            )
+            metric_results = evaluator.evaluate(
+                X_train_eval,
+                X_test_eval,
+                X_syn,
+                X_syn_test,
+                X_val_eval,
+            )
+
+            result_rows.append(
                 {
-                    "model": trained_models,
-                    "split_seed": split_seed,
-                    "init_seed": init_seed,
+                    "metric name": "sampling_time_seconds",
+                    "metric value": sampling_time,
+                    "train_seed": train_seed,
+                    "set": set_index,
                 }
             )
-            return entries
-
-        if isinstance(trained_models, dict):
-            for key, value in trained_models.items():
-                key_split_seed = self._extract_seed_from_key("split", key)
-                key_init_seed = self._extract_seed_from_key("init", key)
-                next_split_seed = (
-                    split_seed if key_split_seed is None else key_split_seed
-                )
-                next_init_seed = init_seed if key_init_seed is None else key_init_seed
-                entries.extend(
-                    self._collect_model_entries(
-                        trained_models=value,
-                        split_seed=next_split_seed,
-                        init_seed=next_init_seed,
-                    )
-                )
-            return entries
-
-        raise TypeError(
-            "trained_models must be a trained model or a nested dict of trained models returned by this benchmark's train()."
-        )
-
-    def _validate_model_provenance(self, model: TabularBaseGenerator) -> None:
-        required_attributes = [
-            "_benchmark_split_random_state",
-            "_benchmark_init_random_state",
-            "_benchmark_target_column",
-            "_benchmark_discrete_columns",
-            "_benchmark_test_size",
-            "_benchmark_val_size",
-            "_benchmark_base_random_state",
-            "_benchmark_instance_id",
-        ]
-        missing_attributes = [
-            attribute_name
-            for attribute_name in required_attributes
-            if getattr(model, attribute_name, None) is None
-        ]
-        if missing_attributes:
-            missing = ", ".join(missing_attributes)
-            raise ValueError(
-                f"Provided model is missing benchmark training metadata ({missing}). "
-                "Pass models returned by this benchmark's train()."
+            result_rows.extend(
+                memory_metric_rows("sampling", memory_monitor, train_seed, set_index)
             )
+            for metric_name, metric_value in flatten_metrics(metric_results):
+                result_rows.append(
+                    {
+                        "metric name": metric_name,
+                        "metric value": metric_value,
+                        "train_seed": train_seed,
+                        "set": set_index,
+                    }
+                )
 
-        model_instance_id = str(getattr(model, "_benchmark_instance_id"))
-        if model_instance_id != self._benchmark_instance_id:
+            print(metric_results)
+            free_up_memory()
+
+        return result_rows
+
+    def _load_or_create_schema(self) -> TabularSchema:
+        if self._schema is not None:
+            return self._schema
+
+        schema_path = self._schema_path()
+        if self.reuse_schema and schema_path.exists():
+            with schema_path.open("rb") as f:
+                self._schema = pickle.load(f)
+            return self._schema
+
+        numerical_features = [
+            col for col in self.X.columns if col not in self.categorical_features
+        ]
+        self._schema = TabularSchema.from_dataframe(self.X, numerical_features)
+        schema_path.parent.mkdir(parents=True, exist_ok=True)
+        with schema_path.open("wb") as f:
+            pickle.dump(self._schema, f, protocol=pickle.HIGHEST_PROTOCOL)
+        return self._schema
+
+    def _apply_schema(self, processor: DataProcessor, schema: TabularSchema) -> None:
+        processor.schema = schema
+        processor.ori_col_order = schema.column_order
+        processor.ori_dtypes = schema.dtypes
+        processor.ori_precision = schema.precision
+
+    def _validate_cached_processor(
+        self,
+        processor: DataProcessor,
+        train_seed: int,
+    ) -> None:
+        if processor.missing_imputation_method != self.missing_imputation_method:
             raise ValueError(
-                "Provided model was not trained by this benchmark instance. "
-                "Pass models returned by this benchmark's train()."
+                "Cached DataProcessor has a different missing_imputation_method. "
+                "Use a different save_dir or remove the cached processor."
             )
-
-    def _normalize_trained_models(
-        self, trained_models: Union[TabularBaseGenerator, Dict[str, Any]]
-    ) -> Dict[int, Dict[int, TabularBaseGenerator]]:
-        model_entries = self._collect_model_entries(trained_models=trained_models)
-        if len(model_entries) == 0:
-            raise ValueError("No trained models were provided to eval().")
-
-        normalized_models: Dict[int, Dict[int, TabularBaseGenerator]] = {}
-        for model_entry in model_entries:
-            model = model_entry["model"]
-            self._validate_model_provenance(model)
-            split_from_dict = model_entry["split_seed"]
-            init_from_dict = model_entry["init_seed"]
-            split_from_model = getattr(model, "_benchmark_split_random_state")
-            init_from_model = getattr(model, "_benchmark_init_random_state")
-
-            if (
-                split_from_model is not None
-                and split_from_dict is not None
-                and int(split_from_model) != int(split_from_dict)
-            ):
-                raise ValueError(
-                    "Inconsistent split seeds detected between model metadata and dict keys."
-                )
-            if (
-                init_from_model is not None
-                and init_from_dict is not None
-                and int(init_from_model) != int(init_from_dict)
-            ):
-                raise ValueError(
-                    "Inconsistent init seeds detected between model metadata and dict keys."
-                )
-
-            split_i = split_from_model
-            init_i = init_from_model
-
-            split_i = int(split_i)
-            init_i = int(init_i)
-            if split_i not in normalized_models:
-                normalized_models[split_i] = {}
-            if init_i in normalized_models[split_i]:
-                raise ValueError(
-                    f"Duplicate model detected for split={split_i}, init={init_i}."
-                )
-            normalized_models[split_i][init_i] = model
-
-        return normalized_models
+        if list(processor.constraints) != self.constraints:
+            raise ValueError(
+                "Cached DataProcessor has different constraints. "
+                "Use a different save_dir or remove the cached processor."
+            )
+        if processor.random_state != train_seed:
+            raise ValueError(
+                "Cached DataProcessor random_state does not match the train split seed."
+            )
 
     @staticmethod
-    def _resolve_uniform_model_attribute(
-        models: list, attribute_name: str, default_value: Any = None
-    ) -> Any:
-        resolved_value = default_value
-        has_resolved_from_model = False
-        for model in models:
-            model_value = getattr(model, attribute_name, None)
-            if model_value is None:
-                continue
-            if not has_resolved_from_model:
-                resolved_value = model_value
-                has_resolved_from_model = True
-                continue
-            if model_value != resolved_value:
-                raise ValueError(
-                    f"Inconsistent '{attribute_name}' found across provided models."
-                )
-        return resolved_value
+    def _validate_metrics(metrics: Union[dict, list]) -> None:
+        if metrics is None:
+            raise ValueError("metrics must be provided as a list or dictionary.")
+        if not isinstance(metrics, (dict, list)):
+            raise TypeError("metrics must be a list or dictionary.")
 
-    def train(
+    def _load_result_rows(self, path: Path) -> list[dict[str, Any]]:
+        if not path.exists():
+            return []
+        return pd.read_csv(path).to_dict("records")
+
+    def _save_results(self, result_rows: list[dict[str, Any]], path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(result_rows, columns=RESULT_COLUMNS).to_csv(path, index=False)
+
+    def _resolve_results_path(self, path: Union[str, Path]) -> Path:
+        path = Path(path)
+        if path.suffix:
+            return path
+        return path / f"{self.generator}.csv"
+
+    def _schema_path(self) -> Path:
+        return self.save_dir / "processors" / SCHEMA_FILENAME
+
+    def _processor_dir(self, train_seed: int) -> Path:
+        return self.save_dir / "processors" / str(train_seed)
+
+    def _model_dir(self, train_seed: int) -> Path:
+        return self.save_dir / "models" / self.generator / f"train_seed_{train_seed}"
+
+    def _stratify_values(self, X: pd.DataFrame):
+        if self.target_column is None:
+            return None
+        if self.target_column not in X.columns:
+            return None
+        return X[self.target_column]
+
+    def _subsample_eval_dataset(
         self,
-        X: pd.DataFrame,
-        target_column: str,
-        discrete_columns: list,
-    ):
-        """Train the configured generator and return trained model objects.
+        X: Optional[pd.DataFrame],
+        random_state: int,
+        max_eval_samples: Optional[int],
+    ) -> Optional[pd.DataFrame]:
+        if X is None:
+            return None
+        if max_eval_samples is None or len(X) <= max_eval_samples:
+            return X
+        return X.sample(n=max_eval_samples, random_state=random_state)
 
-        Args:
-            X: Full dataset as a pandas DataFrame.
-            target_column: Name of the target column.
-            discrete_columns: List of discrete/categorical column names.
+    @staticmethod
+    def _train_seeds(random_state: int, n_train_seeds: int) -> range:
+        return range(random_state, random_state + n_train_seeds)
 
-        Returns:
-            TabularBaseGenerator or dict: Trained model, or nested `split/init` dict of trained models.
-        """
-        os.makedirs(self.workspace, exist_ok=True)
-        self._trained_target_column = target_column
-        self._trained_discrete_columns = list(discrete_columns)
-        trained_models = {}
-        generator_, generator_params = self._get_generator_setup(target_column)
-        needs_workspace = getattr(generator_, "needs_workspace", False)
-
-        for split_i in range(
-            self.random_state, self.random_state + self.n_random_splits
-        ):
-            # remove any previously tuned hyperparameters; they need to be re-tuned for different training splits
-            shutil.rmtree("synthyverse_hyperparams_tuned", ignore_errors=True)
-            split_key = f"split_{split_i}"
-            trained_models[split_key] = {}
-            X_train, _X_test, X_val = self._split_data(
-                X, target_column, discrete_columns, split_i
+    @staticmethod
+    def _validate_split_config(test_size: float, val_size: float) -> None:
+        if not 0 < test_size < 1:
+            raise ValueError("test_size must be between 0 and 1.")
+        if val_size < 0 or test_size + val_size >= 1:
+            raise ValueError(
+                "val_size must be non-negative and test_size + val_size < 1."
             )
 
-            for init_i in range(self.random_state, self.random_state + self.n_inits):
-                set_seed(init_i)
+    @staticmethod
+    def _validate_max_eval_samples(max_eval_samples: Optional[int]) -> Optional[int]:
+        if max_eval_samples is None:
+            return None
+        if not isinstance(max_eval_samples, int) or isinstance(max_eval_samples, bool):
+            raise TypeError("max_eval_samples must be an integer or None.")
+        if max_eval_samples <= 0:
+            raise ValueError("max_eval_samples must be greater than 0.")
+        return max_eval_samples
 
-                iteration_workspace = self.workspace
-                iteration_generator_params = dict(generator_params)
-                if needs_workspace:
-                    iteration_workspace = self._get_model_workspace_path(
-                        split_i, init_i
-                    )
-                    shutil.rmtree(iteration_workspace, ignore_errors=True)
-                    os.makedirs(iteration_workspace, exist_ok=True)
-                    iteration_generator_params["workspace"] = iteration_workspace
-                else:
-                    self.clean_directory(self.workspace, remove_self=False)
-
-                generator = self._create_generator_instance(
-                    generator_=generator_,
-                    generator_params=iteration_generator_params,
-                    init_i=init_i,
-                    target_column=target_column,
-                    workspace=iteration_workspace,
-                )
-                start_time = time()
-                generator.fit(
-                    X=X_train, discrete_features=discrete_columns, X_val=X_val
-                )
-                training_time = time() - start_time
-
-                self._attach_training_context_to_model(
-                    model=generator,
-                    split_i=split_i,
-                    init_i=init_i,
-                    target_column=target_column,
-                    discrete_columns=discrete_columns,
-                    training_time=training_time,
-                )
-                trained_models[split_key][f"init_{init_i}"] = generator
-
-                # release memory for next iteration
-                free_up_memory()
-
-        if not needs_workspace:
-            self.clean_directory(self.workspace, remove_self=True)
-        shutil.rmtree("synthyverse_hyperparams_tuned", ignore_errors=True)
-        if len(trained_models) == 1:
-            split_models = next(iter(trained_models.values()))
-            if len(split_models) == 1:
-                return next(iter(split_models.values()))
-        return trained_models
-
-    def eval(
+    def _effective_max_eval_samples(
         self,
-        X: pd.DataFrame,
-        trained_models: Union[TabularBaseGenerator, dict],
-        metrics: Union[list, dict, None] = None,
-        n_generated_datasets: int = 1,
-        max_eval_size: int = int(1e9),
-        result_format: str = "frame",  # "frame" or "dict"
-    ):
-        """Evaluate trained model objects.
+        max_eval_samples: Optional[int],
+    ) -> Optional[int]:
+        if max_eval_samples is None:
+            return self.max_eval_samples
+        return self._validate_max_eval_samples(max_eval_samples)
 
-        Args:
-            X: Full dataset as a pandas DataFrame.
-            trained_models: A single trained model or nested `split/init` dict returned by this benchmark's `train()`.
-            metrics: List or dictionary of metrics to evaluate. Defaults to
-                ["classifier_test", "mle", "dcr"] when None.
-            n_generated_datasets: Number of synthetic datasets to generate per initialization.
-            max_eval_size: Maximum size of sampled train/test/validation subsets used for evaluation.
-            result_format: Format of results ("frame" for DataFrame, "dict" for nested dict).
+    @staticmethod
+    def _normalize_constraints(
+        constraints: Optional[Union[list[str], str]],
+    ) -> list[str]:
+        if constraints is None:
+            return []
+        if isinstance(constraints, str):
+            return [constraints]
+        return list(constraints)
 
-        Returns:
-            pd.DataFrame or dict: Benchmark results in the specified format.
-        """
-        if metrics is None:
-            metrics = list(DEFAULT_BENCHMARK_METRICS)
-
-        os.makedirs(self.workspace, exist_ok=True)
-
-        normalized_models = self._normalize_trained_models(
-            trained_models=trained_models
+    @staticmethod
+    def _accepts_kwarg(signature: inspect.Signature, name: str) -> bool:
+        if name in signature.parameters:
+            return True
+        return any(
+            param.kind == inspect.Parameter.VAR_KEYWORD
+            for param in signature.parameters.values()
         )
-        all_models = [
-            model
-            for split_models in normalized_models.values()
-            for model in split_models.values()
+
+
+def make_csv_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return json.dumps(
+            {str(key): make_csv_safe(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple, set)):
+        return json.dumps([make_csv_safe(item) for item in value])
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, pd.DataFrame):
+        return value.to_json(orient="records")
+    if isinstance(value, pd.Series):
+        return make_csv_safe(value.to_list())
+    if hasattr(value, "tolist") and not isinstance(value, (str, bytes)):
+        try:
+            return make_csv_safe(value.tolist())
+        except TypeError:
+            pass
+    if hasattr(value, "item") and not isinstance(value, (str, bytes)):
+        try:
+            return make_csv_safe(value.item())
+        except (TypeError, ValueError):
+            pass
+    try:
+        if pd.isna(value):
+            return pd.NA
+    except (TypeError, ValueError):
+        pass
+    return value
+
+
+def flatten_metrics(metrics: Any, prefix: str = "") -> Iterable[tuple[str, Any]]:
+    if isinstance(metrics, dict):
+        for name, value in metrics.items():
+            metric_name = f"{prefix}.{name}" if prefix else str(name)
+            yield from flatten_metrics(value, metric_name)
+    else:
+        yield prefix, make_csv_safe(metrics)
+
+
+class PeakMemoryMonitor:
+    """Sample process memory while a benchmark step is running."""
+
+    def __init__(self, interval_seconds: float = 0.05):
+        self.interval_seconds = interval_seconds
+        self.peak_memory_mb: Optional[float] = None
+        self.peak_cuda_memory_mb: Optional[float] = None
+        self._peak_rss_bytes: Optional[int] = None
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def __enter__(self) -> "PeakMemoryMonitor":
+        self._sample_once()
+        _reset_cuda_peak_memory()
+        self._thread = threading.Thread(target=self._sample_until_stopped, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self._sample_once()
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        self._sample_once()
+        self.peak_memory_mb = _bytes_to_mib(self._peak_rss_bytes)
+        self.peak_cuda_memory_mb = _bytes_to_mib(_cuda_peak_memory_bytes())
+
+    def _sample_until_stopped(self) -> None:
+        while not self._stop_event.wait(self.interval_seconds):
+            self._sample_once()
+
+    def _sample_once(self) -> None:
+        rss_bytes = _current_process_memory_bytes()
+        if rss_bytes is None:
+            return
+        if self._peak_rss_bytes is None or rss_bytes > self._peak_rss_bytes:
+            self._peak_rss_bytes = rss_bytes
+
+
+def _bytes_to_mib(value: Optional[int]) -> Optional[float]:
+    if value is None:
+        return None
+    return value / BYTES_PER_MIB
+
+
+def _current_process_memory_bytes() -> Optional[int]:
+    global _PROCESS_MEMORY_READER
+    if _PROCESS_MEMORY_READER is None:
+        _PROCESS_MEMORY_READER = _select_process_memory_reader()
+    return _PROCESS_MEMORY_READER()
+
+
+def _select_process_memory_reader():
+    psutil_reader = _make_psutil_memory_reader()
+    if psutil_reader is not None:
+        return psutil_reader
+    if os.name == "nt":
+        return _windows_process_memory_bytes
+    if sys.platform.startswith("linux"):
+        return _linux_process_memory_bytes
+    return _resource_process_memory_bytes
+
+
+def _make_psutil_memory_reader():
+    try:
+        import psutil
+    except ImportError:
+        return None
+
+    try:
+        process = psutil.Process(os.getpid())
+    except Exception:
+        return None
+
+    def read_memory_bytes() -> Optional[int]:
+        try:
+            return int(process.memory_info().rss)
+        except Exception:
+            return None
+
+    return read_memory_bytes
+
+
+def _windows_process_memory_bytes() -> Optional[int]:
+    try:
+        import ctypes
+    except ImportError:
+        return None
+
+    class ProcessMemoryCounters(ctypes.Structure):
+        _fields_ = [
+            ("cb", ctypes.c_ulong),
+            ("PageFaultCount", ctypes.c_ulong),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
         ]
 
-        model_target_column = self._resolve_uniform_model_attribute(
-            all_models, "_benchmark_target_column", default_value=None
+    counters = ProcessMemoryCounters()
+    counters.cb = ctypes.sizeof(ProcessMemoryCounters)
+    handle = ctypes.windll.kernel32.GetCurrentProcess()
+    success = ctypes.windll.psapi.GetProcessMemoryInfo(
+        handle,
+        ctypes.byref(counters),
+        counters.cb,
+    )
+    if not success:
+        return None
+    return int(counters.WorkingSetSize)
+
+
+def _linux_process_memory_bytes() -> Optional[int]:
+    try:
+        with Path("/proc/self/statm").open() as statm_file:
+            resident_pages = int(statm_file.read().split()[1])
+        return resident_pages * os.sysconf("SC_PAGE_SIZE")
+    except Exception:
+        return None
+
+
+def _resource_process_memory_bytes() -> Optional[int]:
+    try:
+        import resource
+    except ImportError:
+        return None
+
+    try:
+        max_rss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except Exception:
+        return None
+
+    if sys.platform == "darwin":
+        return max_rss
+    return max_rss * 1024
+
+
+def _reset_cuda_peak_memory() -> None:
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.reset_peak_memory_stats()
+    except Exception:
+        return
+
+
+def _cuda_peak_memory_bytes() -> Optional[int]:
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        torch.cuda.synchronize()
+        return int(torch.cuda.max_memory_allocated())
+    except Exception:
+        return None
+
+
+def memory_metric_rows(
+    prefix: str,
+    monitor: Optional[PeakMemoryMonitor],
+    train_seed: int,
+    set_index: Any = pd.NA,
+) -> list[dict[str, Any]]:
+    rows = []
+    if monitor is None:
+        return rows
+    if monitor.peak_memory_mb is not None:
+        rows.append(
+            {
+                "metric name": f"{prefix}_peak_memory_mb",
+                "metric value": monitor.peak_memory_mb,
+                "train_seed": train_seed,
+                "set": set_index,
+            }
         )
-        model_discrete_columns = self._resolve_uniform_model_attribute(
-            all_models, "_benchmark_discrete_columns", default_value=None
+    if monitor.peak_cuda_memory_mb is not None:
+        rows.append(
+            {
+                "metric name": f"{prefix}_peak_cuda_memory_mb",
+                "metric value": monitor.peak_cuda_memory_mb,
+                "train_seed": train_seed,
+                "set": set_index,
+            }
         )
-        if model_discrete_columns is not None:
-            model_discrete_columns = list(model_discrete_columns)
-
-        resolved_target_column = model_target_column
-        resolved_discrete_columns = model_discrete_columns
-        if resolved_target_column is None or resolved_discrete_columns is None:
-            raise ValueError(
-                "Could not resolve target/discrete columns from model metadata. Pass models returned by this benchmark's train()."
-            )
-        resolved_discrete_columns = list(resolved_discrete_columns)
-
-        resolved_test_size = self._resolve_uniform_model_attribute(
-            all_models, "_benchmark_test_size", default_value=None
-        )
-        resolved_val_size = self._resolve_uniform_model_attribute(
-            all_models, "_benchmark_val_size", default_value=None
-        )
-        resolved_random_state = self._resolve_uniform_model_attribute(
-            all_models, "_benchmark_base_random_state", default_value=None
-        )
-        if (
-            resolved_test_size is None
-            or resolved_val_size is None
-            or resolved_random_state is None
-        ):
-            raise ValueError(
-                "Could not resolve test/validation split configuration from model metadata. "
-                "Pass models returned by this benchmark's train()."
-            )
-        resolved_random_state = int(resolved_random_state)
-
-        results = {}
-        for split_i in sorted(normalized_models.keys()):
-            split_key = f"split_{split_i}"
-            results[split_key] = {}
-            X_train, X_test, X_val = self._split_data(
-                X,
-                resolved_target_column,
-                resolved_discrete_columns,
-                split_i,
-                test_size=resolved_test_size,
-                val_size=resolved_val_size,
-            )
-
-            for init_i in sorted(normalized_models[split_i].keys()):
-                init_key = f"init_{init_i}"
-                results[split_key][init_key] = {}
-                generator = normalized_models[split_i][init_i]
-
-                # potentially generate multiple datasets
-                for generated_dataset_i in range(
-                    resolved_random_state,
-                    resolved_random_state + n_generated_datasets,
-                ):
-                    set_seed(generated_dataset_i)
-                    generated_dataset_key = f"generated_dataset_{generated_dataset_i}"
-                    results[split_key][init_key][generated_dataset_key] = {}
-
-                    # sample synthetic dataset and perform evaluation
-                    n_train = min(max_eval_size, len(X_train))
-                    n_test = min(max_eval_size, len(X_test))
-                    n = n_train + n_test
-                    start_time = time()
-                    X_syn = generator.generate(n)
-                    results[split_key][init_key][generated_dataset_key][
-                        "inference_time"
-                    ] = (time() - start_time)
-                    evaluator = TabularMetricEvaluator(
-                        metrics=metrics,
-                        discrete_features=resolved_discrete_columns,
-                        target_column=resolved_target_column,
-                        missing_imputation_method=self.missing_imputation_method,
-                        random_state=generated_dataset_i,
-                    )
-                    X_val_sample = None
-                    if X_val is not None:
-                        n_val = min(max_eval_size, len(X_val))
-                        X_val_sample = X_val.sample(
-                            n_val, replace=False, random_state=generated_dataset_i
-                        )
-                    start_time = time()
-                    metric_results = evaluator.evaluate(
-                        X_train.sample(
-                            n_train, replace=False, random_state=generated_dataset_i
-                        ),
-                        X_test.sample(
-                            n_test, replace=False, random_state=generated_dataset_i
-                        ),
-                        X_syn,
-                        X_val_sample,
-                    )
-                    results[split_key][init_key][generated_dataset_key][
-                        "evaluation_time"
-                    ] = (time() - start_time)
-                    results[split_key][init_key][generated_dataset_key].update(
-                        metric_results
-                    )
-
-                    # release memory for next iteration
-                    free_up_memory()
-        if result_format == "frame":
-            results = format_results(results)
-        return results
-
-    def train_and_eval(
-        self,
-        X: pd.DataFrame,
-        target_column: str,
-        discrete_columns: list,
-        metrics: Union[list, dict, None] = None,
-        n_generated_datasets: int = 1,
-        max_eval_size: int = int(1e9),
-        result_format: str = "frame",  # "frame" or "dict"
-    ) -> Tuple[Union[pd.DataFrame, dict], Union[TabularBaseGenerator, dict]]:
-        """Train and evaluate the generator.
-
-        This is a convenience wrapper for users who only need benchmark results
-        and do not need to call `train()` and `eval()` separately.
-
-        Args:
-            X: Full dataset as a pandas DataFrame.
-            target_column: Name of the target column.
-            discrete_columns: List of discrete/categorical column names.
-            metrics: List or dictionary of metrics to evaluate. Defaults to
-                ["classifier_test", "mle", "dcr"] when None.
-            n_generated_datasets: Number of synthetic datasets to generate per initialization.
-            max_eval_size: Maximum size of sampled train/test/validation subsets used for evaluation.
-            result_format: Format of results ("frame" for DataFrame, "dict" for nested dict).
-
-        Returns:
-            tuple: `(results, trained_models)`, where `results` is in the requested
-            `result_format`, and `trained_models` is the output from `train()`.
-        """
-        trained_models = self.train(
-            X=X,
-            target_column=target_column,
-            discrete_columns=discrete_columns,
-        )
-        results = self.eval(
-            X=X,
-            trained_models=trained_models,
-            metrics=metrics,
-            n_generated_datasets=n_generated_datasets,
-            max_eval_size=max_eval_size,
-            result_format=result_format,
-        )
-        return results, trained_models
-
-    def clean_directory(self, path: str, remove_self: bool = False) -> None:
-
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"Directory '{path}' does not exist.")
-
-        if remove_self:
-            shutil.rmtree(path)
-        else:
-            for entry in os.listdir(path):
-                entry_path = os.path.join(path, entry)
-                if os.path.isfile(entry_path) or os.path.islink(entry_path):
-                    os.remove(entry_path)
-                elif os.path.isdir(entry_path):
-                    shutil.rmtree(entry_path)
+    return rows

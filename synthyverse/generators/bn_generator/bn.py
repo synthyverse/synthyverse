@@ -2,10 +2,11 @@ import pandas as pd
 from synthcity.plugins.core.dataloader import GenericDataLoader
 from synthcity.plugins import Plugins
 
-from ..base import TabularBaseGenerator
+from ..base import BaseGenerator
+from ..persistence import load_generator_state, restore_generator, save_generator_state
 
 
-class BNGenerator(TabularBaseGenerator):
+class BNGenerator(BaseGenerator):
     """Bayesian Network (BN).
 
     Uses Bayesian networks to model dependencies between variables and generate
@@ -23,7 +24,6 @@ class BNGenerator(TabularBaseGenerator):
         encoder_max_clusters (int): Maximum clusters for encoding continuous variables. Default: 10.
         encoder_noise_scale (float): Noise scale for encoding. Default: 0.1.
         random_state (int): Random seed for reproducibility. Default: 0.
-        **kwargs: Additional arguments passed to TabularBaseGenerator.
 
     Example:
         >>> import pandas as pd
@@ -56,9 +56,14 @@ class BNGenerator(TabularBaseGenerator):
         encoder_max_clusters: int = 10,
         encoder_noise_scale: float = 0.1,
         random_state: int = 0,
-        **kwargs,
     ):
-        super().__init__(random_state=random_state, **kwargs)
+        self.random_state = random_state
+        self.struct_learning_n_iter = struct_learning_n_iter
+        self.struct_learning_search_method = struct_learning_search_method
+        self.struct_learning_score = struct_learning_score
+        self.struct_max_indegree = struct_max_indegree
+        self.encoder_max_clusters = encoder_max_clusters
+        self.encoder_noise_scale = encoder_noise_scale
         self.model = Plugins().get(
             "bayesian_network",
             struct_learning_n_iter=struct_learning_n_iter,
@@ -70,17 +75,23 @@ class BNGenerator(TabularBaseGenerator):
             random_state=random_state,
         )
 
-    def _fit_model(
-        self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
-    ):
-        loader = GenericDataLoader(
-            X,
-            target_column=self.target_column,
-            train_size=1,
-            random_state=self.random_state,
-        )
+    def _fit(self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None):
+        loader = GenericDataLoader(X)
         self.model.fit(loader)
 
-    def _generate_data(self, n: int):
-        syn = self.model.generate(n)
-        return syn.dataframe()
+        return self
+
+    def _generate(self, n: int):
+        return self.model.generate(n).dataframe()
+
+    def save(self, path):
+        return save_generator_state(
+            path,
+            {
+                "model": self.model,
+            },
+        )
+
+    @classmethod
+    def load(cls, path):
+        return restore_generator(cls, load_generator_state(path))

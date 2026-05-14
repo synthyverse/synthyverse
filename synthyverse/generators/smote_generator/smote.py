@@ -1,13 +1,15 @@
 import pandas as pd
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
+from sklearn.preprocessing import OrdinalEncoder
+from sklearn.utils import check_random_state
 from imblearn.over_sampling import SMOTENC, SMOTE, SMOTEN
 
+from ..base import BaseGenerator
+from ..persistence import load_generator_state, restore_generator, save_generator_state
 
-from ..base import TabularBaseGenerator
 
-
-class SMOTEGenerator(TabularBaseGenerator):
+class SMOTEGenerator(BaseGenerator):
     """Synthetic Minority Over-sampling Technique (SMOTE) for tabular data.
 
     Creates synthetic samples via interpolation in feature space using
@@ -26,7 +28,6 @@ class SMOTEGenerator(TabularBaseGenerator):
         n_jobs (int): Number of parallel jobs for nearest-neighbor search.
             Default: -1.
         random_state (int): Random seed for reproducibility. Default: 0.
-        **kwargs: Additional arguments passed to `TabularBaseGenerator`.
 
     Example:
         >>> import pandas as pd
@@ -49,7 +50,6 @@ class SMOTEGenerator(TabularBaseGenerator):
     """
 
     name = "smote"
-    needs_target_column = True
 
     def __init__(
         self,
@@ -57,20 +57,26 @@ class SMOTEGenerator(TabularBaseGenerator):
         k_neighbors: int = 5,
         n_jobs: int = -1,
         random_state: int = 0,
-        **kwargs,
     ):
         self.target_column = target_column
         self.k_neighbors = k_neighbors
         self.n_jobs = n_jobs
-        super().__init__(random_state=random_state, **kwargs)
+        self.random_state = random_state
 
-    def _fit_model(
-        self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
-    ):
+    def _fit(self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None):
 
         self.is_classification = self.target_column in discrete_features
 
         self.X = X.copy()
+
+        self.ordinal_encoder = OrdinalEncoder(
+            handle_unknown="use_encoded_value",
+            unknown_value=-1,
+            encoded_missing_value=-2,
+        )
+        self.X[discrete_features] = self.ordinal_encoder.fit_transform(
+            self.X[discrete_features]
+        )
 
         if not self.is_classification:
             # pseudo outcome similar to TabDDPM paper
@@ -89,7 +95,11 @@ class SMOTEGenerator(TabularBaseGenerator):
 
         # SMOTE is not a model, so we don't need to fit it here
 
-    def _generate_data(self, n: int):
+        return self
+
+    def _generate(self, n: int):
+        rng = check_random_state(self.random_state)
+
         if len(self.numerical_features) > 0:
             if len(self.discrete_features) > 0:
                 self.smote = SMOTENC
@@ -108,7 +118,7 @@ class SMOTEGenerator(TabularBaseGenerator):
         diff = obs_sum - self.y_train.shape[0]
         # if too many / too few samples would be drawn, make adjustments to randomly chosen class
         if diff != n:
-            c = np.random.choice(list(sampling_strategy.keys()), 1).item()
+            c = rng.choice(list(sampling_strategy.keys()), 1).item()
             sampling_strategy[c] += n - diff
             assert sum(sampling_strategy.values()) - self.y_train.shape[0] == n
 
@@ -150,7 +160,7 @@ class SMOTEGenerator(TabularBaseGenerator):
         syn_y = syn_y[self.y_train.shape[0] :]
 
         # shuffle generated data
-        idx = np.random.permutation(len(syn_X))
+        idx = rng.permutation(len(syn_X))
         syn_X = syn_X.iloc[idx]
         syn_y = syn_y.iloc[idx]
 
@@ -163,4 +173,27 @@ class SMOTEGenerator(TabularBaseGenerator):
 
         syn_X[self.discrete_features] = syn_X[self.discrete_features].astype(int)
 
+        syn_X[self.discrete_features] = self.ordinal_encoder.inverse_transform(
+            syn_X[self.discrete_features]
+        )
+
         return syn_X
+
+    def save(self, path):
+        state = {
+            "target_column": self.target_column,
+            "k_neighbors": self.k_neighbors,
+            "n_jobs": self.n_jobs,
+            "random_state": self.random_state,
+            "is_classification": self.is_classification,
+            "X": self.X,
+            "ordinal_encoder": self.ordinal_encoder,
+            "y_train": self.y_train,
+            "discrete_features": self.discrete_features,
+            "numerical_features": self.numerical_features,
+        }
+        return save_generator_state(path, state)
+
+    @classmethod
+    def load(cls, path):
+        return restore_generator(cls, load_generator_state(path))

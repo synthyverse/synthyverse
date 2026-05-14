@@ -1,9 +1,11 @@
-from ..base import TabularBaseGenerator
 import pandas as pd
 import numpy as np
 
+from ..base import BaseGenerator
+from ..persistence import load_generator_state, restore_generator, save_generator_state
 
-class PermutationGenerator(TabularBaseGenerator):
+
+class PermutationGenerator(BaseGenerator):
     """Permutation-based generator for tabular synthetic data.
 
     Generates synthetic data by randomly permuting a fraction of values in each
@@ -12,7 +14,6 @@ class PermutationGenerator(TabularBaseGenerator):
     Args:
         random_state (int): Random seed for reproducibility. Default: 0.
         permutation_rate (float): Fraction of values to permute in each column (0.0 to 1.0). Default: 0.5.
-        **kwargs: Additional arguments passed to TabularBaseGenerator.
 
     Example:
         >>> import pandas as pd
@@ -35,36 +36,36 @@ class PermutationGenerator(TabularBaseGenerator):
 
     name = "permutation"
 
-    def __init__(self, random_state: int = 0, permutation_rate: float = 0.5, **kwargs):
-        super().__init__(random_state=random_state, **kwargs)
+    def __init__(self, random_state: int = 0, permutation_rate: float = 0.5):
         self.permutation_rate = permutation_rate
         self.random_state = random_state
 
-    def _fit_model(
+    def _fit(
         self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
     ):
         self.X = X.copy()
 
-    def _generate_data(self, n: int):
-        if n <= len(self.X):
-            syn = self.X[:n]
-        else:
-            syn = self.X
-            remaining_rows = n - len(self.X)
-            while remaining_rows > 0:
-                syn = pd.concat([syn, self.X])
-                remaining_rows -= len(self.X)
-            syn = syn[:n]
+        return self
 
-        syn = syn.reset_index(drop=True)
+    def _generate(self, n: int):
+        self.rng = np.random.default_rng(self.random_state)
 
+        syn = pd.DataFrame(index=range(n))
         for col in self.X.columns:
-            mask = np.random.rand(n) < self.permutation_rate
-            permuted = (
-                self.X[col]
-                .sample(n, replace=True, random_state=self.random_state)
-                .values
+            syn[col] = (
+                self.X[col].sample(n, replace=True, random_state=self.rng).to_numpy()
             )
-            syn.loc[mask, col] = permuted[mask]
 
         return syn
+
+    def save(self, path):
+        state = {
+            "X": self.X,
+            "permutation_rate": self.permutation_rate,
+            "random_state": self.random_state,
+        }
+        return save_generator_state(path, state)
+
+    @classmethod
+    def load(cls, path):
+        return restore_generator(cls, load_generator_state(path))

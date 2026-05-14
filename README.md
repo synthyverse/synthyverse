@@ -22,20 +22,16 @@ _The synthyverse is a work in progress. Please provide any suggestions through a
 <div style="clear: both;"></div>
 
 # Features
-- 🔧 **Highly modular installation.** Install only those modules which you require to keep your installation lightweight.
-- 📚 **Extensive library for synthetic data.** Any generator or metric can be quickly added without dependency conflicts due to synthyverse's modular installation. This allows the synthyverse to host a great amount of generators and evaluation metrics. It also allows the synthyverse to wrap around any existing synthetic data library.
-- ⚙️ **Benchmarking module for simplified synthetic data pipelines.** The benchmarking module executes a modular pipeline of synthetic data generation and evaluation. Choose a generator, set of evaluation metrics, and pipeline parameters, and obtain results on synthetic data quality.
-- 👷 **Minimal preprocessing required.** All preprocessing is handled by the synthyverse, so no need for scaling, one-hot encoding, or handling missing values. Different preprocessing schemes can be used by setting simple parameters.
-- 👍 **Set constraints for your synthetic data.** You can specify inter-column constraints which you want your synthetic data to follow. Constraints are modelled explicitly by the synthyverse, not through oversampling. This ensures efficient and reliable constraint setting.
+- **Modular installation.** Install only the generator and evaluation extras you need for a given environment.
+- **Tabular synthetic data generators.** Use low-level generators directly, or wrap them with shared preprocessing through `SynthyverseGenerator`.
+- **Evaluation metrics.** Compare synthetic data with fidelity, utility, and privacy metrics through individual metric classes or `TabularMetricEvaluator`.
+- **Benchmarking workflows.** Train, sample, evaluate, and save benchmark artifacts with `TabularSynthesisBenchmark`.
+- **Shared preprocessing.** Reuse `DataProcessor` for missing-value handling, schema restoration, and column constraints.
 
 # Installation
-The synthyverse is unique in its modular installation set-up. To avoid conflicting dependencies, we provide various installation templates. Each template installs only those dependencies which are required to access certain modules. 
+The core package installs the shared tabular data dependencies used by the base generator and preprocessing APIs. Optional extras install dependencies for specific generators or for the evaluation module.
 
-Templates provide installation for specific generators, the evaluation module, and more. Install multiple templates to get access to multiple modules of the synthyverse, e.g., multiple generators and evaluation. 
-
-**We strongly advise to only install templates which you require during a specific run. Installing multiple templates gives rise to potential dependency conflicts. Use separate virtual environments across installations.**
-
-**Note that the core installation without any template doesn't install any modules.**
+Install only the extras you need for a run. Some generator dependencies are heavy or may conflict with each other, so separate virtual environments are recommended when combining many extras.
 
 ## Available Installation Templates
 
@@ -46,20 +42,13 @@ The following installation templates are available:
 | `arf` | Generator | `pip install synthyverse[arf]` |
 | `bn` | Generator | `pip install synthyverse[bn]` |
 | `cdtd` | Generator | `pip install synthyverse[cdtd]` |
-| `ctabgan` | Generator | `pip install synthyverse[ctabgan]` |
 | `ctgan` | Generator | `pip install synthyverse[ctgan]` |
-| `forestdiffusion` | Generator | `pip install synthyverse[forestdiffusion]` |
-| `nrgboost` | Generator | `pip install synthyverse[nrgboost]` |
 | `permutation` | Generator | `pip install synthyverse[permutation]` |
-| `realtabformer` | Generator | `pip install synthyverse[realtabformer]` |
 | `smote` | Generator | `pip install synthyverse[smote]` |
-| `synthpop` | Generator | `pip install synthyverse[synthpop]` |
 | `tabargn` | Generator | `pip install synthyverse[tabargn]` |
 | `tabddpm` | Generator | `pip install synthyverse[tabddpm]` |
 | `tabsyn` | Generator | `pip install synthyverse[tabsyn]` |
 | `tvae` | Generator | `pip install synthyverse[tvae]` |
-| `unmaskingtrees` | Generator | `pip install synthyverse[unmaskingtrees]` |
-| `xgenboost` | Generator | `pip install synthyverse[xgenboost]` |
 | `base` | Generator | `pip install synthyverse[base]` |
 | `eval` | Evaluation | `pip install synthyverse[eval]` |
 | `full` | All | `pip install synthyverse[full]` |
@@ -87,8 +76,21 @@ pip install synthyverse[ctgan,eval]
 
 # Usage
 
-We refer to the [docs](https://synthyverse.readthedocs.io) to learn how to use the synthyverse!
+Use a high-level wrapper when you want preprocessing and schema restoration handled for you:
+
+```python
+from synthyverse.generators import SynthyverseGenerator
+
+generator = SynthyverseGenerator(
+    "ctgan",
+    generator_params={"epochs": 300},
+    missing_imputation_method="median",
+    random_state=42,
+)
+generator.fit(X, discrete_features=["category", "target"])
+X_syn = generator.generate(1000)
+```
+
+Use the lower-level APIs when you want explicit control over preprocessing, generator fitting, metrics, or benchmarking. See the [docs](https://synthyverse.readthedocs.io) for complete examples.
 
 
-# Tutorials
-- [Tabular Synthetic Data with the synthyverse: Introduction](https://github.com/synthyverse/synthyverse/blob/main/tutorial.ipynb)

@@ -31,8 +31,6 @@ from synthcity.plugins.core.schema import Schema
 from synthcity.utils.callbacks import Callback
 from synthcity.utils.constants import DEVICE
 
-from ....utils.utils import get_total_trainable_params
-
 
 class TabDDPMPlugin(Plugin):
     """
@@ -111,7 +109,7 @@ class TabDDPMPlugin(Plugin):
         model_type: str = "mlp",
         model_params: dict = {},
         dim_embed: int = 128,
-        continuous_encoder: str = "standard",
+        continuous_encoder: str = "quantile",
         cont_encoder_params: dict = {},
         validation_size: float = 0,
         validation_metric: Optional[WeightedMetrics] = None,
@@ -151,8 +149,6 @@ class TabDDPMPlugin(Plugin):
             valid_size=validation_size,
             valid_metric=validation_metric,
         )
-
-        print(f"Number of trainable params: {get_total_trainable_params(self.model)}")
 
         cont_encoder_params = cont_encoder_params.copy()
         cont_encoder_params.update(random_state=random_state)

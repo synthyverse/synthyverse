@@ -1,9 +1,11 @@
 from ctgan import CTGAN
-from ..base import TabularBaseGenerator
 import pandas as pd
 
+from ..base import BaseGenerator
+from ..persistence import load_generator_state, save_generator_state
 
-class CTGANGenerator(TabularBaseGenerator):
+
+class CTGANGenerator(BaseGenerator):
     """Conditional Tabular GAN (CTGAN).
 
     Conditions on discrete columns, and uses mode-specific normalization for numerical columns.
@@ -28,7 +30,6 @@ class CTGANGenerator(TabularBaseGenerator):
         pac (int): Number of samples per class for PAC discriminator. Default: 10.
         cuda (bool): Whether to use CUDA if available. Default: True.
         random_state (int): Random seed for reproducibility. Default: 0.
-        **kwargs: Additional arguments passed to TabularBaseGenerator.
 
     Example:
         >>> import pandas as pd
@@ -70,9 +71,8 @@ class CTGANGenerator(TabularBaseGenerator):
         pac=10,
         cuda=True,
         random_state: int = 0,
-        **kwargs,
     ):
-        super().__init__(random_state=random_state, **kwargs)
+        self.random_state = random_state
         self.epochs = epochs
         self.batch_size = batch_size
 
@@ -89,9 +89,7 @@ class CTGANGenerator(TabularBaseGenerator):
         self.pac = pac
         self.cuda = cuda
 
-    def _fit_model(
-        self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
-    ):
+    def _fit(self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None):
         # round batch_size to be divisible by pac
         self.batch_size = self.batch_size // self.pac * self.pac
 
@@ -114,5 +112,25 @@ class CTGANGenerator(TabularBaseGenerator):
 
         self.model.fit(X, discrete_features)
 
-    def _generate_data(self, n: int):
+        return self
+
+    def _generate(self, n: int):
         return self.model.sample(n)
+
+    def save(self, path):
+        return save_generator_state(
+            path,
+            {
+                "model": self.model,
+            },
+        )
+
+    @classmethod
+    def load(cls, path):
+        state = load_generator_state(path)
+        generator = cls.__new__(cls)
+        if isinstance(state, dict):
+            generator.__dict__.update(state)
+        else:
+            generator.model = state
+        return generator

@@ -5,11 +5,11 @@ Welcome to synthyverse's documentation!
 
 The synthyverse provides:
 
-* 🔧 **Highly modular installation** - Install only those modules which you require to keep your installation lightweight.
-* 📚 **Extensive library** - Any generator or metric can be quickly added without dependency conflicts due to synthyverse's modular installation. This allows the synthyverse to host a great amount of generators and evaluation metrics. It also allows the synthyverse to wrap around any existing synthetic data library.
-* ⚙️ **Benchmarking module** - The benchmarking module executes a modular pipeline of synthetic data generation and evaluation. Choose a generator, set of evaluation metrics, and pipeline parameters, and obtain results on synthetic data quality.
-* 👷 **Minimal preprocessing** - All preprocessing is handled by the synthyverse, so no need for scaling, one-hot encoding, or handling missing values. Different preprocessing schemes can be used by setting simple parameters.
-* 👍 **Constraint support** - You can specify inter-column constraints which you want your synthetic data to follow. Constraints are modelled explicitly by the synthyverse, not through oversampling. This ensures efficient and reliable constraint setting.
+* **Modular installation** - Install only the generator and evaluation extras needed for a given environment.
+* **Low-level APIs** - Use preprocessing, generators, and metrics directly when you need explicit control.
+* **High-level wrappers** - Use ``SynthyverseGenerator``, ``TabularMetricEvaluator``, and ``TabularSynthesisBenchmark`` for common end-to-end workflows.
+* **Shared preprocessing** - Reuse schema restoration, missing-value handling, and constraints across generators.
+* **Benchmarking** - Train, sample, evaluate, and save repeatable tabular synthesis runs.
 
 Quick Start
 -----------

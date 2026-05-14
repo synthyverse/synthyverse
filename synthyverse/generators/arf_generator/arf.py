@@ -1,10 +1,12 @@
 import pandas as pd
 from arfpy.arf import arf
 import numpy as np
-from ..base import TabularBaseGenerator
+
+from ..base import BaseGenerator
+from ..persistence import load_generator_state, restore_generator, save_generator_state
 
 
-class ARFGenerator(TabularBaseGenerator):
+class ARFGenerator(BaseGenerator):
     """Adversarial Random Forest (ARF).
 
     ARF leverages random forests in alternating rounds of generation/discrimination to estimate densities and generate synthetic data.
@@ -23,7 +25,6 @@ class ARFGenerator(TabularBaseGenerator):
         retain_value_ranges (bool): Whether to clip numerical features to training
             ranges after generation. Default: False.
         random_state (int): Random seed for reproducibility. Default: 0.
-        **kwargs: Additional arguments passed to TabularBaseGenerator.
 
     Example:
         >>> import pandas as pd
@@ -58,23 +59,17 @@ class ARFGenerator(TabularBaseGenerator):
         min_node_size: int = 5,
         retain_value_ranges: bool = False,  # whether to retain numerical feature ranges
         random_state: int = 0,
-        **kwargs,
     ):
-        super().__init__(random_state=random_state, **kwargs)
+        self.random_state = random_state
+        self.num_trees = num_trees
+        self.delta = delta
+        self.max_iters = max_iters
+        self.early_stop = early_stop
+        self.verbose = verbose
+        self.min_node_size = min_node_size
         self.retain_value_ranges = retain_value_ranges
-        self.model_params = {
-            "num_trees": num_trees,
-            "delta": delta,
-            "max_iters": max_iters,
-            "early_stop": early_stop,
-            "verbose": verbose,
-            "min_node_size": min_node_size,
-            "random_state": random_state,
-        }
 
-    def _fit_model(
-        self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
-    ):
+    def _fit(self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None):
         xx = X.copy()
         xx[discrete_features] = xx[discrete_features].astype(str)
         self.numerical_features = [
@@ -88,13 +83,24 @@ class ARFGenerator(TabularBaseGenerator):
                     "max": xx[col].max(),
                 }
 
-        self.model = arf(xx, **self.model_params)
+        self.model = arf(
+            xx,
+            num_trees=self.num_trees,
+            delta=self.delta,
+            max_iters=self.max_iters,
+            early_stop=self.early_stop,
+            verbose=self.verbose,
+            min_node_size=self.min_node_size,
+            random_state=self.random_state,
+        )
         self.model.forde()
 
-    def _generate_data(self, n: int):
+        return self
+
+    def _generate(self, n: int):
         syn = self.model.forge(n)
         if self.retain_value_ranges:
-            for col in self.numerical_features:
+            for col in self.value_ranges.keys():
                 syn[col] = np.clip(
                     syn[col],
                     self.value_ranges[col]["min"],
@@ -102,3 +108,15 @@ class ARFGenerator(TabularBaseGenerator):
                 )
 
         return syn
+
+    def save(self, path):
+        state = {
+            "model": self.model,
+            "retain_value_ranges": self.retain_value_ranges,
+            "value_ranges": getattr(self, "value_ranges", None),
+        }
+        return save_generator_state(path, state)
+
+    @classmethod
+    def load(cls, path):
+        return restore_generator(cls, load_generator_state(path))

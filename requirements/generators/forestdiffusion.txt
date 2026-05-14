@@ -1,5 +1,0 @@
-ForestDiffusion
-pandas
-numpy
-scikit-learn
-tqdm
