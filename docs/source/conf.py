@@ -57,6 +57,7 @@ napoleon_attr_annotations = True
 # skips these imports during doc build (TBD: automate reading all package imports)
 autodoc_mock_imports = [
     "pandas",
+    "psutil",
     "numpy",
     "scikit-learn",
     "sklearn",
