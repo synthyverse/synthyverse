@@ -14,9 +14,9 @@ For detailed examples of low-level generators, preprocessing, persistence, and w
    generators/bn
    generators/ctgan
    generators/cdtd
-   generators/permutation
    generators/smote
    generators/tabargn
    generators/tabddpm
    generators/tabsyn
    generators/tvae
+   generators/univariate

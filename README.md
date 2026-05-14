@@ -43,12 +43,12 @@ The following installation templates are available:
 | `bn` | Generator | `pip install synthyverse[bn]` |
 | `cdtd` | Generator | `pip install synthyverse[cdtd]` |
 | `ctgan` | Generator | `pip install synthyverse[ctgan]` |
-| `permutation` | Generator | `pip install synthyverse[permutation]` |
 | `smote` | Generator | `pip install synthyverse[smote]` |
 | `tabargn` | Generator | `pip install synthyverse[tabargn]` |
 | `tabddpm` | Generator | `pip install synthyverse[tabddpm]` |
 | `tabsyn` | Generator | `pip install synthyverse[tabsyn]` |
 | `tvae` | Generator | `pip install synthyverse[tvae]` |
+| `univariate` | Generator | `pip install synthyverse[univariate]` |
 | `base` | Generator | `pip install synthyverse[base]` |
 | `eval` | Evaluation | `pip install synthyverse[eval]` |
 | `full` | All | `pip install synthyverse[full]` |

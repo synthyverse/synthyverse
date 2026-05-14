@@ -104,7 +104,7 @@ Generator = get_generator("ctgan")
 generator = Generator(epochs=100, random_state=42)
 ```
 
-Common registry names include `arf`, `bn`, `ctgan`, `tvae`, `tabsyn`, `cdtd`, `tabargn`, `tabddpm`, `permutation`, and `smote`.
+Common registry names include `arf`, `bn`, `ctgan`, `tvae`, `tabsyn`, `cdtd`, `tabargn`, `tabddpm`, `univariate`, and `smote`.
 
 ## Custom Modular Workflows
 

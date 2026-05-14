@@ -78,10 +78,10 @@ except Exception as exc:
 
 
 try:
-    from .permutation_generator import PermutationGenerator
+    from .univariate_generator import UnivariateGenerator
 except Exception as exc:
-    PermutationGenerator = _make_unavailable_generator(
-        "PermutationGenerator", "permutation", "permutation", exc
+    UnivariateGenerator = _make_unavailable_generator(
+        "UnivariateGenerator", "univariate", "univariate", exc
     )
 
 
@@ -120,6 +120,6 @@ all_generators = [
     CDTDGenerator,
     TabARGNGenerator,
     TabDDPMGenerator,
-    PermutationGenerator,
+    UnivariateGenerator,
     SMOTEGenerator,
 ]
