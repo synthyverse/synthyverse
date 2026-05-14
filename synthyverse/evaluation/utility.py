@@ -189,11 +189,7 @@ class MLE:
             random_state=self.random_state,
             score_fns=score_fns,
         )
-
-        test_set = "real" if self.train_set == "synthetic" else "synthetic"
-
-        slug = f"train_{self.train_set}_test_{test_set}"
         result = {}
         for key, value in scores.items():
-            result[f"{self.name}.{slug}.{key}"] = value
+            result[f"{self.name}.{key}"] = value
         return result

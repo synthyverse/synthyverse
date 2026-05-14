@@ -104,3 +104,36 @@ def get_metric(metric_name: str):
     if metric_name not in metric_map.keys():
         raise ValueError(f"Metric {metric_name} not found")
     return metric_map[metric_name]
+
+
+def __getattr__(name: str):
+    if name == "TabularMetricEvaluator":
+        from .eval import TabularMetricEvaluator
+
+        return TabularMetricEvaluator
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = [
+    "ClassifierTest",
+    "AlphaPrecisionBetaRecall",
+    "PRDC",
+    "Wasserstein",
+    "ShapeTrend",
+    "Marginals",
+    "Correlations",
+    "ARM",
+    "NMI",
+    "FeatureWisePlots",
+    "MLE",
+    "AIA",
+    "DCR",
+    "DOMIAS",
+    "DPI",
+    "ClassifierMIA",
+    "EnsembleMIA",
+    "DomainConstraint",
+    "TabularMetricEvaluator",
+    "all_metrics",
+    "get_metric",
+]

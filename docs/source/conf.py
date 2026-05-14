@@ -104,3 +104,22 @@ autodoc_mock_imports = [
 ]
 
 # Cross-refs to other package docs: potentially to be added later
+
+
+def add_registry_name_to_class_docstring(app, what, name, obj, options, lines):
+    if what != "class":
+        return
+
+    module_name = getattr(obj, "__module__", "")
+    is_synthyverse_registry_class = module_name.startswith(
+        ("synthyverse.generators.", "synthyverse.evaluation.")
+    )
+    registry_name = getattr(obj, "name", None)
+
+    if is_synthyverse_registry_class and isinstance(registry_name, str):
+        lines[:0] = [f"**Registry name:** ``{registry_name}``", ""]
+
+
+def setup(app):
+    app.connect("autodoc-process-docstring", add_registry_name_to_class_docstring)
+    return {"parallel_read_safe": True, "parallel_write_safe": True}

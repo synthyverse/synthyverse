@@ -1,50 +1,32 @@
-from typing import Any, List, Union
+from typing import Union
 import warnings
 import inspect
-import re
 
 import pandas as pd
 from . import get_metric
 
 
-def _slugify_metric_key_part(value: Any) -> str:
-    """Return a stable, dot-safe representation for one metric key component."""
-    text = str(value).strip().lower()
-    text = re.sub(r"[^a-z0-9]+", "_", text)
-    text = re.sub(r"_+", "_", text).strip("_")
-    return text or "none"
+def _split_metric_config(metric_key: str):
+    metric_name, separator, config_slug = str(metric_key).partition("-")
+    metric_name = metric_name.strip().lower()
+    config_slug = config_slug.strip() if separator else None
+
+    if not metric_name:
+        raise ValueError("Metric name cannot be empty.")
+    if config_slug == "":
+        config_slug = None
+
+    return metric_name, config_slug
 
 
-def _format_metric_param_value(value: Any) -> str:
-    if isinstance(value, dict):
-        parts = [
-            f"{_slugify_metric_key_part(key)}_{_format_metric_param_value(value[key])}"
-            for key in sorted(value, key=str)
-        ]
-        return "_".join(parts) or "empty"
-    if isinstance(value, (list, tuple, set)):
-        values = sorted(value, key=str) if isinstance(value, set) else value
-        return "_".join(_format_metric_param_value(item) for item in values) or "empty"
-    if hasattr(value, "__name__"):
-        return _slugify_metric_key_part(value.__name__)
-    return _slugify_metric_key_part(value)
-
-
-def _metric_param_key_parts(params: dict) -> List[str]:
-    return [
-        f"{_slugify_metric_key_part(key)}_{_format_metric_param_value(value)}"
-        for key, value in sorted(params.items(), key=lambda item: str(item[0]))
-    ]
-
-
-def _with_metric_config_in_key(
-    metric_name: str, result_key: str, metric_params: dict
+def _with_metric_config_slug_in_key(
+    metric_name: str, result_key: str, config_slug: str = None
 ) -> str:
-    """Place metric parameters between the metric name and score name.
+    """Place the user-provided config slug between metric and score names.
 
     The returned key starts with the registry metric name and preserves the
     result key tail so dotted metric names and score names remain intact, e.g.
-    ``mle.train_set_synthetic.tune_true.train_synthetic_test_real.auc``.
+    ``mle.tstr.train_synthetic_test_real.auc``.
     """
     result_key = str(result_key)
     key_tail = (
@@ -52,7 +34,12 @@ def _with_metric_config_in_key(
         if result_key.startswith(f"{metric_name}.")
         else result_key
     )
-    return ".".join([metric_name, *_metric_param_key_parts(metric_params), key_tail])
+    key_parts = [metric_name]
+    if config_slug is not None:
+        key_parts.append(config_slug)
+    if key_tail:
+        key_parts.append(key_tail)
+    return ".".join(key_parts)
 
 
 class TabularMetricEvaluator:
@@ -153,7 +140,7 @@ class TabularMetricEvaluator:
         dict_ = {}
         for metric__ in self.metrics.keys():
             print(f"Evaluating metric: {metric__}")
-            metric_ = metric__.split("-")[0].strip().lower()
+            metric_, config_slug = _split_metric_config(metric__)
             metric_cls = get_metric(metric_)
 
             # add necessary fixed parameters to the metrics:
@@ -183,14 +170,14 @@ class TabularMetricEvaluator:
 
             if isinstance(metric_result, dict):
                 for key, value in metric_result.items():
-                    result_key = _with_metric_config_in_key(
-                        metric_, key, metric_params
+                    result_key = _with_metric_config_slug_in_key(
+                        metric_, key, config_slug
                     )
                     if result_key in dict_:
                         raise ValueError(
                             f"Duplicate metric result key '{result_key}' while "
-                            f"evaluating '{metric__}'. Use distinct metric "
-                            "parameters so result keys remain unique."
+                            f"evaluating '{metric__}'. Use distinct metric names "
+                            "or config slugs so result keys remain unique."
                         )
                     dict_[result_key] = value
             else:

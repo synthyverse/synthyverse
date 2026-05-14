@@ -9,7 +9,7 @@ if scripts_dir not in sys.path:
 
 from scripts.setup_utils import get_extras, read_requirements
 
-version = "0.1.7"
+version = "0.1.8"
 
 # Define extras dynamically from requirements folder
 extras = get_extras()
