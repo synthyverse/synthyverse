@@ -4,7 +4,7 @@ import os
 import shutil
 from pathlib import Path
 
-from .tabddpm_dir.plugin import TabDDPMPlugin
+from .plugin import TabDDPMPlugin
 from synthcity.plugins.core.dataloader import GenericDataLoader
 from synthcity.utils.serialization import load_from_file, save_to_file
 from ..base import BaseGenerator
@@ -94,7 +94,9 @@ class TabDDPMGenerator(BaseGenerator):
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def _fit(self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None):
+    def _fit(
+        self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
+    ):
         workspace = "tabddpm_workspace"
         os.makedirs(workspace, exist_ok=True)
 
