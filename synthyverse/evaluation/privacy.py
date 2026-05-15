@@ -114,17 +114,17 @@ class DCR:
                 - "dcr.score": DCR score such that higher scores indicate better privacy
                 - "dcr.train": Proportion closer to train
                 - "dcr.test": Proportion closer to test
-                - "dcr.quantile_002": Proportion closer to train than the 2% train-test distance quantile
-                - "dcr.quantile_005": Proportion closer to train than the 5% train-test distance quantile
+                - "dcr.quantile_002": Proportion closer to train than the 2% test-to-train distance quantile
+                - "dcr.quantile_005": Proportion closer to train than the 5% test-to-train distance quantile
                 - "dcr.nndr_train": Mean NNDR score from synthetic records to train records
                 - "dcr.nndr_train_002": 2% NNDR quantile from synthetic records to train records
                 - "dcr.nndr_train_005": 5% NNDR quantile from synthetic records to train records
-                - "dcr.nndr_test": Mean NNDR baseline score from train records to test records
-                - "dcr.nndr_test_002": 2% NNDR baseline quantile from train records to test records
-                - "dcr.nndr_test_005": 5% NNDR baseline quantile from train records to test records
-                - "dcr.nndr_ratio": Mean pointwise ratio of each synthetic row's train NNDR score to the train-test NNDR baseline of its nearest training row
-                - "dcr.nndr_ratio_002": 2% quantile of pointwise nearest-training-row normalized NNDR ratios
-                - "dcr.nndr_ratio_005": 5% quantile of pointwise nearest-training-row normalized NNDR ratios
+                - "dcr.nndr_test": Mean NNDR score from synthetic records to test records
+                - "dcr.nndr_test_002": 2% NNDR quantile from synthetic records to test records
+                - "dcr.nndr_test_005": 5% NNDR quantile from synthetic records to test records
+                - "dcr.nndr_ratio": Mean pointwise ratio of each synthetic row's train NNDR score to its test NNDR score
+                - "dcr.nndr_ratio_002": 2% quantile of pointwise synthetic train/test NNDR ratios
+                - "dcr.nndr_ratio_005": 5% quantile of pointwise synthetic train/test NNDR ratios
 
         Raises:
             AssertionError: If test set is larger than train set.
@@ -136,37 +136,29 @@ class DCR:
             train
         ), "Test set must be smaller than or equal to train size to compute DCR"
 
+        num_rows_subsample = len(test) if self.subsample_test_size else len(train)
+        if len(sd) < num_rows_subsample:
+            raise ValueError(
+                "Synthetic data must contain at least "
+                f"{num_rows_subsample} rows to compute DCR with the current "
+                "subsampling settings."
+            )
+
         data = gower_like_transform(
-            {"train": train, "test": test, "syn": sd[: len(train)]},
+            {"train": train, "test": test, "syn": sd.iloc[: len(train)]},
             reference_data=train,
             discrete_features=self.discrete_features,
             categorical_fit_data=[train, test, sd],
         )
 
         # Optionally subsample train and synthetic data to match the test size.
-        num_rows_subsample = (
-            len(data["test"]) if self.subsample_test_size else len(data["train"])
-        )
         if len(data["train"]) < 2 or len(data["test"]) < 2 or num_rows_subsample < 2:
             raise ValueError(
                 "DCR with NNDR requires at least two train rows and two test rows "
                 "after applying subsampling."
             )
         num_iterations = int(np.ceil(len(data["train"]) / num_rows_subsample))
-        scores = []
-        closer_to_train = []
-        closer_to_test = []
-        dcr_002 = []
-        dcr_005 = []
-        nndr_train = []
-        nndr_train_002 = []
-        nndr_train_005 = []
-        nndr_test = []
-        nndr_test_002 = []
-        nndr_test_005 = []
-        nndr_ratio = []
-        nndr_ratio_002 = []
-        nndr_ratio_005 = []
+        metric_values = {}
 
         rng = np.random.default_rng(self.random_state)
 
@@ -177,7 +169,6 @@ class DCR:
             query: np.ndarray,
             reference: np.ndarray,
             n_neighbors: int = 1,
-            return_indices: bool = False,
         ):
             if len(reference) < n_neighbors:
                 raise ValueError(
@@ -189,87 +180,78 @@ class DCR:
                 metric="cityblock",
                 n_jobs=-1,
             ).fit(reference)
-            distances, indices = nbrs.kneighbors(query)
+            distances, _ = nbrs.kneighbors(query)
             if n_neighbors == 1:
                 distances = distances.ravel()
-                indices = indices.ravel()
-            if return_indices:
-                return distances, indices
             return distances
 
-        def nearest_distance_ratio(distances: np.ndarray) -> np.ndarray:
+        def safe_ratio(numerator: np.ndarray, denominator: np.ndarray) -> np.ndarray:
             return np.divide(
-                distances[:, 0],
-                distances[:, 1],
-                out=np.ones(len(distances), dtype=float),
-                where=distances[:, 1] > 0,
+                numerator,
+                denominator,
+                out=np.ones(len(numerator), dtype=float),
+                where=denominator > 0,
             )
+
+        def nearest_distance_ratio(distances: np.ndarray) -> np.ndarray:
+            return safe_ratio(distances[:, 0], distances[:, 1])
+
+        def distribution_metrics(prefix: str, values: np.ndarray) -> dict:
+            return {
+                prefix: np.mean(values),
+                f"{prefix}_002": np.quantile(values, 0.02),
+                f"{prefix}_005": np.quantile(values, 0.05),
+            }
+
+        def collect(metrics: dict):
+            for name, value in metrics.items():
+                metric_values.setdefault(name, []).append(value)
 
         for _ in range(num_iterations):
             syn_curr = choose(data["syn"], num_rows_subsample)
             train_curr = choose(data["train"], num_rows_subsample)
             test_curr = choose(data["test"], min(len(data["test"]), num_rows_subsample))
 
-            d_s_tr_neighbors, d_s_tr_indices = nearest_distances(
+            d_s_tr_neighbors = nearest_distances(
                 syn_curr,
                 train_curr,
                 n_neighbors=2,
-                return_indices=True,
             )
             d_s_tr = d_s_tr_neighbors[:, 0]
             # align test set size to never exceed subsampled set size
-            d_s_te = nearest_distances(syn_curr, test_curr)
-            d_tr_te_neighbors = nearest_distances(train_curr, test_curr, n_neighbors=2)
-            d_tr_te = d_tr_te_neighbors[:, 0]
+            d_s_te_neighbors = nearest_distances(syn_curr, test_curr, n_neighbors=2)
+            d_s_te = d_s_te_neighbors[:, 0]
+            d_te_tr = nearest_distances(test_curr, train_curr)
 
             closer_to_train_ = np.mean(d_s_tr < d_s_te)
             closer_to_test_ = 1 - closer_to_train_
-            closer_to_train.append(closer_to_train_)
-            closer_to_test.append(closer_to_test_)
-            score = min(1, closer_to_test_ * 2)
-            scores.append(score)
-            dcr_002.append(np.mean(d_s_tr < np.quantile(d_tr_te, 0.02)))
-            dcr_005.append(np.mean(d_s_tr < np.quantile(d_tr_te, 0.05)))
 
             nndr_train_scores = nearest_distance_ratio(d_s_tr_neighbors)
-            nndr_test_scores = nearest_distance_ratio(d_tr_te_neighbors)
-            nndr_train_ = np.mean(nndr_train_scores)
-            nndr_test_ = np.mean(nndr_test_scores)
-            nndr_train_q002 = np.quantile(nndr_train_scores, 0.02)
-            nndr_train_q005 = np.quantile(nndr_train_scores, 0.05)
-            nndr_test_q002 = np.quantile(nndr_test_scores, 0.02)
-            nndr_test_q005 = np.quantile(nndr_test_scores, 0.05)
-            nndr_train.append(nndr_train_)
-            nndr_train_002.append(nndr_train_q002)
-            nndr_train_005.append(nndr_train_q005)
-            nndr_test.append(nndr_test_)
-            nndr_test_002.append(nndr_test_q002)
-            nndr_test_005.append(nndr_test_q005)
-            nndr_test_scores_matched = nndr_test_scores[d_s_tr_indices[:, 0]]
-            nndr_ratio_scores = np.divide(
-                nndr_train_scores,
-                nndr_test_scores_matched,
-                out=np.ones(len(nndr_train_scores), dtype=float),
-                where=nndr_test_scores_matched > 0,
+            nndr_test_scores = nearest_distance_ratio(d_s_te_neighbors)
+            nndr_ratio_scores = safe_ratio(nndr_train_scores, nndr_test_scores)
+
+            iteration_metrics = {
+                "score": min(1, closer_to_test_ * 2),
+                "train": closer_to_train_,
+                "test": closer_to_test_,
+                "quantile_002": np.mean(d_s_tr < np.quantile(d_te_tr, 0.02)),
+                "quantile_005": np.mean(d_s_tr < np.quantile(d_te_tr, 0.05)),
+            }
+            iteration_metrics.update(
+                distribution_metrics("nndr_train", nndr_train_scores)
             )
-            nndr_ratio.append(np.mean(nndr_ratio_scores))
-            nndr_ratio_002.append(np.quantile(nndr_ratio_scores, 0.02))
-            nndr_ratio_005.append(np.quantile(nndr_ratio_scores, 0.05))
+            iteration_metrics.update(
+                distribution_metrics("nndr_test", nndr_test_scores)
+            )
+            iteration_metrics.update(
+                distribution_metrics("nndr_ratio", nndr_ratio_scores)
+            )
+
+            collect(iteration_metrics)
+
         return {
-            f"{self.name}.score": float(np.mean(scores)),
-            f"{self.name}.train": float(np.mean(closer_to_train)),
-            f"{self.name}.test": float(np.mean(closer_to_test)),
-            f"{self.name}.quantile_002": float(np.mean(dcr_002)),
-            f"{self.name}.quantile_005": float(np.mean(dcr_005)),
-            f"{self.name}.nndr_train": float(np.mean(nndr_train)),
-            f"{self.name}.nndr_train_002": float(np.mean(nndr_train_002)),
-            f"{self.name}.nndr_train_005": float(np.mean(nndr_train_005)),
-            f"{self.name}.nndr_test": float(np.mean(nndr_test)),
-            f"{self.name}.nndr_test_002": float(np.mean(nndr_test_002)),
-            f"{self.name}.nndr_test_005": float(np.mean(nndr_test_005)),
-            f"{self.name}.nndr_ratio": float(np.mean(nndr_ratio)),
-            f"{self.name}.nndr_ratio_002": float(np.mean(nndr_ratio_002)),
-            f"{self.name}.nndr_ratio_005": float(np.mean(nndr_ratio_005)),
+            f"{self.name}.{name}": float(np.mean(values))
+            for name, values in metric_values.items()
         }
 
 
