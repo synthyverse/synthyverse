@@ -13,6 +13,7 @@ from sklearn.metrics import (
     r2_score,
     root_mean_squared_error,
     roc_auc_score,
+    roc_curve,
 )
 from sklearn.neighbors import KDTree, NearestNeighbors
 from scipy.stats import gaussian_kde, rankdata
@@ -52,6 +53,32 @@ def lift_at_k(y_true, y_score, k=0.1):
     top_k_indices = np.argsort(y_score)[-top_k_count:]
     precision_at_k = np.mean(y_true[top_k_indices] == 1)
     return float(precision_at_k / prevalence)
+
+
+def tpr_at_fpr(y_true, y_score, max_fpr=0.1):
+    """
+    Return the highest true positive rate achievable at or below max_fpr.
+
+    This is a thresholded attack metric: it measures member recall while
+    constraining the fraction of non-members incorrectly flagged as members.
+    """
+    if not 0 <= max_fpr <= 1:
+        raise ValueError("max_fpr must be in the interval [0, 1].")
+
+    y_true = np.asarray(y_true, dtype=int)
+    y_score = np.nan_to_num(np.asarray(y_score, dtype=float))
+    if len(y_true) != len(y_score):
+        raise ValueError("y_true and y_score must have the same length.")
+    if len(y_true) == 0:
+        return 0.0
+    if not np.any(y_true == 1) or not np.any(y_true == 0):
+        return 0.0
+
+    fpr, tpr, _ = roc_curve(y_true, y_score)
+    valid = fpr <= max_fpr
+    if not np.any(valid):
+        return 0.0
+    return float(np.max(tpr[valid]))
 
 
 class DCR:
@@ -466,6 +493,9 @@ class MIA(ABC):
         "lift_010",
         "lift_005",
         "lift_001",
+        "tpr_at_fpr_010",
+        "tpr_at_fpr_005",
+        "tpr_at_fpr_001",
     )
 
     def __init__(
@@ -517,6 +547,15 @@ class MIA(ABC):
                 "lift_010": lift_at_k(mia_data.y_eval, membership_scores, 0.10),
                 "lift_005": lift_at_k(mia_data.y_eval, membership_scores, 0.05),
                 "lift_001": lift_at_k(mia_data.y_eval, membership_scores, 0.01),
+                "tpr_at_fpr_010": tpr_at_fpr(
+                    mia_data.y_eval, membership_scores, 0.10
+                ),
+                "tpr_at_fpr_005": tpr_at_fpr(
+                    mia_data.y_eval, membership_scores, 0.05
+                ),
+                "tpr_at_fpr_001": tpr_at_fpr(
+                    mia_data.y_eval, membership_scores, 0.01
+                ),
             }
 
         avg_scores = {
@@ -999,6 +1038,9 @@ class EnsembleMIA(MIA):
             "lift_010": lift_at_k(y_eval, scores, 0.10),
             "lift_005": lift_at_k(y_eval, scores, 0.05),
             "lift_001": lift_at_k(y_eval, scores, 0.01),
+            "tpr_at_fpr_010": tpr_at_fpr(y_eval, scores, 0.10),
+            "tpr_at_fpr_005": tpr_at_fpr(y_eval, scores, 0.05),
+            "tpr_at_fpr_001": tpr_at_fpr(y_eval, scores, 0.01),
         }
 
     def _component_membership_scores(
