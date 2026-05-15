@@ -119,12 +119,12 @@ class DCR:
                 - "dcr.nndr_train": Mean NNDR score from synthetic records to train records
                 - "dcr.nndr_train_002": 2% NNDR quantile from synthetic records to train records
                 - "dcr.nndr_train_005": 5% NNDR quantile from synthetic records to train records
-                - "dcr.nndr_test": Mean NNDR score from synthetic records to test records
-                - "dcr.nndr_test_002": 2% NNDR quantile from synthetic records to test records
-                - "dcr.nndr_test_005": 5% NNDR quantile from synthetic records to test records
-                - "dcr.nndr_ratio": Ratio of train NNDR score to test NNDR score
-                - "dcr.nndr_ratio_002": Ratio of train to test 2% NNDR quantiles
-                - "dcr.nndr_ratio_005": Ratio of train to test 5% NNDR quantiles
+                - "dcr.nndr_test": Mean NNDR baseline score from train records to test records
+                - "dcr.nndr_test_002": 2% NNDR baseline quantile from train records to test records
+                - "dcr.nndr_test_005": 5% NNDR baseline quantile from train records to test records
+                - "dcr.nndr_ratio": Mean pointwise ratio of each synthetic row's train NNDR score to the train-test NNDR baseline of its nearest training row
+                - "dcr.nndr_ratio_002": 2% quantile of pointwise nearest-training-row normalized NNDR ratios
+                - "dcr.nndr_ratio_005": 5% quantile of pointwise nearest-training-row normalized NNDR ratios
 
         Raises:
             AssertionError: If test set is larger than train set.
@@ -174,8 +174,11 @@ class DCR:
             return x[rng.choice(len(x), n, replace=False)]
 
         def nearest_distances(
-            query: np.ndarray, reference: np.ndarray, n_neighbors: int = 1
-        ) -> np.ndarray:
+            query: np.ndarray,
+            reference: np.ndarray,
+            n_neighbors: int = 1,
+            return_indices: bool = False,
+        ):
             if len(reference) < n_neighbors:
                 raise ValueError(
                     f"Need at least {n_neighbors} reference records to compute "
@@ -186,9 +189,12 @@ class DCR:
                 metric="cityblock",
                 n_jobs=-1,
             ).fit(reference)
-            distances, _ = nbrs.kneighbors(query)
+            distances, indices = nbrs.kneighbors(query)
             if n_neighbors == 1:
-                return distances.ravel()
+                distances = distances.ravel()
+                indices = indices.ravel()
+            if return_indices:
+                return distances, indices
             return distances
 
         def nearest_distance_ratio(distances: np.ndarray) -> np.ndarray:
@@ -204,12 +210,17 @@ class DCR:
             train_curr = choose(data["train"], num_rows_subsample)
             test_curr = choose(data["test"], min(len(data["test"]), num_rows_subsample))
 
-            d_s_tr_neighbors = nearest_distances(syn_curr, train_curr, n_neighbors=2)
+            d_s_tr_neighbors, d_s_tr_indices = nearest_distances(
+                syn_curr,
+                train_curr,
+                n_neighbors=2,
+                return_indices=True,
+            )
             d_s_tr = d_s_tr_neighbors[:, 0]
             # align test set size to never exceed subsampled set size
-            d_s_te_neighbors = nearest_distances(syn_curr, test_curr, n_neighbors=2)
-            d_s_te = d_s_te_neighbors[:, 0]
-            d_tr_te = nearest_distances(train_curr, test_curr)
+            d_s_te = nearest_distances(syn_curr, test_curr)
+            d_tr_te_neighbors = nearest_distances(train_curr, test_curr, n_neighbors=2)
+            d_tr_te = d_tr_te_neighbors[:, 0]
 
             closer_to_train_ = np.mean(d_s_tr < d_s_te)
             closer_to_test_ = 1 - closer_to_train_
@@ -221,7 +232,7 @@ class DCR:
             dcr_005.append(np.mean(d_s_tr < np.quantile(d_tr_te, 0.05)))
 
             nndr_train_scores = nearest_distance_ratio(d_s_tr_neighbors)
-            nndr_test_scores = nearest_distance_ratio(d_s_te_neighbors)
+            nndr_test_scores = nearest_distance_ratio(d_tr_te_neighbors)
             nndr_train_ = np.mean(nndr_train_scores)
             nndr_test_ = np.mean(nndr_test_scores)
             nndr_train_q002 = np.quantile(nndr_train_scores, 0.02)
@@ -234,13 +245,16 @@ class DCR:
             nndr_test.append(nndr_test_)
             nndr_test_002.append(nndr_test_q002)
             nndr_test_005.append(nndr_test_q005)
-            nndr_ratio.append(nndr_train_ / nndr_test_ if nndr_test_ > 0 else 1.0)
-            nndr_ratio_002.append(
-                nndr_train_q002 / nndr_test_q002 if nndr_test_q002 > 0 else 1.0
+            nndr_test_scores_matched = nndr_test_scores[d_s_tr_indices[:, 0]]
+            nndr_ratio_scores = np.divide(
+                nndr_train_scores,
+                nndr_test_scores_matched,
+                out=np.ones(len(nndr_train_scores), dtype=float),
+                where=nndr_test_scores_matched > 0,
             )
-            nndr_ratio_005.append(
-                nndr_train_q005 / nndr_test_q005 if nndr_test_q005 > 0 else 1.0
-            )
+            nndr_ratio.append(np.mean(nndr_ratio_scores))
+            nndr_ratio_002.append(np.quantile(nndr_ratio_scores, 0.02))
+            nndr_ratio_005.append(np.quantile(nndr_ratio_scores, 0.05))
         return {
             f"{self.name}.score": float(np.mean(scores)),
             f"{self.name}.train": float(np.mean(closer_to_train)),
