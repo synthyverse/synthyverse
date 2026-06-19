@@ -1,49 +1,14 @@
 # Installation
-The synthyverse uses optional installation extras for generator-specific and evaluation-specific dependencies. The core package installs the shared tabular dependencies used by the base generator and preprocessing APIs.
-
-Install multiple extras to use multiple modules in one environment, for example a generator plus the evaluation module.
-
-**We strongly advise installing only the extras required for a specific run. Some generator dependencies are heavy or may conflict with each other, so separate virtual environments are recommended when combining many extras.**
-
-## Available Installation Templates
-
-The following installation templates are available:
-
-| Template Name | Category | Installation Command |
-|---------------|----------|----------------------|
-| `arf` | Generator | `pip install synthyverse[arf]` |
-| `bn` | Generator | `pip install synthyverse[bn]` |
-| `cdtd` | Generator | `pip install synthyverse[cdtd]` |
-| `ctgan` | Generator | `pip install synthyverse[ctgan]` |
-| `smote` | Generator | `pip install synthyverse[smote]` |
-| `tabargn` | Generator | `pip install synthyverse[tabargn]` |
-| `tabddpm` | Generator | `pip install synthyverse[tabddpm]` |
-| `tabsyn` | Generator | `pip install synthyverse[tabsyn]` |
-| `tvae` | Generator | `pip install synthyverse[tvae]` |
-| `univariate` | Generator | `pip install synthyverse[univariate]` |
-| `base` | Generator | `pip install synthyverse[base]` |
-| `eval` | Evaluation | `pip install synthyverse[eval]` |
-| `full` | All | `pip install synthyverse[full]` |
-
-**Note:** You can install multiple templates by separating them with commas, e.g., `pip install synthyverse[ctgan,eval]`
-### General Installation Template
+Install synthyverse from PyPI:
 
 ```bash
-pip install synthyverse[template]
+pip install synthyverse
 ```
 
-### Installation Examples
-```bash
-pip install synthyverse[ctgan]
-```
-
+For local development from a clone:
 
 ```bash
-pip install synthyverse[arf,bn,ctgan,tvae]
-```
-
-```bash
-pip install synthyverse[ctgan,eval]
+pip install -e .
 ```
 
 ## First Synthetic Dataset

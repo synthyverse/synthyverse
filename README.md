@@ -22,56 +22,22 @@ _The synthyverse is a work in progress. Please provide any suggestions through a
 <div style="clear: both;"></div>
 
 # Features
-- **Modular installation.** Install only the generator and evaluation extras you need for a given environment.
 - **Tabular synthetic data generators.** Use low-level generators directly, or wrap them with shared preprocessing through `SynthyverseGenerator`.
 - **Evaluation metrics.** Compare synthetic data with fidelity, utility, and privacy metrics through individual metric classes or `TabularMetricEvaluator`.
 - **Benchmarking workflows.** Train, sample, evaluate, and save benchmark artifacts with `TabularSynthesisBenchmark`.
 - **Shared preprocessing.** Reuse `DataProcessor` for missing-value handling, schema restoration, and column constraints.
 
 # Installation
-The core package installs the shared tabular data dependencies used by the base generator and preprocessing APIs. Optional extras install dependencies for specific generators or for the evaluation module.
-
-Install only the extras you need for a run. Some generator dependencies are heavy or may conflict with each other, so separate virtual environments are recommended when combining many extras.
-
-## Available Installation Templates
-
-The following installation templates are available:
-
-| Template Name | Category | Installation Command |
-|---------------|----------|----------------------|
-| `arf` | Generator | `pip install synthyverse[arf]` |
-| `bn` | Generator | `pip install synthyverse[bn]` |
-| `cdtd` | Generator | `pip install synthyverse[cdtd]` |
-| `ctgan` | Generator | `pip install synthyverse[ctgan]` |
-| `smote` | Generator | `pip install synthyverse[smote]` |
-| `tabargn` | Generator | `pip install synthyverse[tabargn]` |
-| `tabddpm` | Generator | `pip install synthyverse[tabddpm]` |
-| `tabsyn` | Generator | `pip install synthyverse[tabsyn]` |
-| `tvae` | Generator | `pip install synthyverse[tvae]` |
-| `univariate` | Generator | `pip install synthyverse[univariate]` |
-| `base` | Generator | `pip install synthyverse[base]` |
-| `eval` | Evaluation | `pip install synthyverse[eval]` |
-| `full` | All | `pip install synthyverse[full]` |
-
-**Note:** You can install multiple templates by separating them with commas, e.g., `pip install synthyverse[ctgan,eval]`
-### General Installation Template
+Install synthyverse from PyPI:
 
 ```bash
-pip install synthyverse[template]
+pip install synthyverse
 ```
 
-### Installation Examples
-```bash
-pip install synthyverse[ctgan]
-```
-
+For local development from a clone:
 
 ```bash
-pip install synthyverse[arf,bn,ctgan,tvae]
-```
-
-```bash
-pip install synthyverse[ctgan,eval]
+pip install -e .
 ```
 
 # Usage

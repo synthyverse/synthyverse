@@ -4,6 +4,7 @@ import inspect
 
 import pandas as pd
 from . import get_metric
+from .ml import HYPERPARAM_SAVE_DIR
 
 
 def _split_metric_config(metric_key: str):
@@ -53,6 +54,10 @@ class TabularMetricEvaluator:
         discrete_features (list): List of column names that are discrete/categorical. Default: [].
         target_column (str): Name of the target column for supervised metrics. Default: "target".
         random_state (int): Random seed for reproducibility. Default: 0.
+        val_size (float): Fraction of training data metrics may reserve for
+            validation internally. Default: 0.2.
+        hyperparam_save_dir (str): Directory passed to metrics that cache tuned
+            hyperparameters. Default: ``HYPERPARAM_SAVE_DIR``.
 
     Example:
         >>> import pandas as pd
@@ -88,6 +93,8 @@ class TabularMetricEvaluator:
         discrete_features: list = None,
         target_column: str = "target",
         random_state: int = 0,
+        val_size: float = 0.2,
+        hyperparam_save_dir: str = HYPERPARAM_SAVE_DIR,
     ):
 
         if isinstance(metrics, list):
@@ -101,6 +108,10 @@ class TabularMetricEvaluator:
         )
         self.target_column = target_column
         self.random_state = random_state
+        if not 0 <= val_size < 1:
+            raise ValueError("val_size must be non-negative and less than 1.")
+        self.val_size = val_size
+        self.hyperparam_save_dir = hyperparam_save_dir
 
     def evaluate(
         self,
@@ -108,7 +119,6 @@ class TabularMetricEvaluator:
         X_test: pd.DataFrame,
         X_syn: pd.DataFrame,
         X_syn_test: pd.DataFrame = None,
-        X_val: pd.DataFrame = None,
     ):
         """Evaluate synthetic data quality using specified metrics.
 
@@ -117,14 +127,12 @@ class TabularMetricEvaluator:
             X_test: Test data as a pandas DataFrame.
             X_syn: Synthetic data as a pandas DataFrame.
             X_syn_test: Optional synthetic test data as a pandas DataFrame.
-            X_val: Optional validation data as a pandas DataFrame.
 
         Returns:
             dict: Dictionary mapping metric names to their evaluation results.
         """
         x_train, x_test, x_syn = X_train.copy(), X_test.copy(), X_syn.copy()
         x_syn_test = X_syn_test.copy() if X_syn_test is not None else None
-        x_val = X_val.copy() if X_val is not None else None
 
         # reset indices for proper indexing/slicing
         x_train, x_test, x_syn = (
@@ -132,8 +140,6 @@ class TabularMetricEvaluator:
             x_test.reset_index(drop=True),
             x_syn.reset_index(drop=True),
         )
-        if x_val is not None:
-            x_val = x_val.reset_index(drop=True)
         if x_syn_test is not None:
             x_syn_test = x_syn_test.reset_index(drop=True)
 
@@ -153,6 +159,10 @@ class TabularMetricEvaluator:
                 params["target_column"] = self.target_column
             if "random_state" in required_params:
                 params["random_state"] = self.random_state
+            if "val_size" in required_params and "val_size" not in params:
+                params["val_size"] = self.val_size
+            if "hyperparam_save_dir" in required_params:
+                params["hyperparam_save_dir"] = self.hyperparam_save_dir
             data = {
                 "X_train": x_train,
                 "X_syn": x_syn,
@@ -160,8 +170,6 @@ class TabularMetricEvaluator:
             required_data = inspect.signature(metric_cls.evaluate).parameters.keys()
             if "X_test" in required_data:
                 data["X_test"] = x_test
-            if "X_val" in required_data:
-                data["X_val"] = x_val
             if "X_syn_test" in required_data:
                 data["X_syn_test"] = x_syn_test
 

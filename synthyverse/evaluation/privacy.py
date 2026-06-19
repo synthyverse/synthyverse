@@ -15,10 +15,11 @@ from sklearn.metrics import (
     roc_auc_score,
     roc_curve,
 )
-from sklearn.neighbors import KDTree, NearestNeighbors
+from sklearn.neighbors import KDTree
 from scipy.stats import gaussian_kde, rankdata
+from .gower import FastGowerNN
 from .ml import ml_task
-from .preprocessing import gower_like_transform
+from .preprocessing import fast_gower_transform, gower_like_transform
 
 
 def _metric_key_part(value) -> str:
@@ -141,17 +142,17 @@ class DCR:
                 - "dcr.score": DCR score such that higher scores indicate better privacy
                 - "dcr.train": Proportion closer to train
                 - "dcr.test": Proportion closer to test
-                - "dcr.quantile_002": Proportion closer to train than the 2% test-to-train distance quantile
-                - "dcr.quantile_005": Proportion closer to train than the 5% test-to-train distance quantile
+                - "dcr.002": Proportion closer to train than the 2% test-to-train distance quantile
+                - "dcr.005": Proportion closer to train than the 5% test-to-train distance quantile
                 - "dcr.nndr_train": Mean NNDR score from synthetic records to train records
                 - "dcr.nndr_train_002": 2% NNDR quantile from synthetic records to train records
                 - "dcr.nndr_train_005": 5% NNDR quantile from synthetic records to train records
-                - "dcr.nndr_test": Mean NNDR score from synthetic records to test records
-                - "dcr.nndr_test_002": 2% NNDR quantile from synthetic records to test records
-                - "dcr.nndr_test_005": 5% NNDR quantile from synthetic records to test records
-                - "dcr.nndr_ratio": Mean pointwise ratio of each synthetic row's train NNDR score to its test NNDR score
-                - "dcr.nndr_ratio_002": 2% quantile of pointwise synthetic train/test NNDR ratios
-                - "dcr.nndr_ratio_005": 5% quantile of pointwise synthetic train/test NNDR ratios
+                - "dcr.nndr_baseline": Mean NNDR score from test records to train records
+                - "dcr.nndr_baseline_002": 2% NNDR quantile from test records to train records
+                - "dcr.nndr_baseline_005": 5% NNDR quantile from test records to train records
+                - "dcr.nndr_ratio": Ratio of mean train NNDR to mean baseline NNDR
+                - "dcr.nndr_ratio_002": Ratio of 2% train NNDR quantile to 2% baseline NNDR quantile
+                - "dcr.nndr_ratio_005": Ratio of 5% train NNDR quantile to 5% baseline NNDR quantile
 
         Raises:
             AssertionError: If test set is larger than train set.
@@ -171,30 +172,34 @@ class DCR:
                 "subsampling settings."
             )
 
-        data = gower_like_transform(
-            {"train": train, "test": test, "syn": sd.iloc[: len(train)]},
+        data = fast_gower_transform(
+            {"train": train, "test": test, "sd": sd},
             reference_data=train,
             discrete_features=self.discrete_features,
             categorical_fit_data=[train, test, sd],
         )
+        train = data["train"]
+        test = data["test"]
+        sd = data["sd"]
+        syn = sd.iloc[: len(train)]
 
         # Optionally subsample train and synthetic data to match the test size.
-        if len(data["train"]) < 2 or len(data["test"]) < 2 or num_rows_subsample < 2:
+        if len(train) < 2 or len(test) < 2 or num_rows_subsample < 2:
             raise ValueError(
                 "DCR with NNDR requires at least two train rows and two test rows "
                 "after applying subsampling."
             )
-        num_iterations = int(np.ceil(len(data["train"]) / num_rows_subsample))
+        num_iterations = int(np.ceil(len(train) / num_rows_subsample))
         metric_values = {}
 
         rng = np.random.default_rng(self.random_state)
 
-        def choose(x: np.ndarray, n: int) -> np.ndarray:
-            return x[rng.choice(len(x), n, replace=False)]
+        def choose(x: pd.DataFrame, n: int) -> pd.DataFrame:
+            return x.iloc[rng.choice(len(x), n, replace=False)]
 
         def nearest_distances(
-            query: np.ndarray,
-            reference: np.ndarray,
+            query: pd.DataFrame,
+            reference: pd.DataFrame,
             n_neighbors: int = 1,
         ):
             if len(reference) < n_neighbors:
@@ -202,12 +207,11 @@ class DCR:
                     f"Need at least {n_neighbors} reference records to compute "
                     "nearest-neighbor distances."
                 )
-            nbrs = NearestNeighbors(
-                n_neighbors=n_neighbors,
-                metric="cityblock",
-                n_jobs=-1,
+            nbrs = FastGowerNN(
+                categorical_cols=self.discrete_features,
+                normalize=False,
             ).fit(reference)
-            distances, _ = nbrs.kneighbors(query)
+            distances, _ = nbrs.kneighbors(query, k=n_neighbors)
             if n_neighbors == 1:
                 distances = distances.ravel()
             return distances
@@ -235,9 +239,9 @@ class DCR:
                 metric_values.setdefault(name, []).append(value)
 
         for _ in range(num_iterations):
-            syn_curr = choose(data["syn"], num_rows_subsample)
-            train_curr = choose(data["train"], num_rows_subsample)
-            test_curr = choose(data["test"], min(len(data["test"]), num_rows_subsample))
+            syn_curr = choose(syn, num_rows_subsample)
+            train_curr = choose(train, num_rows_subsample)
+            test_curr = choose(test, min(len(test), num_rows_subsample))
 
             d_s_tr_neighbors = nearest_distances(
                 syn_curr,
@@ -245,41 +249,52 @@ class DCR:
                 n_neighbors=2,
             )
             d_s_tr = d_s_tr_neighbors[:, 0]
-            # align test set size to never exceed subsampled set size
-            d_s_te_neighbors = nearest_distances(syn_curr, test_curr, n_neighbors=2)
-            d_s_te = d_s_te_neighbors[:, 0]
-            d_te_tr = nearest_distances(test_curr, train_curr)
+            d_te_tr_neighbors = nearest_distances(
+                test_curr,
+                train_curr,
+                n_neighbors=2,
+            )
+            d_s_te = nearest_distances(syn_curr, test_curr)
+            d_te_tr = d_te_tr_neighbors[:, 0]
 
             closer_to_train_ = np.mean(d_s_tr < d_s_te)
             closer_to_test_ = 1 - closer_to_train_
 
             nndr_train_scores = nearest_distance_ratio(d_s_tr_neighbors)
-            nndr_test_scores = nearest_distance_ratio(d_s_te_neighbors)
-            nndr_ratio_scores = safe_ratio(nndr_train_scores, nndr_test_scores)
+            nndr_baseline_scores = nearest_distance_ratio(d_te_tr_neighbors)
+            nndr_train_metrics = distribution_metrics(
+                "nndr_train",
+                nndr_train_scores,
+            )
+            nndr_baseline_metrics = distribution_metrics(
+                "nndr_baseline",
+                nndr_baseline_scores,
+            )
 
             iteration_metrics = {
                 "score": min(1, closer_to_test_ * 2),
                 "train": closer_to_train_,
                 "test": closer_to_test_,
-                "quantile_002": np.mean(d_s_tr < np.quantile(d_te_tr, 0.02)),
-                "quantile_005": np.mean(d_s_tr < np.quantile(d_te_tr, 0.05)),
+                "002": np.mean(d_s_tr < np.quantile(d_te_tr, 0.02)),
+                "005": np.mean(d_s_tr < np.quantile(d_te_tr, 0.05)),
             }
-            iteration_metrics.update(
-                distribution_metrics("nndr_train", nndr_train_scores)
-            )
-            iteration_metrics.update(
-                distribution_metrics("nndr_test", nndr_test_scores)
-            )
-            iteration_metrics.update(
-                distribution_metrics("nndr_ratio", nndr_ratio_scores)
-            )
+            iteration_metrics.update(nndr_train_metrics)
+            iteration_metrics.update(nndr_baseline_metrics)
 
             collect(iteration_metrics)
 
-        return {
-            f"{self.name}.{name}": float(np.mean(values))
-            for name, values in metric_values.items()
+        scores = {
+            name: float(np.mean(values)) for name, values in metric_values.items()
         }
+        for suffix in ("", "_002", "_005"):
+            scores[f"nndr_ratio{suffix}"] = float(
+                safe_ratio(
+                    np.array([scores[f"nndr_train{suffix}"]]),
+                    np.array([scores[f"nndr_baseline{suffix}"]]),
+                )[0]
+            )
+
+        return {f"{self.name}.{name}": value for name, value in scores.items()}
 
 
 class AIA:
@@ -547,15 +562,9 @@ class MIA(ABC):
                 "lift_010": lift_at_k(mia_data.y_eval, membership_scores, 0.10),
                 "lift_005": lift_at_k(mia_data.y_eval, membership_scores, 0.05),
                 "lift_001": lift_at_k(mia_data.y_eval, membership_scores, 0.01),
-                "tpr_at_fpr_010": tpr_at_fpr(
-                    mia_data.y_eval, membership_scores, 0.10
-                ),
-                "tpr_at_fpr_005": tpr_at_fpr(
-                    mia_data.y_eval, membership_scores, 0.05
-                ),
-                "tpr_at_fpr_001": tpr_at_fpr(
-                    mia_data.y_eval, membership_scores, 0.01
-                ),
+                "tpr_at_fpr_010": tpr_at_fpr(mia_data.y_eval, membership_scores, 0.10),
+                "tpr_at_fpr_005": tpr_at_fpr(mia_data.y_eval, membership_scores, 0.05),
+                "tpr_at_fpr_001": tpr_at_fpr(mia_data.y_eval, membership_scores, 0.01),
             }
 
         avg_scores = {
@@ -725,30 +734,37 @@ class DOMIAS(MIA):
         synth_set = transformer.transform(syn)
         reference_set = transformer.transform(reference_set)
 
-        # dimensionality reduction
-        embedder = PCA(n_components=self.n_components, random_state=seed)
-
-        # Fit on syn and reference to avoid evaluation-data leakage.
-        embedder.fit(np.concatenate((synth_set, reference_set)))
-        synth_set = embedder.transform(synth_set)
-        reference_set = embedder.transform(reference_set)
-
-        # standardize for gaussian KDE
-        scaler = StandardScaler()
-        scaler.fit(np.concatenate((synth_set, reference_set)))
-        synth_set = scaler.transform(synth_set)
-        reference_set = scaler.transform(reference_set)
-
-        synth_kde = gaussian_kde(synth_set.T)
-        reference_kde = gaussian_kde(reference_set.T)
-
         x_eval = transformer.transform(mia_data.x_eval)
-        x_eval = embedder.transform(x_eval)
-        x_eval = scaler.transform(x_eval)
-        p_g = synth_kde(x_eval.T)
-        p_r = reference_kde(x_eval.T)
-        p_rel = p_g / (p_r + 1e-10)
-        return np.nan_to_num(p_rel)
+        n_components_options = list(dict.fromkeys([self.n_components, 0.8, 0.5]))
+
+        for n_components in n_components_options:
+            try:
+                # dimensionality reduction
+                embedder = PCA(n_components=n_components, random_state=seed)
+
+                # Fit on syn and reference to avoid evaluation-data leakage.
+                embedder.fit(np.concatenate((synth_set, reference_set)))
+                synth_pca = embedder.transform(synth_set)
+                reference_pca = embedder.transform(reference_set)
+
+                # standardize for gaussian KDE
+                scaler = StandardScaler()
+                scaler.fit(np.concatenate((synth_pca, reference_pca)))
+                synth_pca = scaler.transform(synth_pca)
+                reference_pca = scaler.transform(reference_pca)
+
+                synth_kde = gaussian_kde(synth_pca.T)
+                reference_kde = gaussian_kde(reference_pca.T)
+
+                x_eval_pca = embedder.transform(x_eval)
+                x_eval_pca = scaler.transform(x_eval_pca)
+                p_g = synth_kde(x_eval_pca.T)
+                p_r = reference_kde(x_eval_pca.T)
+                p_rel = p_g / (p_r + 1e-10)
+                return np.nan_to_num(p_rel)
+            except np.linalg.LinAlgError:
+                if n_components == n_components_options[-1]:
+                    raise
 
 
 class DPI(MIA):
@@ -923,6 +939,8 @@ class EnsembleMIA(MIA):
         include_mia (dict): Mapping of MIA names to constructor parameters.
             Supported keys are "classifier_mia", "dpi", "domias", and their
             metric-name aliases "mia.classifier", "mia.dpi", and "mia.domias".
+            A final alias can be appended with "-", ".", or "_", for example
+            "mia.classifier-rf" or "mia.classifier_xgb".
             Default: {"classifier_mia": {}, "dpi": {}, "domias": {}}.
         ensemble (str): How to combine component MIA scores. "mean" min-max
             normalizes each component score vector and averages them.
@@ -950,6 +968,15 @@ class EnsembleMIA(MIA):
         "mia.classifier": ClassifierMIA,
         "mia.dpi": DPI,
         "mia.domias": DOMIAS,
+    }
+
+    _mia_names = {
+        "classifier_mia": "mia.classifier",
+        "dpi": "mia.dpi",
+        "domias": "mia.domias",
+        "mia.classifier": "mia.classifier",
+        "mia.dpi": "mia.dpi",
+        "mia.domias": "mia.domias",
     }
 
     def __init__(
@@ -992,7 +1019,7 @@ class EnsembleMIA(MIA):
     def _build_mias(self) -> dict:
         mias = {}
         for mia_name, mia_params in self.include_mia.items():
-            normalized_name = mia_name.strip().lower()
+            normalized_name, alias = self._normalize_mia_name(mia_name)
             if normalized_name not in self._available_mias:
                 supported = ", ".join(sorted(self._available_mias))
                 raise ValueError(
@@ -1009,8 +1036,21 @@ class EnsembleMIA(MIA):
             params.setdefault("discrete_features", self.discrete_features)
             params.setdefault("random_state", self.random_state)
             mia_cls = self._available_mias[normalized_name]
-            mias[normalized_name] = mia_cls(**params)
+            mia = mia_cls(**params)
+            if alias:
+                mia.name = f"{self._mia_names[normalized_name]}.{alias}"
+            mias[mia.name] = mia
         return mias
+
+    def _normalize_mia_name(self, mia_name: str):
+        name = mia_name.strip().lower()
+        if name in self._available_mias:
+            return name, None
+        for separator in ("-", ".", "_"):
+            base, has_separator, alias = name.rpartition(separator)
+            if has_separator and base in self._available_mias and alias:
+                return base, alias
+        return name, None
 
     @staticmethod
     def _normalize_scores(scores: np.ndarray) -> np.ndarray:

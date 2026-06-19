@@ -8,7 +8,6 @@ Fidelity Metrics
    fidelity/classifier_test
    fidelity/alpha_precision_beta_recall
    fidelity/prdc
-   fidelity/wasserstein
    fidelity/shape_trend
    fidelity/marginals
    fidelity/correlations

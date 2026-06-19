@@ -1,8 +1,13 @@
 from ctgan import CTGAN
+from ctgan.synthesizers.ctgan import Discriminator
 import pandas as pd
 
 from ..base import BaseGenerator
 from ..persistence import load_generator_state, save_generator_state
+from ...utils.utils import (
+    get_total_trainable_params,
+    resolve_epochs_from_training_steps,
+)
 
 
 class CTGANGenerator(BaseGenerator):
@@ -27,6 +32,9 @@ class CTGANGenerator(BaseGenerator):
         log_frequency (bool): Whether to log training frequency. Default: True.
         verbose (bool): Whether to print training progress. Default: True.
         epochs (int): Number of training epochs. Default: 300.
+        training_steps (int, optional): Total number of training steps. When
+            provided, this overrides ``epochs`` by deriving the epoch count from
+            the training sample size and batch size. Default: None.
         pac (int): Number of samples per class for PAC discriminator. Default: 10.
         cuda (bool): Whether to use CUDA if available. Default: True.
         random_state (int): Random seed for reproducibility. Default: 0.
@@ -68,12 +76,14 @@ class CTGANGenerator(BaseGenerator):
         log_frequency=True,
         verbose=True,
         epochs=300,
+        training_steps=None,
         pac=10,
         cuda=True,
         random_state: int = 0,
     ):
         self.random_state = random_state
         self.epochs = epochs
+        self.training_steps = training_steps
         self.batch_size = batch_size
 
         self.embedding_dim = embedding_dim
@@ -89,9 +99,15 @@ class CTGANGenerator(BaseGenerator):
         self.pac = pac
         self.cuda = cuda
 
-    def _fit(self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None):
+    def _fit(self, X: pd.DataFrame, discrete_features: list):
         # round batch_size to be divisible by pac
         self.batch_size = self.batch_size // self.pac * self.pac
+        epochs = resolve_epochs_from_training_steps(
+            self.epochs,
+            self.training_steps,
+            len(X),
+            self.batch_size,
+        )
 
         self.model = CTGAN(
             embedding_dim=self.embedding_dim,
@@ -105,12 +121,24 @@ class CTGANGenerator(BaseGenerator):
             discriminator_steps=self.discriminator_steps,
             log_frequency=self.log_frequency,
             verbose=self.verbose,
-            epochs=self.epochs,
+            epochs=epochs,
             pac=self.pac,
             cuda=self.cuda,
         )
 
         self.model.fit(X, discrete_features)
+
+        gen_params = get_total_trainable_params(self.model._generator)
+        disc_params = get_total_trainable_params(
+            Discriminator(
+                self.model._transformer.output_dimensions
+                + self.model._data_sampler.dim_cond_vec(),
+                self.model._discriminator_dim,
+                pac=self.model.pac,
+            )
+        )
+
+        print(f"total trainable parameters: {gen_params + disc_params}")
 
         return self
 

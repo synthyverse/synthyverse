@@ -1,3 +1,0 @@
-synthcity==0.2.12
-opacus==1.5.3
-pandas

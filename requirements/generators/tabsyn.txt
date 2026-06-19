@@ -1,6 +1,0 @@
-torch
-tqdm
-numpy
-pandas
-scipy
-scikit-learn

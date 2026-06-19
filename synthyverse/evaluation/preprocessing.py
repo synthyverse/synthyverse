@@ -3,7 +3,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
+from sklearn.preprocessing import MinMaxScaler, OneHotEncoder, OrdinalEncoder
 
 
 class GowerLikePreprocessor:
@@ -103,3 +103,38 @@ def gower_like_transform(
         categorical_handle_unknown=categorical_handle_unknown,
     ).fit(reference_data, categorical_fit_data=categorical_fit_data)
     return {name: transformer.transform(df) for name, df in data.items()}
+
+
+def fast_gower_transform(
+    data: Mapping[str, pd.DataFrame],
+    reference_data: pd.DataFrame,
+    discrete_features: Optional[list] = None,
+    categorical_fit_data: Optional[Iterable[pd.DataFrame]] = None,
+) -> dict[str, pd.DataFrame]:
+    """Min-max scale numericals and integer-code categoricals for FastGowerNN."""
+    discrete_features = list(discrete_features or [])
+    columns = reference_data.columns.tolist()
+    numerical_features = [col for col in columns if col not in discrete_features]
+
+    scaler = None
+    if numerical_features:
+        scaler = MinMaxScaler().fit(reference_data[numerical_features])
+
+    encoder = None
+    if discrete_features:
+        fit_frames = list(categorical_fit_data or [reference_data])
+        encoder = OrdinalEncoder().fit(
+            pd.concat([df[discrete_features] for df in fit_frames], axis=0)
+        )
+
+    transformed = {}
+    for name, df in data.items():
+        out = pd.DataFrame(index=df.index)
+        if numerical_features:
+            out[numerical_features] = scaler.transform(df[numerical_features])
+        if discrete_features:
+            categorical = encoder.transform(df[discrete_features]).astype(np.float32)
+            categorical[df[discrete_features].isna().to_numpy()] = np.nan
+            out[discrete_features] = categorical
+        transformed[name] = out[columns]
+    return transformed

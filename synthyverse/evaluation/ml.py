@@ -13,6 +13,7 @@ from sklearn.preprocessing import (
 )
 from sklearn.compose import ColumnTransformer
 import optuna
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
     roc_auc_score,
     f1_score,
@@ -24,6 +25,18 @@ from sklearn.metrics import (
 from sklearn.ensemble import RandomForestRegressor
 
 HYPERPARAM_SAVE_DIR = "synthyverse_hyperparams_tuned"
+
+
+def split_validation(X, y, val_size: float, random_state: int, stratify: bool = True):
+    if not 0 < val_size < 1:
+        raise ValueError("val_size must be between 0 and 1 when validation is needed.")
+    return train_test_split(
+        X,
+        y,
+        test_size=val_size,
+        random_state=random_state,
+        stratify=y if stratify else None,
+    )
 
 
 def tune_ml_model(
@@ -83,6 +96,8 @@ def ml_task(
     model_params: dict = None,
     random_state: int = 0,
     score_fns: list = None,
+    X_val: pd.DataFrame = None,
+    y_val: pd.Series = None,
 ):
     numerical_features = [x for x in X_train.columns if x not in discrete_features]
     categorical_features = [x for x in X_train.columns if x in discrete_features]
@@ -93,14 +108,37 @@ def ml_task(
 
     # resolve model name
     model_name = resolve_model_name(model_name)
+    model_params = {} if model_params is None else model_params.copy()
+    uses_xgboost_early_stopping = (
+        model_name == "xgboost"
+        and model_params.get("early_stopping_rounds") is not None
+    )
+    has_validation_data = X_val is not None and y_val is not None
+    if (X_val is None) != (y_val is None):
+        raise ValueError("X_val and y_val must be provided together.")
+    if uses_xgboost_early_stopping and not has_validation_data:
+        raise ValueError(
+            "X_val and y_val must be provided when using XGBoost early stopping."
+        )
 
     # xgboost requires specifying which features are categorical from the data
-    model_params = {} if model_params is None else model_params.copy()
     if model_name == "xgboost":
         model_params.setdefault(
             "feature_types",
             ["c" if x in categorical_features else "q" for x in X_train.columns],
         )
+
+    if task != "regression":
+        target_preprocessor = LabelEncoder()
+        target_preprocessor.fit(y_train)
+        # drop any unseen labels; issue for non-stratified splits, which may occur in AIA
+        test_mask = y_test.isin(target_preprocessor.classes_)
+        X_test = X_test.loc[test_mask]
+        y_test = y_test.loc[test_mask]
+        if has_validation_data:
+            val_mask = y_val.isin(target_preprocessor.classes_)
+            X_val = X_val.loc[val_mask]
+            y_val = y_val.loc[val_mask]
 
     cat_encoder, num_scaler = get_preprocessors(model_name)
     transformer = ColumnTransformer(
@@ -112,6 +150,9 @@ def ml_task(
     )
     X_train_transformed = transformer.fit_transform(X_train)
     X_test_transformed = transformer.transform(X_test)
+    if has_validation_data:
+        X_val = X_val[categorical_features + numerical_features]
+        X_val_transformed = transformer.transform(X_val)
 
     if task == "regression":
         target_preprocessor = StandardScaler()  # required for interpretable error
@@ -119,17 +160,22 @@ def ml_task(
         y_test_transformed = target_preprocessor.transform(y_test.to_frame())
         y_train_transformed = y_train_transformed.ravel()
         y_test_transformed = y_test_transformed.ravel()
+        if has_validation_data:
+            y_val_transformed = target_preprocessor.transform(y_val.to_frame()).ravel()
     else:
-        target_preprocessor = LabelEncoder()  # required for contiguous encoding
-        target_preprocessor.fit(pd.concat([y_train, y_test], ignore_index=True))
         y_train_transformed = target_preprocessor.transform(y_train)
         y_test_transformed = target_preprocessor.transform(y_test)
+        if has_validation_data:
+            y_val_transformed = target_preprocessor.transform(y_val)
 
     # build model
     model = build_ml_model(model_name, task, model_params, random_state=random_state)
 
     # train model
-    model.fit(X_train_transformed, y_train_transformed)
+    fit_kwargs = {}
+    if uses_xgboost_early_stopping:
+        fit_kwargs["eval_set"] = [(X_val_transformed, y_val_transformed)]
+    model.fit(X_train_transformed, y_train_transformed, **fit_kwargs)
 
     if task == "multiclass":
         preds = model.predict_proba(X_test_transformed)

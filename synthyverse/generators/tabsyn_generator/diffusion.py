@@ -14,24 +14,6 @@ class SiLU(nn.Module):
         return x * torch.sigmoid(x)
 
 
-class PositionalEmbedding(torch.nn.Module):
-    def __init__(self, num_channels, max_positions=10000, endpoint=False):
-        super().__init__()
-        self.num_channels = num_channels
-        self.max_positions = max_positions
-        self.endpoint = endpoint
-
-    def forward(self, x):
-        freqs = torch.arange(
-            start=0, end=self.num_channels // 2, dtype=torch.float32, device=x.device
-        )
-        freqs = freqs / (self.num_channels // 2 - (1 if self.endpoint else 0))
-        freqs = (1 / self.max_positions) ** freqs
-        x = x.ger(freqs.to(x.dtype))
-        x = torch.cat([x.cos(), x.sin()], dim=1)
-        return x
-
-
 def reglu(x: Tensor) -> Tensor:
     """The ReGLU activation function from [1].
     References:
@@ -97,39 +79,6 @@ class FourierEmbedding(torch.nn.Module):
         x = x.ger((2 * np.pi * self.freqs).to(x.dtype))
         x = torch.cat([x.cos(), x.sin()], dim=1)
         return x
-
-
-class MLPDiffusion(nn.Module):
-    def __init__(self, d_in, dim_t=512):
-        super().__init__()
-        self.dim_t = dim_t
-
-        self.proj = nn.Linear(d_in, dim_t)
-
-        self.mlp = nn.Sequential(
-            nn.Linear(dim_t, dim_t * 2),
-            nn.SiLU(),
-            nn.Linear(dim_t * 2, dim_t * 2),
-            nn.SiLU(),
-            nn.Linear(dim_t * 2, dim_t),
-            nn.SiLU(),
-            nn.Linear(dim_t, d_in),
-        )
-
-        self.map_noise = PositionalEmbedding(num_channels=dim_t)
-        self.time_embed = nn.Sequential(
-            nn.Linear(dim_t, dim_t), nn.SiLU(), nn.Linear(dim_t, dim_t)
-        )
-
-    def forward(self, x, noise_labels, class_labels=None):
-        emb = self.map_noise(noise_labels)
-        emb = (
-            emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape)
-        )  # swap sin/cos
-        emb = self.time_embed(emb)
-
-        x = self.proj(x) + emb
-        return self.mlp(x)
 
 
 class Precond(nn.Module):

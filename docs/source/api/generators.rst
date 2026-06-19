@@ -11,12 +11,12 @@ For detailed examples of low-level generators, preprocessing, persistence, and w
 
    generators/base
    generators/arf
-   generators/bn
    generators/ctgan
    generators/cdtd
    generators/smote
-   generators/tabargn
    generators/tabddpm
+   generators/tabdiff
    generators/tabsyn
    generators/tvae
    generators/univariate
+   generators/synthpop

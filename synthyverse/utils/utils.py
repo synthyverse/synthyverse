@@ -1,4 +1,4 @@
-import gc, sys
+import gc, math, sys
 
 
 def get_total_trainable_params(model):
@@ -11,6 +11,25 @@ def get_total_trainable_params(model):
         int: Total number of trainable parameters.
     """
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def resolve_epochs_from_training_steps(
+    epochs: int,
+    training_steps: int,
+    sample_size: int,
+    batch_size: int,
+) -> int:
+    """Resolve epochs, optionally overriding them with a fixed training step count."""
+    if training_steps is None:
+        return epochs
+
+    if training_steps <= 0:
+        raise ValueError("training_steps must be a positive integer.")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be a positive integer.")
+
+    steps_per_epoch = max(sample_size // batch_size, 1)
+    return math.ceil(training_steps / steps_per_epoch)
 
 
 def free_up_memory():

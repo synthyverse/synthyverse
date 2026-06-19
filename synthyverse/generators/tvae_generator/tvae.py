@@ -1,4 +1,10 @@
 from ctgan import TVAE
+from ctgan.synthesizers.tvae import Encoder
+from ...utils.utils import (
+    get_total_trainable_params,
+    resolve_epochs_from_training_steps,
+)
+
 import pandas as pd
 
 from ..base import BaseGenerator
@@ -21,6 +27,9 @@ class TVAEGenerator(BaseGenerator):
         l2scale (float): L2 regularization scale. Default: 1e-5.
         batch_size (int): Batch size for training. Default: 500.
         epochs (int): Number of training epochs. Default: 300.
+        training_steps (int, optional): Total number of training steps. When
+            provided, this overrides ``epochs`` by deriving the epoch count from
+            the training sample size and batch size. Default: None.
         loss_factor (int): Loss factor for Beta-VAE. Default: 2.
         cuda (bool): Whether to use CUDA if available. Default: True.
         verbose (bool): Whether to print training progress. Default: True.
@@ -57,6 +66,7 @@ class TVAEGenerator(BaseGenerator):
         l2scale=1e-5,
         batch_size=500,
         epochs=300,
+        training_steps=None,
         loss_factor=2,
         cuda=True,
         verbose=True,
@@ -69,13 +79,19 @@ class TVAEGenerator(BaseGenerator):
         self.l2scale = l2scale
         self.batch_size = batch_size
         self.epochs = epochs
+        self.training_steps = training_steps
         self.loss_factor = loss_factor
         self.cuda = cuda
         self.verbose = verbose
 
-    def _fit(
-        self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
-    ):
+    def _fit(self, X: pd.DataFrame, discrete_features: list):
+        epochs = resolve_epochs_from_training_steps(
+            self.epochs,
+            self.training_steps,
+            len(X),
+            self.batch_size,
+        )
+
         self.model = TVAE(
             embedding_dim=self.embedding_dim,
             compress_dims=self.compress_dims,
@@ -83,12 +99,22 @@ class TVAEGenerator(BaseGenerator):
             l2scale=self.l2scale,
             batch_size=self.batch_size,
             verbose=self.verbose,
-            epochs=self.epochs,
+            epochs=epochs,
             cuda=self.cuda,
             loss_factor=self.loss_factor,
         )
 
         self.model.fit(X, discrete_features)
+
+        encoder = Encoder(
+            self.model.transformer.output_dimensions,
+            self.compress_dims,
+            self.model.embedding_dim,
+        )
+        encoder_params = get_total_trainable_params(encoder)
+        decoder_params = get_total_trainable_params(self.model.decoder)
+
+        print(f"total trainable parameters: {encoder_params + decoder_params}")
 
         return self
 

@@ -44,9 +44,7 @@ class UnivariateGenerator(BaseGenerator):
         self.random_state = random_state
         self.n_quantiles = n_quantiles
 
-    def _fit(
-        self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None
-    ):
+    def _fit(self, X: pd.DataFrame, discrete_features: list):
         self.columns = X.columns.tolist()
         self.categorical_features = [
             col for col in self.columns if col in discrete_features

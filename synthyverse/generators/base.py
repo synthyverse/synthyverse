@@ -10,6 +10,7 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.experimental import enable_iterative_imputer  # noqa: F401
 from sklearn.impute import IterativeImputer, SimpleImputer
+from sklearn.preprocessing import OrdinalEncoder
 
 
 PROCESSOR_FILENAME = "processor.pkl"
@@ -29,19 +30,17 @@ class BaseGenerator(ABC):
         self,
         X: pd.DataFrame,
         discrete_features: list,
-        X_val: pd.DataFrame = None,
     ):
         """Fit the generator to tabular data.
 
         Args:
             X: Training data in the generator's input space.
             discrete_features: Names of categorical/discrete columns in ``X``.
-            X_val: Optional validation data in the same schema as ``X``.
 
         Returns:
             The fitted generator.
         """
-        self._fit(X, discrete_features, X_val)
+        self._fit(X, discrete_features)
         return self
 
     @abstractmethod
@@ -49,7 +48,6 @@ class BaseGenerator(ABC):
         self,
         X: pd.DataFrame,
         discrete_features: list,
-        X_val: pd.DataFrame = None,
     ):
         """Generator-specific fitting implementation."""
 
@@ -210,7 +208,26 @@ class TabularImputer:
         self.random_state = random_state
         self.imputer = None
         self.imputer_base_cols = None
+        self.categorical_features = []
+        self.ordinal_encoder = None
         self.numerical_features = []
+
+    def _has_missing_numerical(self, X: pd.DataFrame) -> bool:
+        if X is None or len(self.numerical_features) == 0:
+            return False
+        return bool(X[self.numerical_features].isna().any().any())
+
+    def _validate_method(self) -> None:
+        valid_methods = {
+            "drop",
+            "keep",
+            "mean",
+            "median",
+            "most_frequent",
+            "missforest",
+        }
+        if self.method not in valid_methods:
+            raise ValueError(f"Invalid missing imputation method: {self.method}")
 
     def fit_transform(
         self,
@@ -234,13 +251,20 @@ class TabularImputer:
         self.numerical_features = list(numerical_features)
         x = X.copy()
         x_val = X_val.copy() if X_val is not None else None
+        self._validate_method()
+
+        if self.method == "keep":
+            return x, x_val
+
+        if not self._has_missing_numerical(x) and not self._has_missing_numerical(
+            x_val
+        ):
+            return x, x_val
 
         if self.method == "drop":
             x = x.dropna(subset=self.numerical_features)
             if x_val is not None:
                 x_val = x_val.dropna(subset=self.numerical_features)
-        elif self.method == "keep":
-            pass
         elif self.method in ["mean", "median", "most_frequent"]:
             self.imputer = SimpleImputer(strategy=self.method)
             if len(self.numerical_features) > 0:
@@ -264,15 +288,41 @@ class TabularImputer:
                 max_iter=10,
             )
             self.imputer_base_cols = x.columns.tolist()
+            self.categorical_features = [
+                col
+                for col in self.imputer_base_cols
+                if col not in self.numerical_features
+            ]
+            if self.categorical_features:
+                self.ordinal_encoder = OrdinalEncoder(
+                    handle_unknown="use_encoded_value",
+                    unknown_value=-1,
+                    encoded_missing_value=-2,
+                )
+                x[self.categorical_features] = self.ordinal_encoder.fit_transform(
+                    x[self.categorical_features]
+                )
             x[self.imputer_base_cols] = self.imputer.fit_transform(
                 x[self.imputer_base_cols]
             )
+            if self.categorical_features:
+                x[self.categorical_features] = self.ordinal_encoder.inverse_transform(
+                    x[self.categorical_features]
+                )
             if x_val is not None:
+                if self.categorical_features:
+                    x_val[self.categorical_features] = self.ordinal_encoder.transform(
+                        x_val[self.categorical_features]
+                    )
                 x_val[self.imputer_base_cols] = self.imputer.transform(
                     x_val[self.imputer_base_cols]
                 )
-        else:
-            raise ValueError(f"Invalid missing imputation method: {self.method}")
+                if self.categorical_features:
+                    x_val[self.categorical_features] = (
+                        self.ordinal_encoder.inverse_transform(
+                            x_val[self.categorical_features]
+                        )
+                    )
 
         return x, x_val
 
@@ -287,20 +337,45 @@ class TabularImputer:
             ``method``.
         """
         x = X.copy()
+        self._validate_method()
+
         if self.method == "drop":
-            return x.dropna(subset=self.numerical_features)
+            if self._has_missing_numerical(x):
+                return x.dropna(subset=self.numerical_features)
+            return x
         if self.method == "keep":
+            return x
+        if not self._has_missing_numerical(x):
             return x
         if self.method in ["mean", "median", "most_frequent"]:
             if len(self.numerical_features) > 0:
+                if self.imputer is None:
+                    raise RuntimeError(
+                        "Cannot impute missing numerical values because fitting "
+                        "skipped imputation when no missing numerical values were present."
+                    )
                 x[self.numerical_features] = self.imputer.transform(
                     x[self.numerical_features]
                 )
             return x
         if self.method == "missforest":
-            x[self.imputer_base_cols] = self.imputer.transform(x[self.imputer_base_cols])
+            if self.imputer is None:
+                raise RuntimeError(
+                    "Cannot impute missing numerical values because fitting "
+                    "skipped imputation when no missing numerical values were present."
+                )
+            if self.categorical_features:
+                x[self.categorical_features] = self.ordinal_encoder.transform(
+                    x[self.categorical_features]
+                )
+            x[self.imputer_base_cols] = self.imputer.transform(
+                x[self.imputer_base_cols]
+            )
+            if self.categorical_features:
+                x[self.categorical_features] = self.ordinal_encoder.inverse_transform(
+                    x[self.categorical_features]
+                )
             return x
-        raise ValueError(f"Invalid missing imputation method: {self.method}")
 
 
 class DataProcessor:
@@ -360,10 +435,13 @@ class DataProcessor:
         self.missing_imputation_method = missing_imputation_method
         self.random_state = random_state
         self.imputer = TabularImputer(missing_imputation_method, random_state)
+        self.constant_values = {}
         self.fitted = False
 
     def __setstate__(self, state):
         self.__dict__.update(state)
+        if not hasattr(self, "constant_values"):
+            self.constant_values = {}
         if self.fitted and not hasattr(self, "schema"):
             self.schema = TabularSchema(
                 self.ori_col_order,
@@ -436,6 +514,8 @@ class DataProcessor:
 
         syn_X = self.schema.round_numeric(X)
         syn_X = self.constraint_enforcer.inverse_transform(syn_X)
+        for col, value in self.constant_values.items():
+            syn_X[col] = value
         return self.schema.restore(syn_X)
 
     def save(self, path: Union[str, Path]) -> None:
@@ -507,6 +587,26 @@ class DataProcessor:
             self.numerical_features,
             x_val,
         )
+        self.constant_values = {
+            col: x[col].iloc[0]
+            for col in x.columns
+            if x[col].nunique(dropna=False) == 1
+        }
+        if self.constant_values:
+            constant_cols = list(self.constant_values)
+            x = x.drop(columns=constant_cols)
+            if x_val is not None:
+                x_val = x_val.drop(columns=constant_cols)
+            self.categorical_features = [
+                col
+                for col in self.categorical_features
+                if col not in self.constant_values
+            ]
+            self.numerical_features = [
+                col
+                for col in self.numerical_features
+                if col not in self.constant_values
+            ]
 
         self.constraint_enforcer = ConstraintEnforcer(self.constraints)
         x = self.constraint_enforcer.transform(x)
@@ -535,6 +635,8 @@ class DataProcessor:
         x = x[self.ori_col_order]
 
         x = self.imputer.transform(x)
+        if self.constant_values:
+            x = x.drop(columns=list(self.constant_values))
         x = self.constraint_enforcer.transform(x)
         return x
 
@@ -654,7 +756,7 @@ class SynthyverseGenerator:
         self,
         X: pd.DataFrame,
         discrete_features: list = None,
-        X_val: pd.DataFrame = None,
+        val_size: float = None,
     ):
         """Preprocess data and fit the wrapped low-level generator.
 
@@ -662,8 +764,8 @@ class SynthyverseGenerator:
             X (pd.DataFrame): Training data in the original tabular schema.
             discrete_features (list): Names of categorical/discrete columns in
                 ``X``. Required when fitting a new processor. Default: None.
-            X_val (pd.DataFrame): Optional validation data in the same schema
-                as ``X``. Default: None.
+            val_size (float): Optional validation fraction passed to wrapped
+                generators that use validation data.
 
         Returns:
             SynthyverseGenerator: The fitted high-level generator.
@@ -671,22 +773,23 @@ class SynthyverseGenerator:
         processed = self.processor.preprocess(
             X=X,
             discrete_features=discrete_features,
-            X_val=X_val,
         )
-        if X_val is None:
-            X_processed = processed
-            X_val_processed = None
-        else:
-            X_processed, X_val_processed = processed
+        X_processed = processed
 
         if discrete_features is None:
             discrete_features = self.processor.categorical_features
+        else:
+            discrete_features = [
+                col for col in discrete_features if col in X_processed.columns
+            ]
 
-        self.generator.fit(
-            X=X_processed,
-            discrete_features=discrete_features,
-            X_val=X_val_processed,
-        )
+        fit_kwargs = {"X": X_processed, "discrete_features": discrete_features}
+        if (
+            val_size is not None
+            and "val_size" in inspect.signature(self.generator.fit).parameters
+        ):
+            fit_kwargs["val_size"] = val_size
+        self.generator.fit(**fit_kwargs)
         self.fitted = True
         return self
 
@@ -694,7 +797,7 @@ class SynthyverseGenerator:
         self,
         X: pd.DataFrame,
         discrete_features: list = None,
-        X_val: pd.DataFrame = None,
+        val_size: float = None,
     ):
         """Fit the high-level generator to tabular data.
 
@@ -704,13 +807,13 @@ class SynthyverseGenerator:
             X (pd.DataFrame): Training data in the original tabular schema.
             discrete_features (list): Names of categorical/discrete columns in
                 ``X``. Required when fitting a new processor. Default: None.
-            X_val (pd.DataFrame): Optional validation data in the same schema
-                as ``X``. Default: None.
+            val_size (float): Optional validation fraction passed to wrapped
+                generators that use validation data.
 
         Returns:
             SynthyverseGenerator: The fitted high-level generator.
         """
-        return self.train(X=X, discrete_features=discrete_features, X_val=X_val)
+        return self.train(X=X, discrete_features=discrete_features, val_size=val_size)
 
     def sample(self, n: int) -> pd.DataFrame:
         """Generate synthetic rows and restore the original tabular schema.

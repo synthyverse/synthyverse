@@ -69,7 +69,7 @@ class ARFGenerator(BaseGenerator):
         self.min_node_size = min_node_size
         self.retain_value_ranges = retain_value_ranges
 
-    def _fit(self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None):
+    def _fit(self, X: pd.DataFrame, discrete_features: list):
         xx = X.copy()
         xx[discrete_features] = xx[discrete_features].astype(str)
         self.numerical_features = [

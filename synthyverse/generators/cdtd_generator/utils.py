@@ -1,7 +1,6 @@
 import random
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 
 def set_seeds(seed, cuda_deterministic=False):
@@ -16,11 +15,12 @@ def set_seeds(seed, cuda_deterministic=False):
                 torch.backends.cudnn.deterministic = True
                 torch.backends.cudnn.benchmark = False
 
+
 def cycle(dl):
     while True:
         for data in dl:
             yield data
-            
+
 
 def low_discrepancy_sampler(num_samples, device):
     """
@@ -73,76 +73,3 @@ class LinearScheduler:
         return decrease + self.base_lr_orig if self.anneal_lr else self.base_lr_orig
 
 
-class FastTensorDataLoader:
-    """
-    A DataLoader-like object for a set of tensors that can be much faster than
-    TensorDataset + DataLoader because dataloader grabs individual indices of
-    the dataset and calls cat (slow).
-    Adapted from: https://discuss.pytorch.org/t/dataloader-much-slower-than-manual-batching/27014/6
-    """
-
-    def __init__(self, X_cat, X_cont, batch_size=32, shuffle=False, drop_last=False):
-        self.dataset_len = X_cat.shape[0] if X_cat is not None else X_cont.shape[0]
-        assert all(
-            t.shape[0] == self.dataset_len for t in (X_cat, X_cont) if t is not None
-        )
-        self.X_cat = X_cat
-        self.X_cont = X_cont
-
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-
-        if drop_last:
-            self.dataset_len = (self.dataset_len // self.batch_size) * self.batch_size
-
-        # Calculate # batches
-        n_batches, remainder = divmod(self.dataset_len, self.batch_size)
-        if remainder > 0:
-            n_batches += 1
-        self.n_batches = n_batches
-
-    def __iter__(self):
-        if self.shuffle:
-            self.indices = torch.randperm(self.dataset_len)
-        else:
-            self.indices = None
-        self.i = 0
-        return self
-
-    def __next__(self):
-        if self.i >= self.dataset_len:
-            raise StopIteration
-        if self.indices is not None:
-            indices = self.indices[self.i : self.i + self.batch_size]
-            batch = {}
-            batch["X_cat"] = (
-                torch.index_select(self.X_cat, 0, indices)
-                if self.X_cat is not None
-                else None
-            )
-            batch["X_cont"] = (
-                torch.index_select(self.X_cont, 0, indices)
-                if self.X_cont is not None
-                else None
-            )
-
-        else:
-            batch = {}
-            batch["X_cat"] = (
-                self.X_cat[self.i : self.i + self.batch_size]
-                if self.X_cat is not None
-                else None
-            )
-            batch["X_cont"] = (
-                self.X_cont[self.i : self.i + self.batch_size]
-                if self.X_cont is not None
-                else None
-            )
-
-        self.i += self.batch_size
-
-        batch = tuple(batch.values())
-        return batch
-
-    def __len__(self):
-        return self.n_batches

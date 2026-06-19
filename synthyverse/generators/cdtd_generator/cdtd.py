@@ -1,7 +1,5 @@
 from pathlib import Path
-import time
 
-import numpy as np
 import pandas as pd
 import torch
 from sklearn.preprocessing import QuantileTransformer, StandardScaler, OrdinalEncoder
@@ -9,9 +7,11 @@ from torch_ema import ExponentialMovingAverage
 from tqdm import tqdm
 
 from ..base import BaseGenerator
+from ..dgm_utils import FastTensorDataLoader
 from .layers import MLP, MixedTypeDiffusion
-from .utils import FastTensorDataLoader, LinearScheduler, cycle, set_seeds
+from .utils import LinearScheduler, cycle, set_seeds
 from ..persistence import load_generator_state, restore_generator, save_generator_state
+from ...utils.utils import get_total_trainable_params
 
 
 class CDTDGenerator(BaseGenerator):
@@ -25,7 +25,7 @@ class CDTDGenerator(BaseGenerator):
 
     Args:
         cat_emb_dim (int): Embedding dimension for categorical features. Default: 16.
-        mlp_emb_dim (int): Embedding dimension for MLP layers. Default: 256.
+        embedding_dim (int): Embedding dimension for MLP layers. Default: 256.
         mlp_n_layers (int): Number of MLP layers. Default: 5.
         mlp_n_units (int): Number of units per MLP layer. Default: 1024.
         sigma_data_cat (float): Data sigma for categorical features. Default: 1.0.
@@ -36,9 +36,10 @@ class CDTDGenerator(BaseGenerator):
         sigma_max_cont (float): Maximum sigma for continuous features. Default: 80.0.
         cat_emb_init_sigma (float): Initial sigma for categorical embeddings. Default: 0.001.
         timewarp_type (str): Type of time warping. Options: "single", "bytype", "all". Default: "bytype".
-        timewarp_weight_low_noise (float): Weight for low noise in time warping. Default: 1.0.
-        num_steps_train (int): Number of training steps (iterations, not epochs). Default: 30000.
+        timewarp_weight_low_noise (float): Weight for low noise in time warping. Default: 3.0.
+        training_steps (int): Number of training steps (iterations, not epochs). Default: 30000.
         num_steps_warmup (int): Number of warmup steps. Default: 1000.
+        num_timesteps (int): Number of sampling timesteps. Default: 200.
         batch_size (int): Batch size for training. Default: 4096.
         lr (float): Learning rate. Default: 1e-3.
         ema_decay (float): Exponential moving average decay. Default: 0.999.
@@ -56,7 +57,7 @@ class CDTDGenerator(BaseGenerator):
         >>> # Create generator
         >>> generator = CDTDGenerator(
         ...     timewarp_type="bytype",
-        ...     num_steps_train=30000,
+        ...     training_steps=30000,
         ...     random_state=42
         ... )
         >>>
@@ -70,7 +71,7 @@ class CDTDGenerator(BaseGenerator):
     def __init__(
         self,
         cat_emb_dim: int = 16,
-        mlp_emb_dim: int = 256,
+        embedding_dim: int = 256,
         mlp_n_layers: int = 5,
         mlp_n_units: int = 1024,
         sigma_data_cat: float = 1.0,
@@ -81,9 +82,10 @@ class CDTDGenerator(BaseGenerator):
         sigma_max_cont: float = 80.0,
         cat_emb_init_sigma: float = 0.001,
         timewarp_type: str = "bytype",
-        timewarp_weight_low_noise: float = 1.0,
-        num_steps_train: int = 30_000,
+        timewarp_weight_low_noise: float = 3.0,
+        training_steps: int = 30_000,
         num_steps_warmup: int = 1000,
+        num_timesteps: int = 200,
         batch_size: int = 4096,
         lr: float = 1e-3,
         ema_decay: float = 0.999,
@@ -92,7 +94,7 @@ class CDTDGenerator(BaseGenerator):
     ):
         self.random_state = random_state
         self.cat_emb_dim = cat_emb_dim
-        self.mlp_emb_dim = mlp_emb_dim
+        self.embedding_dim = embedding_dim
         self.mlp_n_layers = mlp_n_layers
         self.mlp_n_units = mlp_n_units
         self.sigma_data_cat = sigma_data_cat
@@ -104,8 +106,9 @@ class CDTDGenerator(BaseGenerator):
         self.cat_emb_init_sigma = cat_emb_init_sigma
         self.timewarp_type = timewarp_type
         self.timewarp_weight_low_noise = timewarp_weight_low_noise
-        self.num_steps_train = num_steps_train
+        self.training_steps = training_steps
         self.num_steps_warmup = num_steps_warmup
+        self.num_timesteps = num_timesteps
         self.batch_size = batch_size
         self.lr = lr
         self.ema_decay = ema_decay
@@ -114,7 +117,7 @@ class CDTDGenerator(BaseGenerator):
         if torch.cuda.is_available():
             torch.set_float32_matmul_precision("high")
 
-    def _fit(self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None):
+    def _fit(self, X: pd.DataFrame, discrete_features: list):
         self.discrete_features = discrete_features
         self.numerical_features = [
             col for col in X.columns if col not in discrete_features
@@ -150,7 +153,7 @@ class CDTDGenerator(BaseGenerator):
 
         categories = []
         for i in range(self.num_cat_features):
-            categories.append(len(np.unique(X_discrete[:, i])))
+            categories.append(int(X_discrete[:, i].unique().numel()))
         self.categories = categories
 
         proportions = []
@@ -165,7 +168,7 @@ class CDTDGenerator(BaseGenerator):
             self.cat_emb_dim,
             categories,
             proportions,
-            self.mlp_emb_dim,
+            self.embedding_dim,
             self.mlp_n_layers,
             self.mlp_n_units,
         )
@@ -187,13 +190,18 @@ class CDTDGenerator(BaseGenerator):
             timewarp_weight_low_noise=self.timewarp_weight_low_noise,
         )
 
+        print(
+            f"Total trainable parameters: {get_total_trainable_params(self.diff_model):,}"
+        )
+
         # --- train ---
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        train_batch_size = min(self.batch_size, X_discrete.shape[0])
         train_loader = FastTensorDataLoader(
             X_discrete,
             X_numerical,
-            batch_size=self.batch_size,
+            batch_size=train_batch_size,
             shuffle=True,
             drop_last=True,
         )
@@ -211,7 +219,7 @@ class CDTDGenerator(BaseGenerator):
             self.diff_model.parameters(), lr=self.lr, weight_decay=0
         )
         scheduler = LinearScheduler(
-            self.num_steps_train,
+            self.training_steps,
             base_lr=self.lr,
             final_lr=1e-6,
             warmup_steps=self.num_steps_warmup,
@@ -221,10 +229,9 @@ class CDTDGenerator(BaseGenerator):
 
         current_step = 0
         n_obs = sum_loss = 0
-        train_start = time.time()
 
-        with tqdm(initial=current_step, total=self.num_steps_train) as pbar:
-            while current_step < self.num_steps_train:
+        with tqdm(initial=current_step, total=self.training_steps) as pbar:
+            while current_step < self.training_steps:
                 optimizer.zero_grad()
 
                 inputs = next(train_iter)
@@ -253,9 +260,6 @@ class CDTDGenerator(BaseGenerator):
                 for param_group in optimizer.param_groups:
                     param_group["lr"] = scheduler(current_step)
 
-        train_duration = time.time() - train_start
-        print(f"Training took {(train_duration / 60):.2f} min.")
-
         ema_diff_model.copy_to()
         self.diff_model.eval()
 
@@ -281,7 +285,7 @@ class CDTDGenerator(BaseGenerator):
                 (num_samples, self.num_cont_features), device=self.device
             )
             x_cat_gen, x_cont_gen = self.diff_model.sampler(
-                cat_latents, cont_latents, 200
+                cat_latents, cont_latents, self.num_timesteps
             )
             x_cat_list.append(x_cat_gen)
             x_cont_list.append(x_cont_gen)
@@ -309,7 +313,7 @@ class CDTDGenerator(BaseGenerator):
         state = {
             "random_state": self.random_state,
             "cat_emb_dim": self.cat_emb_dim,
-            "mlp_emb_dim": self.mlp_emb_dim,
+            "embedding_dim": self.embedding_dim,
             "mlp_n_layers": self.mlp_n_layers,
             "mlp_n_units": self.mlp_n_units,
             "sigma_data_cat": self.sigma_data_cat,
@@ -321,6 +325,8 @@ class CDTDGenerator(BaseGenerator):
             "cat_emb_init_sigma": self.cat_emb_init_sigma,
             "timewarp_type": self.timewarp_type,
             "timewarp_weight_low_noise": self.timewarp_weight_low_noise,
+            "training_steps": self.training_steps,
+            "num_timesteps": self.num_timesteps,
             "batch_size": self.batch_size,
             "discrete_features": self.discrete_features,
             "numerical_features": self.numerical_features,
@@ -341,6 +347,7 @@ class CDTDGenerator(BaseGenerator):
     def load(cls, path):
         path = Path(path)
         generator = restore_generator(cls, load_generator_state(path))
+        generator.num_timesteps = getattr(generator, "num_timesteps", 200)
         generator.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         score_model = MLP(
@@ -348,7 +355,7 @@ class CDTDGenerator(BaseGenerator):
             generator.cat_emb_dim,
             generator.categories,
             generator.proportions,
-            generator.mlp_emb_dim,
+            generator.embedding_dim,
             generator.mlp_n_layers,
             generator.mlp_n_units,
         )

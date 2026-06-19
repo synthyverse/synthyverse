@@ -6,15 +6,15 @@ import re
 from collections import Counter
 from itertools import combinations
 from math import ceil
-from geomloss import SamplesLoss
-import torch
+
+# from geomloss import SamplesLoss
+# import torch
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import mutual_info_score, pairwise_distances, roc_auc_score
-from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import KBinsDiscretizer
 
 from scipy.stats import (
@@ -27,8 +27,15 @@ from scipy.stats import (
 from scipy.spatial.distance import jensenshannon
 from scipy.special import kl_div
 
-from .ml import tune_ml_model, ml_task, HYPERPARAM_SAVE_DIR
-from .preprocessing import gower_like_transform
+from .ml import (
+    HYPERPARAM_SAVE_DIR,
+    ml_task,
+    resolve_model_name,
+    split_validation,
+    tune_ml_model,
+)
+from .preprocessing import fast_gower_transform, gower_like_transform
+from .gower import FastGowerNN
 
 
 def _metric_key_part(value) -> str:
@@ -50,8 +57,17 @@ class ClassifierTest:
             "randomforest", "decisiontree", "linearregression", and "svm",
             including some common aliases. Every model except for XGBoost is a scikit-learn classifier. Default: "xgboost".
         model_params (dict): Classifier parameters passed to the selected estimator.
-        tune (bool): Whether to tune hyperparameters. If True, a validation set must be provided. Default: False.
+            For XGBoost, passing ``early_stopping_rounds`` enables early stopping
+            and requires ``val_size > 0``.
+        tune (bool): Whether to tune hyperparameters using an internal
+            validation split.
+            Hyperparameter tuning is skipped when XGBoost early stopping is enabled.
+            Default: False.
+        val_size (float): Fraction of discriminator training rows reserved for
+            validation when tuning or early stopping needs it. Default: 0.2.
         tuning_trials (int): Number of Optuna trials for hyperparameter tuning. Default: 32.
+        hyperparam_save_dir (str): Directory used to cache tuned hyperparameters.
+            Default: ``HYPERPARAM_SAVE_DIR``.
 
     Example:
         >>> import pandas as pd
@@ -62,7 +78,6 @@ class ClassifierTest:
         >>> X_test = pd.DataFrame(...)
         >>> X_syn = pd.DataFrame(...)
         >>> X_syn_test = pd.DataFrame(...)
-        >>> X_val = pd.DataFrame(...)
         >>> discrete_features = ["category_col"]
         >>>
         >>> # Create metric
@@ -73,7 +88,7 @@ class ClassifierTest:
         ... )
         >>>
         >>> # Evaluate
-        >>> results = metric.evaluate(X_train, X_test, X_syn, X_syn_test, X_val)
+        >>> results = metric.evaluate(X_train, X_test, X_syn, X_syn_test)
     """
 
     name = "classifier_test"
@@ -85,7 +100,9 @@ class ClassifierTest:
         model_params: dict = None,
         tune: bool = False,
         tuning_trials: int = 32,
+        val_size: float = 0.2,
         random_state: int = 0,
+        hyperparam_save_dir: str = HYPERPARAM_SAVE_DIR,
     ):
         super().__init__()
         self.random_state = random_state
@@ -94,8 +111,10 @@ class ClassifierTest:
         )
         self.tune = tune
         self.tuning_trials = tuning_trials
+        self.val_size = val_size
         self.model_name = model_name
         self.model_params = model_params if model_params is not None else {}
+        self.hyperparam_save_dir = os.fspath(hyperparam_save_dir)
 
     def evaluate(
         self,
@@ -103,7 +122,6 @@ class ClassifierTest:
         X_test: pd.DataFrame,
         X_syn: pd.DataFrame,
         X_syn_test: pd.DataFrame,
-        X_val: pd.DataFrame = None,
     ):
         """Evaluate synthetic data using classifier test.
 
@@ -112,7 +130,6 @@ class ClassifierTest:
             X_test: Real test data as a pandas DataFrame.
             X_syn: Synthetic training data as a pandas DataFrame.
             X_syn_test: Synthetic test data as a pandas DataFrame.
-            X_val: Optional validation data used when tune=True.
 
         Returns:
             dict: Dictionary with "classifier_test.auc" key and AUC score value.
@@ -124,24 +141,35 @@ class ClassifierTest:
             ignore_index=True,
         )
 
-        if self.tune:
+        model_name = resolve_model_name(self.model_name)
+        uses_xgboost_early_stopping = (
+            model_name == "xgboost"
+            and self.model_params.get("early_stopping_rounds") is not None
+        )
+        needs_val = uses_xgboost_early_stopping
+
+        if self.tune and not uses_xgboost_early_stopping:
             # load tuned params from file if it exists
             model_slug = self.model_name.replace(" ", "_")
-            param_file = f"{HYPERPARAM_SAVE_DIR}/classifiertest_{model_slug}.json"
+            param_file = os.path.join(
+                self.hyperparam_save_dir, f"classifiertest_{model_slug}.json"
+            )
             if os.path.exists(param_file):
                 with open(param_file, "r") as f:
                     params = json.load(f)
             else:
-                # tune params and save to file
-                assert X_val is not None, "X_val must be provided when tune=True."
-                x_val = pd.concat([X_val, X_syn_test], ignore_index=True)
-                y_val = pd.concat(
-                    [
-                        pd.Series([0] * len(X_val)),
-                        pd.Series([1] * len(X_syn_test)),
-                    ],
-                    ignore_index=True,
-                )
+                needs_val = True
+
+        if needs_val:
+            x_train, x_val, y_train, y_val = split_validation(
+                x_train,
+                y_train,
+                self.val_size,
+                self.random_state,
+            )
+
+        if self.tune and not uses_xgboost_early_stopping:
+            if not os.path.exists(param_file):
                 params = tune_ml_model(
                     x_train,
                     x_val,
@@ -156,7 +184,6 @@ class ClassifierTest:
                 os.makedirs(os.path.dirname(param_file), exist_ok=True)
                 with open(param_file, "w") as f:
                     json.dump(params, f)
-
         else:
             params = self.model_params
 
@@ -165,6 +192,10 @@ class ClassifierTest:
             [pd.Series([0] * len(X_test)), pd.Series([1] * len(X_syn_test))],
             ignore_index=True,
         )
+
+        if not needs_val:
+            x_val = None
+            y_val = None
 
         scores = ml_task(
             x_train,
@@ -177,6 +208,8 @@ class ClassifierTest:
             params,
             random_state=self.random_state,
             score_fns=[roc_auc_score],
+            X_val=x_val,
+            y_val=y_val,
         )
         return {
             f"{self.name}.auc": scores["auc"],
@@ -243,7 +276,14 @@ class AlphaPrecisionBetaRecall:
 
         x_rd = data["rd"]
         x_sd = data["sd"]
-
+        nn_data = fast_gower_transform(
+            {"rd": X_train, "sd": X_syn},
+            reference_data=X_train,
+            discrete_features=self.discrete_features,
+            categorical_fit_data=[X_train, X_syn],
+        )
+        rd_metric = nn_data["rd"]
+        sd_metric = nn_data["sd"]
         emb_center = np.mean(x_rd, axis=0)
 
         n_steps = 30
@@ -262,16 +302,19 @@ class AlphaPrecisionBetaRecall:
         # Use L1 distance in the mixed-type feature space.
         synth_to_center = np.sum(np.abs(x_sd - emb_center), axis=1)
 
-        # Use L1 distance in the mixed-type feature space.
-        nbrs_real = NearestNeighbors(n_neighbors=self.k, n_jobs=-1, p=1).fit(x_rd)
-        real_to_real, _ = nbrs_real.kneighbors(x_rd)
+        nn_kwargs = {
+            "categorical_cols": self.discrete_features,
+            "normalize": False,
+        }
+        nbrs_real = FastGowerNN(**nn_kwargs).fit(rd_metric)
+        real_to_real, _ = nbrs_real.kneighbors(X=None, k=self.k, exclude_self=False)
 
-        nbrs_synth = NearestNeighbors(n_neighbors=1, n_jobs=-1, p=1).fit(x_sd)
-        real_to_synth, real_to_synth_args = nbrs_synth.kneighbors(x_rd)
+        nbrs_synth = FastGowerNN(**nn_kwargs).fit(sd_metric)
+        real_to_synth, real_to_synth_args = nbrs_synth.kneighbors(rd_metric, k=1)
 
-        real_to_real = real_to_real[:, self.k - 1].squeeze()
-        real_to_synth = real_to_synth.squeeze()
-        real_to_synth_args = real_to_synth_args.squeeze()
+        real_to_real = real_to_real[:, self.k - 1].reshape(-1)
+        real_to_synth = real_to_synth.reshape(-1)
+        real_to_synth_args = real_to_synth_args.reshape(-1)
 
         real_synth_closest = x_sd[real_to_synth_args]
 
@@ -296,8 +339,6 @@ class AlphaPrecisionBetaRecall:
 
             alpha_precision_curve.append(alpha_precision)
             beta_coverage_curve.append(beta_coverage)
-
-        authen = real_to_real[real_to_synth_args] < real_to_synth
 
         Delta_precision_alpha = 1 - np.sum(
             np.abs(np.array(alphas) - np.array(alpha_precision_curve))
@@ -432,118 +473,118 @@ class PRDC:
         )
 
 
-class Wasserstein:
-    """Multivariate Wasserstein distance between real and synthetic samples.
+# class Wasserstein:
+#     """Multivariate Wasserstein distance between real and synthetic samples.
 
-    Sinkhorn approximation of the Wasserstein-1 distance using a Gower-like cost function.
+#     Sinkhorn approximation of the Wasserstein-1 distance using a Gower-like cost function.
 
-    Args:
-        discrete_features (list): List of discrete/categorical feature names. Default: [].
-        blur (float): Entropic regularization scale passed to GeomLoss
-            ``SamplesLoss``. Smaller values are closer to exact optimal
-            transport but can be slower or less stable. Default: 0.001.
-        scaling (float): GeomLoss epsilon-scaling ratio. Default: 0.5.
-        debias (bool): Whether to use the debiased Sinkhorn divergence form,
-            which returns zero for identical empirical distributions. Default: True.
-        backend (str): GeomLoss backend. The default "online" backend streams
-            pairwise costs through KeOps and avoids materializing the full
-            sample-by-sample cost matrix. Use "tensorized" only for small
-            datasets or debugging. Default: "online".
-    Example:
-        >>> import pandas as pd
-        >>> from synthyverse.evaluation import Wasserstein
-        >>>
-        >>> metric = Wasserstein(discrete_features=["category_col"])
-        >>> results = metric.evaluate(X_train, X_syn)
-    """
+#     Args:
+#         discrete_features (list): List of discrete/categorical feature names. Default: [].
+#         blur (float): Entropic regularization scale passed to GeomLoss
+#             ``SamplesLoss``. Smaller values are closer to exact optimal
+#             transport but can be slower or less stable. Default: 0.001.
+#         scaling (float): GeomLoss epsilon-scaling ratio. Default: 0.5.
+#         debias (bool): Whether to use the debiased Sinkhorn divergence form,
+#             which returns zero for identical empirical distributions. Default: True.
+#         backend (str): GeomLoss backend. The default "online" backend streams
+#             pairwise costs through KeOps and avoids materializing the full
+#             sample-by-sample cost matrix. Use "tensorized" only for small
+#             datasets or debugging. Default: "online".
+#     Example:
+#         >>> import pandas as pd
+#         >>> from synthyverse.evaluation import Wasserstein
+#         >>>
+#         >>> metric = Wasserstein(discrete_features=["category_col"])
+#         >>> results = metric.evaluate(X_train, X_syn)
+#     """
 
-    name = "wasserstein"
+#     name = "wasserstein"
 
-    def __init__(
-        self,
-        discrete_features: list = None,
-        blur: float = 0.001,
-        scaling: float = 0.5,
-        debias: bool = True,
-        backend: str = "online",
-    ):
-        super().__init__()
-        self.discrete_features = (
-            list(discrete_features) if discrete_features is not None else []
-        )
-        self.blur = float(blur)
-        self.scaling = float(scaling)
-        self.debias = bool(debias)
-        self.backend = backend
+#     def __init__(
+#         self,
+#         discrete_features: list = None,
+#         blur: float = 0.001,
+#         scaling: float = 0.5,
+#         debias: bool = True,
+#         backend: str = "online",
+#     ):
+#         super().__init__()
+#         self.discrete_features = (
+#             list(discrete_features) if discrete_features is not None else []
+#         )
+#         self.blur = float(blur)
+#         self.scaling = float(scaling)
+#         self.debias = bool(debias)
+#         self.backend = backend
 
-        if self.blur <= 0.0:
-            raise ValueError("blur must be > 0 for GeomLoss SamplesLoss.")
-        if self.scaling <= 0.0 or self.scaling >= 1.0:
-            raise ValueError("scaling must be in (0, 1).")
-        if self.backend not in {"online", "multiscale", "tensorized"}:
-            raise ValueError(
-                'backend must be one of "online", "multiscale", or "tensorized".'
-            )
+#         if self.blur <= 0.0:
+#             raise ValueError("blur must be > 0 for GeomLoss SamplesLoss.")
+#         if self.scaling <= 0.0 or self.scaling >= 1.0:
+#             raise ValueError("scaling must be in (0, 1).")
+#         if self.backend not in {"online", "multiscale", "tensorized"}:
+#             raise ValueError(
+#                 'backend must be one of "online", "multiscale", or "tensorized".'
+#             )
 
-    def evaluate(self, X_train: pd.DataFrame, X_syn: pd.DataFrame):
-        """Evaluate synthetic data using multivariate Wasserstein distance.
+#     def evaluate(self, X_train: pd.DataFrame, X_syn: pd.DataFrame):
+#         """Evaluate synthetic data using multivariate Wasserstein distance.
 
-        Args:
-            X_train: Real training data as a pandas DataFrame.
-            X_syn: Synthetic data as a pandas DataFrame.
+#         Args:
+#             X_train: Real training data as a pandas DataFrame.
+#             X_syn: Synthetic data as a pandas DataFrame.
 
-        Returns:
-            dict: Dictionary with key:
-                - "wasserstein.w1": Wasserstein-1 distance with L1 ground cost
-        """
-        if len(X_train) == 0 or len(X_syn) == 0:
-            raise ValueError("Wasserstein requires non-empty X_train and X_syn.")
+#         Returns:
+#             dict: Dictionary with key:
+#                 - "wasserstein.w1": Wasserstein-1 distance with L1 ground cost
+#         """
+#         if len(X_train) == 0 or len(X_syn) == 0:
+#             raise ValueError("Wasserstein requires non-empty X_train and X_syn.")
 
-        data = gower_like_transform(
-            {"train": X_train, "syn": X_syn},
-            reference_data=X_train,
-            discrete_features=self.discrete_features,
-            categorical_fit_data=[X_train, X_syn],
-        )
+#         data = gower_like_transform(
+#             {"train": X_train, "syn": X_syn},
+#             reference_data=X_train,
+#             discrete_features=self.discrete_features,
+#             categorical_fit_data=[X_train, X_syn],
+#         )
 
-        x_train = data["train"]
-        x_syn = data["syn"]
-        if not np.isfinite(x_train).all() or not np.isfinite(x_syn).all():
-            raise ValueError("Wasserstein requires finite metric features.")
+#         x_train = data["train"]
+#         x_syn = data["syn"]
+#         if not np.isfinite(x_train).all() or not np.isfinite(x_syn).all():
+#             raise ValueError("Wasserstein requires finite metric features.")
 
-        return {
-            f"{self.name}.w1": float(self._samples_loss(x_train, x_syn)),
-        }
+#         return {
+#             f"{self.name}.w1": float(self._samples_loss(x_train, x_syn)),
+#         }
 
-    def _samples_loss(self, x_train: np.ndarray, x_syn: np.ndarray) -> float:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        tensor_kwargs = {"dtype": torch.float32, "device": device}
+#     def _samples_loss(self, x_train: np.ndarray, x_syn: np.ndarray) -> float:
+#         device = "cuda" if torch.cuda.is_available() else "cpu"
+#         tensor_kwargs = {"dtype": torch.float32, "device": device}
 
-        x_train_t = torch.as_tensor(np.ascontiguousarray(x_train), **tensor_kwargs)
-        x_syn_t = torch.as_tensor(np.ascontiguousarray(x_syn), **tensor_kwargs)
+#         x_train_t = torch.as_tensor(np.ascontiguousarray(x_train), **tensor_kwargs)
+#         x_syn_t = torch.as_tensor(np.ascontiguousarray(x_syn), **tensor_kwargs)
 
-        loss = SamplesLoss(
-            loss="sinkhorn",
-            p=1,
-            blur=self.blur,
-            scaling=self.scaling,
-            cost=self._l1_cost(),
-            debias=self.debias,
-            backend=self.backend,
-        )
+#         loss = SamplesLoss(
+#             loss="sinkhorn",
+#             p=1,
+#             blur=self.blur,
+#             scaling=self.scaling,
+#             cost=self._l1_cost(),
+#             debias=self.debias,
+#             backend=self.backend,
+#         )
 
-        with torch.no_grad():
-            value = loss(x_train_t, x_syn_t)
-        return value.detach().cpu().item()
+#         with torch.no_grad():
+#             value = loss(x_train_t, x_syn_t)
+#         return value.detach().cpu().item()
 
-    @staticmethod
-    def _l1_cost_matrix(x, y):
-        return (x[:, :, None, :] - y[:, None, :, :]).abs().sum(dim=-1)
+#     @staticmethod
+#     def _l1_cost_matrix(x, y):
+#         return (x[:, :, None, :] - y[:, None, :, :]).abs().sum(dim=-1)
 
-    def _l1_cost(self):
-        if self.backend == "tensorized":
-            return self._l1_cost_matrix
-        return "Sum(Abs(X-Y))"
+#     def _l1_cost(self):
+#         if self.backend == "tensorized":
+#             return self._l1_cost_matrix
+#         return "Sum(Abs(X-Y))"
 
 
 class ShapeTrend:
@@ -947,6 +988,7 @@ class Correlations:
         img_save_path (str, optional): Directory where correlation matrix plots
             will be saved. If a file path is provided, its basename is used as a
             prefix. Default: None.
+        file_format (str): Image file format passed to matplotlib. Default: "png".
 
     Example:
         >>> import pandas as pd
@@ -975,11 +1017,13 @@ class Correlations:
         discrete_features: list = [],
         numerical_correlation: str = "pearson",
         img_save_path: str = None,
+        file_format: str = "png",
     ):
         super().__init__()
         self.discrete_features = discrete_features
         self.numerical_correlation = numerical_correlation
         self.img_save_path = img_save_path
+        self.file_format = file_format.lower().lstrip(".")
 
     def evaluate(self, X_train: pd.DataFrame, X_syn: pd.DataFrame):
         """Evaluate synthetic data by comparing pairwise correlation matrices.
@@ -1127,7 +1171,7 @@ class Correlations:
         else:
             save_dir = path
             prefix = "correlations_"
-            file_format = "png"
+            file_format = self.file_format
 
         return save_dir, prefix, file_format
 
@@ -1138,7 +1182,9 @@ class Correlations:
         cols: list,
         path: str,
     ):
-        fig, axes = plt.subplots(1, 2, figsize=self._heatmap_figsize(cols, 2))
+        fig, axes = plt.subplots(
+            1, 2, figsize=self._heatmap_figsize(cols, 2), constrained_layout=True
+        )
         for ax, matrix, title in zip(axes, [C_rd, C_sd], ["Real", "Synthetic"]):
             sns.heatmap(
                 matrix,
@@ -1150,12 +1196,17 @@ class Correlations:
                 square=True,
                 xticklabels=cols,
                 yticklabels=cols,
-                cbar_kws={"shrink": 0.8},
+                cbar=False,
             )
             ax.set_title(title)
             self._format_heatmap_axis(ax)
 
-        fig.tight_layout()
+        fig.colorbar(
+            axes[-1].collections[0],
+            ax=axes.tolist(),
+            shrink=0.8,
+            ticks=np.linspace(-1, 1, 5),
+        )
         fig.savefig(path, dpi=150, bbox_inches="tight")
         plt.close(fig)
 
@@ -1629,7 +1680,9 @@ class DomainConstraint:
             X_syn: Synthetic data as a pandas DataFrame.
 
         Returns:
-            dict: Mean truth value for each constraint on real and synthetic data.
+            dict: Mean truth value for each constraint on real and synthetic data,
+                plus the number of synthetic samples where each constraint does
+                not hold.
         """
         result = {}
         for constraint in self.constraint_list:
@@ -1643,10 +1696,14 @@ class DomainConstraint:
                 .replace(">", "_gt_")
                 .replace("<", "_lt_")
             )
+            syn_constraint = X_syn.eval(constraint)
             result[f"{self.name}.{constraint_key}_real"] = X_train.eval(
                 constraint
             ).mean()
-            result[f"{self.name}.{constraint_key}_syn"] = X_syn.eval(constraint).mean()
+            result[f"{self.name}.{constraint_key}_syn"] = syn_constraint.mean()
+            result[f"{self.name}.{constraint_key}_syn_n_violations"] = int(
+                (~syn_constraint).sum()
+            )
         return result
 
 

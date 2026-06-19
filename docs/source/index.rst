@@ -5,7 +5,6 @@ Welcome to synthyverse's documentation!
 
 The synthyverse provides:
 
-* **Modular installation** - Install only the generator and evaluation extras needed for a given environment.
 * **Low-level APIs** - Use preprocessing, generators, and metrics directly when you need explicit control.
 * **High-level wrappers** - Use ``SynthyverseGenerator``, ``TabularMetricEvaluator``, and ``TabularSynthesisBenchmark`` for common end-to-end workflows.
 * **Shared preprocessing** - Reuse schema restoration, missing-value handling, and constraints across generators.

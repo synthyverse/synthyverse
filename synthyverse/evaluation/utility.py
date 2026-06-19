@@ -10,7 +10,13 @@ from sklearn.metrics import (
     f1_score,
     accuracy_score,
 )
-from .ml import ml_task, HYPERPARAM_SAVE_DIR, tune_ml_model
+from .ml import (
+    HYPERPARAM_SAVE_DIR,
+    ml_task,
+    resolve_model_name,
+    split_validation,
+    tune_ml_model,
+)
 
 
 class MLE:
@@ -28,8 +34,16 @@ class MLE:
             "randomforest", "decisiontree", "linearregression", and "svm",
             including common aliases. Every model except for XGBoost is a scikit-learn model. Default: "xgboost".
         model_params (dict): Model parameters passed to the selected estimator.
-        tune (bool): Whether to tune hyperparameters. Default: False.
+            For XGBoost, passing ``early_stopping_rounds`` enables early stopping
+            and requires ``val_size > 0``.
+        tune (bool): Whether to tune hyperparameters on real train/validation
+            data. Hyperparameter tuning is skipped when XGBoost early stopping
+            is enabled. Default: False.
         tuning_trials (int): Number of Optuna trials for hyperparameter tuning. Default: 32.
+        val_size (float): Fraction of real and synthetic training rows reserved
+            for validation when tuning or early stopping needs it. Default: 0.2.
+        hyperparam_save_dir (str): Directory used to cache tuned hyperparameters.
+            Default: ``HYPERPARAM_SAVE_DIR``.
 
     Example:
         >>> import pandas as pd
@@ -39,7 +53,6 @@ class MLE:
         >>> X_train = pd.DataFrame(...)
         >>> X_test = pd.DataFrame(...)
         >>> X_syn = pd.DataFrame(...)
-        >>> X_val = pd.DataFrame(...)
         >>> discrete_features = ["category_col"]
         >>>
         >>> # Create metric
@@ -52,7 +65,7 @@ class MLE:
         ... )
         >>>
         >>> # Evaluate
-        >>> results = metric.evaluate(X_train, X_test, X_syn, X_val=X_val)
+        >>> results = metric.evaluate(X_train, X_test, X_syn)
     """
 
     name = "mle"
@@ -67,11 +80,14 @@ class MLE:
         model_params: dict = None,
         tune: bool = False,
         tuning_trials: int = 32,
+        val_size: float = 0.2,
+        hyperparam_save_dir: str = HYPERPARAM_SAVE_DIR,
     ):
         super().__init__()
         self.random_state = random_state
         self.tune = tune
         self.tuning_trials = tuning_trials
+        self.val_size = val_size
         self.discrete_features = (
             discrete_features if discrete_features is not None else []
         )
@@ -79,13 +95,13 @@ class MLE:
         self.train_set = train_set
         self.model_name = model_name
         self.model_params = model_params if model_params is not None else {}
+        self.hyperparam_save_dir = os.fspath(hyperparam_save_dir)
 
     def evaluate(
         self,
         X_train: pd.DataFrame,
         X_test: pd.DataFrame,
         X_syn: pd.DataFrame,
-        X_val: pd.DataFrame = None,
         X_syn_test: pd.DataFrame = None,
     ):
         """Evaluate synthetic data utility using machine learning efficacy.
@@ -94,13 +110,12 @@ class MLE:
             X_train: Real training data as a pandas DataFrame.
             X_test: Real test data as a pandas DataFrame.
             X_syn: Synthetic training data as a pandas DataFrame.
-            X_val: Optional validation data used when tune=True.
             X_syn_test: Optional synthetic test data used when train_set="real".
 
         Returns:
             dict: Dictionary with metric scores for the configured train/test
-                direction. Keys have the form
-                "mle.train_<train_set>_test_<test_set>.<score>".
+                direction plus a real-train/real-test baseline. Baseline keys
+                have the form "mle.baseline.<score>".
         """
 
         assert not (
@@ -115,41 +130,52 @@ class MLE:
         if self.task != "regression" and X_train[self.target_column].nunique() > 2:
             self.task = "multiclass"
 
-        x_train = X_syn.copy() if self.train_set == "synthetic" else X_train.copy()
-        x_train = x_train.drop(columns=[self.target_column])
-        y_train = (
-            X_syn[self.target_column].copy()
-            if self.train_set == "synthetic"
-            else X_train[self.target_column].copy()
+        model_name = resolve_model_name(self.model_name)
+        uses_xgboost_early_stopping = (
+            model_name == "xgboost"
+            and self.model_params.get("early_stopping_rounds") is not None
+        )
+        model_slug = self.model_name.replace(" ", "_")
+        param_file = os.path.join(self.hyperparam_save_dir, f"mle_{model_slug}.json")
+        needs_val = uses_xgboost_early_stopping or (
+            self.tune
+            and not uses_xgboost_early_stopping
+            and not os.path.exists(param_file)
         )
 
-        if self.tune:
+        X_train_fit = X_train.copy()
+        X_syn_fit = X_syn.copy()
+        X_val = None
+        X_syn_val = None
+        if needs_val:
+            stratify = self.task != "regression"
+            X_train_fit, X_val, _, _ = split_validation(
+                X_train,
+                X_train[self.target_column],
+                self.val_size,
+                self.random_state,
+                stratify=stratify,
+            )
+            X_syn_fit, X_syn_val, _, _ = split_validation(
+                X_syn,
+                X_syn[self.target_column],
+                self.val_size,
+                self.random_state,
+                stratify=stratify,
+            )
+
+        if self.tune and not uses_xgboost_early_stopping:
             # load tuned params from file if it exists
-            model_slug = self.model_name.replace(" ", "_")
-            param_file = f"{HYPERPARAM_SAVE_DIR}/mle_{model_slug}.json"
             if os.path.exists(param_file):
                 with open(param_file, "r") as f:
                     params = json.load(f)
             else:
                 # tune params and save to file
-                assert X_val is not None, "X_val must be provided when tune=True."
-                x_val = (
-                    X_syn.iloc[-len(X_val) :].copy()
-                    if self.train_set == "real"
-                    else X_val.copy()
-                )
-                x_val = x_val.drop(columns=[self.target_column])
-                y_val = (
-                    X_syn.iloc[-len(X_val) :][self.target_column].copy()
-                    if self.train_set == "real"
-                    else X_val[self.target_column].copy()
-                )
-
                 params = tune_ml_model(
-                    x_train,
-                    x_val,
-                    y_train,
-                    y_val,
+                    X_train_fit.drop(columns=[self.target_column]),
+                    X_val.drop(columns=[self.target_column]),
+                    X_train_fit[self.target_column],
+                    X_val[self.target_column],
                     self.discrete_features,
                     self.task,
                     self.model_name,
@@ -163,20 +189,29 @@ class MLE:
         else:
             params = self.model_params
 
-        synthetic_test = X_syn_test if X_syn_test is not None else X_syn
-        x_test = synthetic_test.copy() if self.train_set == "real" else X_test.copy()
-        x_test = x_test.drop(columns=[self.target_column])
-        y_test = (
-            synthetic_test[self.target_column].copy()
-            if self.train_set == "real"
-            else X_test[self.target_column].copy()
-        )
-
+        x_train_data = X_syn_fit if self.train_set == "synthetic" else X_train_fit
         score_fns = (
             [r2_score, root_mean_squared_error]
             if self.task == "regression"
             else [roc_auc_score, f1_score, accuracy_score]
         )
+
+        synthetic_test = X_syn_test if X_syn_test is not None else X_syn
+
+        if needs_val:
+            val_data = X_syn_val if self.train_set == "real" else X_val
+            x_val = val_data.drop(columns=[self.target_column])
+            y_val = val_data[self.target_column]
+        else:
+            x_val = None
+            y_val = None
+
+        x_train = x_train_data.drop(columns=[self.target_column])
+        y_train = x_train_data[self.target_column].copy()
+        x_test = synthetic_test.copy() if self.train_set == "real" else X_test.copy()
+        y_test = x_test[self.target_column].copy()
+        x_test = x_test.drop(columns=[self.target_column])
+
         scores = ml_task(
             x_train,
             x_test,
@@ -188,8 +223,34 @@ class MLE:
             params,
             random_state=self.random_state,
             score_fns=score_fns,
+            X_val=x_val,
+            y_val=y_val,
         )
         result = {}
         for key, value in scores.items():
             result[f"{self.name}.{key}"] = value
+        # add baseline scores (TRTR)
+        if needs_val:
+            x_val = X_val.copy().drop(columns=[self.target_column])
+            y_val = X_val[self.target_column].copy()
+        else:
+            x_val = None
+            y_val = None
+
+        baseline_scores = ml_task(
+            X_train_fit.drop(columns=[self.target_column]),
+            X_test.copy().drop(columns=[self.target_column]),
+            X_train_fit[self.target_column].copy(),
+            X_test[self.target_column].copy(),
+            self.discrete_features,
+            self.task,
+            self.model_name,
+            params,
+            random_state=self.random_state,
+            score_fns=score_fns,
+            X_val=x_val,
+            y_val=y_val,
+        )
+        for key, value in baseline_scores.items():
+            result[f"{self.name}.baseline.{key}"] = value
         return result

@@ -25,7 +25,7 @@ X = pd.read_csv("data.csv")
 discrete_features = ["category", "target"]
 
 processor = DataProcessor(
-    constraints=["total=part_a+part_b", "age>=18"],
+    constraints=["total=part_a+part_b"],
     missing_imputation_method="median",
     random_state=42,
 )
@@ -76,7 +76,7 @@ processor = DataProcessor(constraints=["total=part_a+part_b"])
 Inequality constraints store a difference during preprocessing and reconstruct the constrained column during postprocessing.
 
 ```python
-processor = DataProcessor(constraints=["age>=18", "income>expenses"])
+processor = DataProcessor(constraints=["income>expenses"])
 ```
 
 Constraints should already hold in the training data. Imputation can change constrained columns before the constraint transform runs, so constraints are most reliable when the constrained columns are complete or when the chosen imputation preserves the intended relationship.
@@ -104,11 +104,9 @@ Generator = get_generator("ctgan")
 generator = Generator(epochs=100, random_state=42)
 ```
 
-Common registry names include `arf`, `bn`, `ctgan`, `tvae`, `tabsyn`, `cdtd`, `tabargn`, `tabddpm`, `univariate`, and `smote`.
+## Custom Workflows
 
-## Custom Modular Workflows
-
-The modular setup is useful when you want to control the full workflow yourself instead of letting `SynthyverseGenerator` do every step. The core pattern is:
+Use the lower-level components when you want to control the full workflow yourself instead of letting `SynthyverseGenerator` do every step. The core pattern is:
 
 1. Fit a `DataProcessor` on real data.
 2. Train one or more low-level generators on the processed model-space data.
@@ -124,7 +122,7 @@ X_val = pd.read_csv("validation.csv")
 discrete_features = ["category", "target"]
 
 processor = DataProcessor(
-    constraints=["total=part_a+part_b", "age>=18"],
+    constraints=["total=part_a+part_b"],
     missing_imputation_method="median",
     random_state=42,
 )
@@ -175,7 +173,7 @@ for name, generator in generators.items():
     synthetic_sets[name] = processor.postprocess(generator.generate(1000))
 ```
 
-For configurable experiments, combine the registry with the same modular pattern.
+For configurable experiments, combine the registry with the same pattern.
 
 ```python
 from synthyverse.generators import get_generator
@@ -248,9 +246,9 @@ X_syn = wrapper.sample(500)
 Metric classes can be used directly when you want full control.
 
 ```python
-from synthyverse.evaluation import Wasserstein, DCR, MLE
+from synthyverse.evaluation import Marginals, DCR, MLE
 
-wasserstein = Wasserstein(discrete_features=discrete_features)
+marginals = Marginals(discrete_features=discrete_features)
 dcr = DCR(discrete_features=discrete_features)
 mle = MLE(
     target_column="target",
@@ -259,7 +257,7 @@ mle = MLE(
     random_state=42,
 )
 
-fidelity_results = wasserstein.evaluate(X_train=X_train, X_syn=X_syn)
+fidelity_results = marginals.evaluate(X_train=X_train, X_syn=X_syn)
 privacy_results = dcr.evaluate(X_train=X_train, X_syn=X_syn)
 utility_results = mle.evaluate(X_train=X_train, X_test=X_test, X_syn=X_syn, X_val=X_val)
 ```
@@ -271,7 +269,7 @@ from synthyverse.evaluation.eval import TabularMetricEvaluator
 
 evaluator = TabularMetricEvaluator(
     metrics={
-        "wasserstein": {},
+        "marginals": {},
         "dcr": {},
         "mle-tstr": {"train_set": "synthetic"},
         "mle-trts": {"train_set": "real"},
@@ -295,7 +293,7 @@ Metric registry names are resolved with `get_metric()`. The suffix after a dash 
 ```python
 from synthyverse.evaluation import get_metric
 
-Metric = get_metric("wasserstein")
+Metric = get_metric("marginals")
 metric = Metric(discrete_features=discrete_features)
 ```
 
@@ -319,7 +317,7 @@ benchmark = TabularSynthesisBenchmark(
 )
 
 results = benchmark.run(
-    metrics=["wasserstein", "dcr"],
+    metrics=["marginals", "dcr"],
     n_train_seeds=3,
     n_sets=2,
 )

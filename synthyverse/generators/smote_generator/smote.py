@@ -63,7 +63,7 @@ class SMOTEGenerator(BaseGenerator):
         self.n_jobs = n_jobs
         self.random_state = random_state
 
-    def _fit(self, X: pd.DataFrame, discrete_features: list, X_val: pd.DataFrame = None):
+    def _fit(self, X: pd.DataFrame, discrete_features: list):
 
         self.is_classification = self.target_column in discrete_features
 

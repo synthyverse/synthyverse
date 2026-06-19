@@ -1,3 +1,5 @@
+from importlib import import_module
+
 from .base import (
     BaseGenerator,
     ConstraintEnforcer,
@@ -7,119 +9,50 @@ from .base import (
     TabularSchema,
 )
 
-
-def _make_unavailable_generator(
-    class_name: str,
-    generator_name: str,
-    extra_name: str,
-    import_error: Exception,
-):
-    class _UnavailableGenerator:
-        name = generator_name
-
-        def __init__(self, *args, **kwargs):
-            raise ImportError(
-                f"{class_name} is unavailable because its dependencies could not be imported. "
-                f"Install the required extras with `pip install synthyverse[{extra_name}]` "
-                f"and verify the environment is healthy. Original import error: {import_error!r}"
-            )
-
-    _UnavailableGenerator.__name__ = class_name
-    return _UnavailableGenerator
+_GENERATORS = {
+    "ARFGenerator": (".arf_generator", "arf"),
+    "CTGANGenerator": (".ctgan_generator", "ctgan"),
+    "TVAEGenerator": (".tvae_generator", "tvae"),
+    "TabSynGenerator": (".tabsyn_generator", "tabsyn"),
+    "CDTDGenerator": (".cdtd_generator", "cdtd"),
+    "TabDDPMGenerator": (".tabddpm_generator", "tabddpm"),
+    "TabDiffGenerator": (".tabdiff_generator", "tabdiff"),
+    "UnivariateGenerator": (".univariate_generator", "univariate"),
+    "SMOTEGenerator": (".smote_generator", "smote"),
+    "SynthpopGenerator": (".synthpop_generator", "synthpop"),
+}
+_GENERATOR_BY_NAME = {name: cls for cls, (_, name) in _GENERATORS.items()}
 
 
-try:
-    from .arf_generator import ARFGenerator
-except Exception as exc:
-    ARFGenerator = _make_unavailable_generator("ARFGenerator", "arf", "arf", exc)
+def __getattr__(name: str):
+    if name == "all_generators":
+        all_generators = [__getattr__(cls) for cls in _GENERATORS]
+        globals()[name] = all_generators
+        return all_generators
+    if name in _GENERATORS:
+        module_name, _ = _GENERATORS[name]
+        generator = getattr(import_module(module_name, __name__), name)
+        globals()[name] = generator
+        return generator
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-try:
-    from .bn_generator import BNGenerator
-except Exception as exc:
-    BNGenerator = _make_unavailable_generator("BNGenerator", "bn", "bn", exc)
-
-try:
-    from .ctgan_generator import CTGANGenerator
-except Exception as exc:
-    CTGANGenerator = _make_unavailable_generator(
-        "CTGANGenerator", "ctgan", "ctgan", exc
-    )
-
-try:
-    from .tvae_generator import TVAEGenerator
-except Exception as exc:
-    TVAEGenerator = _make_unavailable_generator("TVAEGenerator", "tvae", "tvae", exc)
-
-try:
-    from .tabsyn_generator import TabSynGenerator
-except Exception as exc:
-    TabSynGenerator = _make_unavailable_generator(
-        "TabSynGenerator", "tabsyn", "tabsyn", exc
-    )
-
-try:
-    from .cdtd_generator import CDTDGenerator
-except Exception as exc:
-    CDTDGenerator = _make_unavailable_generator("CDTDGenerator", "cdtd", "cdtd", exc)
-
-try:
-    from .tabargn_generator import TabARGNGenerator
-except Exception as exc:
-    TabARGNGenerator = _make_unavailable_generator(
-        "TabARGNGenerator", "tabargn", "tabargn", exc
-    )
-
-try:
-    from .tabddpm_generator import TabDDPMGenerator
-except Exception as exc:
-    TabDDPMGenerator = _make_unavailable_generator(
-        "TabDDPMGenerator", "tabddpm", "tabddpm", exc
-    )
-
-
-try:
-    from .univariate_generator import UnivariateGenerator
-except Exception as exc:
-    UnivariateGenerator = _make_unavailable_generator(
-        "UnivariateGenerator", "univariate", "univariate", exc
-    )
-
-
-try:
-    from .smote_generator import SMOTEGenerator
-except Exception as exc:
-    SMOTEGenerator = _make_unavailable_generator(
-        "SMOTEGenerator", "smote", "smote", exc
-    )
 
 def get_generator(generator_name: str):
-    """Get a generator class by name.
-
-    Args:
-        generator_name: Name of the generator to retrieve.
-
-    Returns:
-        class: Generator class corresponding to the name.
-
-    Raises:
-        ValueError: If generator name is not found.
-    """
-    generator_map = {g.name: g for g in all_generators}
-    if generator_name not in generator_map.keys():
+    """Get a generator class by name."""
+    class_name = _GENERATOR_BY_NAME.get(generator_name)
+    if class_name is None:
         raise ValueError(f"Generator {generator_name} not found")
+    return __getattr__(class_name)
 
-    return generator_map[generator_name]
 
-
-all_generators = [
-    ARFGenerator,
-    BNGenerator,
-    CTGANGenerator,
-    TVAEGenerator,
-    TabSynGenerator,
-    CDTDGenerator,
-    TabARGNGenerator,
-    TabDDPMGenerator,
-    UnivariateGenerator,
-    SMOTEGenerator,
+__all__ = [
+    "BaseGenerator",
+    "ConstraintEnforcer",
+    "DataProcessor",
+    "SynthyverseGenerator",
+    "TabularImputer",
+    "TabularSchema",
+    *list(_GENERATORS),
+    "all_generators",
+    "get_generator",
 ]

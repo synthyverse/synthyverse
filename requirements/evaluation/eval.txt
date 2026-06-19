@@ -1,9 +1,0 @@
-torch
-geomloss
-pykeops
-pandas
-numpy
-scikit-learn
-xgboost
-optuna
-seaborn
