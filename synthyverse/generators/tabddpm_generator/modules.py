@@ -1,3 +1,5 @@
+# Third-party notice: based on Apache-2.0-licensed upstream code.
+# See THIRD_PARTY_NOTICES.md for attribution, NOTICE, and modification details.
 """
 Code was adapted from https://github.com/Yura52/rtdl
 """

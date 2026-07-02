@@ -1,3 +1,5 @@
+# Third-party notice: based on MIT/Apache-2.0-licensed upstream code.
+# See THIRD_PARTY_NOTICES.md for attribution and modification details.
 import torch.nn.functional as F
 import torch
 import math
@@ -284,9 +286,9 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
         category size (max number of classes).
 
         Args:
-            x (Tensor): The input tensor containing concatenated probabilities for all the categories in x_cat. 
+            x (Tensor): The input tensor containing concatenated probabilities for all the categories in x_cat.
                         [bs, sum(num_classes_w_mask)]
-            pad_value (float): The value filled into the dummy entries, which are padded to ensure all sub-tensors have equal size 
+            pad_value (float): The value filled into the dummy entries, which are padded to ensure all sub-tensors have equal size
                             along the last dimension.
 
         Returns:

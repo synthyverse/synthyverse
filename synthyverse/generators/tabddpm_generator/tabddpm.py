@@ -1,3 +1,5 @@
+# Third-party notice: based on Apache-2.0-licensed upstream code.
+# See THIRD_PARTY_NOTICES.md for attribution, NOTICE, and modification details.
 from collections.abc import Iterator
 from copy import deepcopy
 from pathlib import Path
@@ -6,7 +8,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.preprocessing import QuantileTransformer
+from sklearn.preprocessing import OrdinalEncoder, QuantileTransformer
 from tqdm import trange
 
 from ..base import BaseGenerator
@@ -30,7 +32,7 @@ class TabDDPMGenerator(BaseGenerator):
 
     TabDDPM combines continuous diffusion for numerical features with multinomial diffusion for categorical features.
 
-    We use the implementation from SynthCity, with some modifications to allow manual specification of discrete features.
+    Based on the implementation from the synthcity Python library: https://github.com/vanderschaarlab/synthcity/.
 
     Paper: "Tabddpm: Modelling tabular data with diffusion models" by Kotelnikov et al. (2023).
 
@@ -117,7 +119,9 @@ class TabDDPMGenerator(BaseGenerator):
             train = train.drop(columns=[self.target_column])
             cond = X[self.target_column]
             self.target_name = cond.name
-            self._labels, counts = np.unique(cond, return_counts=True)
+            self._labels, cond = np.unique(cond, return_inverse=True)
+            counts = np.bincount(cond)
+            cond = pd.Series(cond, index=X.index, name=self.target_name)
             self._cond_dist = counts / counts.sum()
 
         train = self._fit_transform(train, discrete_columns)
@@ -131,6 +135,12 @@ class TabDDPMGenerator(BaseGenerator):
         self.quantile_transformers = {}
 
         out = X.copy()
+        self.ordinal_encoder = None
+        if self.discrete_columns:
+            self.ordinal_encoder = OrdinalEncoder(dtype=np.int64)
+            out[self.discrete_columns] = self.ordinal_encoder.fit_transform(
+                out[self.discrete_columns]
+            )
         for col in out.columns:
             if col in self.discrete_columns:
                 continue
@@ -143,6 +153,10 @@ class TabDDPMGenerator(BaseGenerator):
         out = X.copy()
         for col, transformer in self.quantile_transformers.items():
             out[col] = transformer.inverse_transform(out[[col]]).reshape(-1)
+        if self.ordinal_encoder is not None:
+            out[self.discrete_columns] = self.ordinal_encoder.inverse_transform(
+                out[self.discrete_columns].round().astype(int)
+            )
         return out.astype(self.column_dtypes)
 
     def _fit_diffusion(
@@ -259,8 +273,9 @@ class TabDDPMGenerator(BaseGenerator):
     def _generate(self, n: int):
         cond = None
         if self.is_classification:
-            cond = np.random.choice(self._labels, size=n, p=self._cond_dist)
-            cond_tensor = torch.tensor(cond, dtype=torch.long, device=self.device)
+            cond_codes = np.random.choice(len(self._labels), size=n, p=self._cond_dist)
+            cond = self._labels[cond_codes]
+            cond_tensor = torch.tensor(cond_codes, dtype=torch.long, device=self.device)
         else:
             cond_tensor = None
 

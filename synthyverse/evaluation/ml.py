@@ -30,6 +30,17 @@ HYPERPARAM_SAVE_DIR = "synthyverse_hyperparams_tuned"
 def split_validation(X, y, val_size: float, random_state: int, stratify: bool = True):
     if not 0 < val_size < 1:
         raise ValueError("val_size must be between 0 and 1 when validation is needed.")
+    if stratify:
+        counts = pd.Series(y).value_counts()
+        if counts.min() < 2:
+            keep = pd.Series(y).isin(counts[counts > 1].index).to_numpy()
+            X = X.iloc[keep]
+            y = y.iloc[keep]
+            counts = pd.Series(y).value_counts()
+        n_classes = len(counts)
+        n_val = int(np.ceil(len(y) * val_size))
+        if n_val < n_classes or len(y) - n_val < n_classes:
+            raise ValueError("val_size is too small for stratified validation.")
     return train_test_split(
         X,
         y,
@@ -215,7 +226,13 @@ def score_ml_predictions(
 
         if key == "auc":
             if task == "multiclass":
-                value = fn(y_true, preds, average="micro", multi_class="ovr")
+                value = fn(
+                    y_true,
+                    preds,
+                    average="micro",
+                    multi_class="ovr",
+                    labels=np.arange(preds.shape[1]),
+                )
             else:
                 value = fn(y_true, preds)
         elif key == "f1":

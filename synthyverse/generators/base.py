@@ -403,7 +403,7 @@ class DataProcessor:
 
     Example:
         >>> import pandas as pd
-        >>> from synthyverse.generators import CTGANGenerator, DataProcessor
+        >>> from synthyverse.generators import DataProcessor, UnivariateGenerator
         >>>
         >>> X = pd.read_csv("data.csv")
         >>> discrete_features = ["category_col"]
@@ -415,7 +415,7 @@ class DataProcessor:
         ... )
         >>> X_processed = processor.preprocess(X, discrete_features)
         >>>
-        >>> generator = CTGANGenerator(epochs=300, random_state=42)
+        >>> generator = UnivariateGenerator(random_state=42)
         >>> generator.fit(X_processed, discrete_features)
         >>> X_syn = processor.postprocess(generator.generate(1000))
     """
@@ -700,8 +700,7 @@ class SynthyverseGenerator:
         >>>
         >>> # Create high-level wrapper around a low-level generator
         >>> generator = SynthyverseGenerator(
-        ...     "ctgan",
-        ...     generator_params={"epochs": 300, "batch_size": 500},
+        ...     "univariate",
         ...     missing_imputation_method="median",
         ...     random_state=42,
         ... )

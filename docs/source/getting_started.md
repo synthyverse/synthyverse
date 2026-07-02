@@ -5,6 +5,17 @@ Install synthyverse from PyPI:
 pip install synthyverse
 ```
 
+The base install is MIT licensed and excludes CTGAN-backed functionality.
+Install the optional CTGAN extra only when you need `CTGANGenerator` or
+`TVAEGenerator`:
+
+```bash
+pip install "synthyverse[ctgan]"
+```
+
+The `ctgan` dependency is distributed under the Business Source License. Review
+that license before using the CTGAN or TVAE generators.
+
 For local development from a clone:
 
 ```bash
@@ -19,8 +30,7 @@ The high-level `SynthyverseGenerator` wrapper combines shared preprocessing with
 from synthyverse.generators import SynthyverseGenerator
 
 generator = SynthyverseGenerator(
-    "ctgan",
-    generator_params={"epochs": 300},
+    "univariate",
     missing_imputation_method="median",
     random_state=42,
 )

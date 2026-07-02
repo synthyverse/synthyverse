@@ -1,3 +1,6 @@
 include README.md
 include LICENSE
+include NOTICE
+include THIRD_PARTY_NOTICES.md
+recursive-include LICENSES *
 include logo/*

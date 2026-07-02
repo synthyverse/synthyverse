@@ -86,22 +86,26 @@ Constraints should already hold in the training data. Imputation can change cons
 Every public generator inherits from `BaseGenerator` and follows the same public interface:
 
 ```python
-from synthyverse.generators import CTGANGenerator
+from synthyverse.generators import UnivariateGenerator
 
-generator = CTGANGenerator(epochs=300, batch_size=500, random_state=42)
+generator = UnivariateGenerator(random_state=42)
 generator.fit(X_model, discrete_features=discrete_features)
 X_syn_model = generator.generate(1000)
 ```
 
 Constructor arguments are generator-specific model hyperparameters. Shared preprocessing arguments such as `constraints` and `missing_imputation_method` belong on `DataProcessor` or `SynthyverseGenerator`, not on the low-level generator classes.
 
+`CTGANGenerator` and `TVAEGenerator` require `pip install "synthyverse[ctgan]"`.
+That extra installs the third-party `ctgan` package under the Business Source
+License, so review that license before using those generators.
+
 You can resolve generators by registry name when building configurable workflows.
 
 ```python
 from synthyverse.generators import get_generator
 
-Generator = get_generator("ctgan")
-generator = Generator(epochs=100, random_state=42)
+Generator = get_generator("univariate")
+generator = Generator(random_state=42)
 ```
 
 ## Custom Workflows
@@ -115,7 +119,7 @@ Use the lower-level components when you want to control the full workflow yourse
 
 ```python
 import pandas as pd
-from synthyverse.generators import CTGANGenerator, DataProcessor
+from synthyverse.generators import DataProcessor, UnivariateGenerator
 
 X_train = pd.read_csv("train.csv")
 X_val = pd.read_csv("validation.csv")
@@ -133,12 +137,8 @@ X_train_model, X_val_model = processor.preprocess(
     X_val=X_val,
 )
 
-generator = CTGANGenerator(epochs=300, batch_size=500, random_state=42)
-generator.fit(
-    X_train_model,
-    discrete_features=discrete_features,
-    X_val=X_val_model,
-)
+generator = UnivariateGenerator(random_state=42)
+generator.fit(X_train_model, discrete_features=discrete_features)
 
 X_syn_model = generator.generate(1000)
 X_syn = processor.postprocess(X_syn_model)
@@ -156,20 +156,16 @@ X_syn_test = processor.postprocess(generator.generate(len(X_test)))
 You can also reuse one processed dataset across multiple generators. This keeps preprocessing fixed while you compare model behavior.
 
 ```python
-from synthyverse.generators import CTGANGenerator, TVAEGenerator
+from synthyverse.generators import ARFGenerator, UnivariateGenerator
 
 generators = {
-    "ctgan": CTGANGenerator(epochs=300, random_state=42),
-    "tvae": TVAEGenerator(epochs=300, random_state=42),
+    "univariate": UnivariateGenerator(random_state=42),
+    "arf": ARFGenerator(num_trees=20, random_state=42),
 }
 
 synthetic_sets = {}
 for name, generator in generators.items():
-    generator.fit(
-        X_train_model,
-        discrete_features=discrete_features,
-        X_val=X_val_model,
-    )
+    generator.fit(X_train_model, discrete_features=discrete_features)
     synthetic_sets[name] = processor.postprocess(generator.generate(1000))
 ```
 
@@ -179,8 +175,8 @@ For configurable experiments, combine the registry with the same pattern.
 from synthyverse.generators import get_generator
 
 generator_configs = {
-    "ctgan": {"epochs": 300, "batch_size": 500},
-    "tvae": {"epochs": 300},
+    "univariate": {},
+    "arf": {"num_trees": 20},
 }
 
 synthetic_sets = {}
@@ -196,10 +192,10 @@ When you need persistence, save the processor and each low-level generator separ
 
 ```python
 processor.save("saved_models/shared_processor")
-generator.save("saved_models/ctgan_low_level")
+generator.save("saved_models/univariate_low_level")
 
 loaded_processor = DataProcessor.load("saved_models/shared_processor")
-loaded_generator = CTGANGenerator.load("saved_models/ctgan_low_level")
+loaded_generator = UnivariateGenerator.load("saved_models/univariate_low_level")
 
 X_syn_model = loaded_generator.generate(1000)
 X_syn = loaded_processor.postprocess(X_syn_model)
@@ -213,8 +209,7 @@ X_syn = loaded_processor.postprocess(X_syn_model)
 from synthyverse.generators import SynthyverseGenerator
 
 generator = SynthyverseGenerator(
-    "ctgan",
-    generator_params={"epochs": 300, "batch_size": 500},
+    "univariate",
     constraints=["total=part_a+part_b"],
     missing_imputation_method="median",
     random_state=42,
@@ -229,11 +224,11 @@ The wrapper preprocesses `X`, fits the low-level generator, samples model-space 
 You can also pass a preconfigured processor.
 
 ```python
-from synthyverse.generators import DataProcessor, SynthyverseGenerator, TVAEGenerator
+from synthyverse.generators import DataProcessor, SynthyverseGenerator, UnivariateGenerator
 
 processor = DataProcessor(missing_imputation_method="most_frequent", random_state=42)
 wrapper = SynthyverseGenerator(
-    TVAEGenerator(epochs=100, random_state=42),
+    UnivariateGenerator(random_state=42),
     processor=processor,
 )
 
@@ -306,9 +301,9 @@ from synthyverse.benchmark.synthesis import TabularSynthesisBenchmark
 
 benchmark = TabularSynthesisBenchmark(
     X=X,
-    save_dir="runs/ctgan",
-    generator="ctgan",
-    generator_params={"epochs": 300, "batch_size": 500},
+    save_dir="runs/univariate",
+    generator="univariate",
+    generator_params={},
     categorical_features=discrete_features,
     target_column="target",
     constraints=["total=part_a+part_b"],
@@ -339,13 +334,13 @@ results = benchmark.eval(
 Low-level generators save their fitted state in a directory containing `generator.pkl`.
 
 ```python
-from synthyverse.generators import CTGANGenerator
+from synthyverse.generators import UnivariateGenerator
 
-generator = CTGANGenerator(epochs=300, random_state=42)
+generator = UnivariateGenerator(random_state=42)
 generator.fit(X_model, discrete_features)
-generator.save("saved_models/ctgan_low_level")
+generator.save("saved_models/univariate_low_level")
 
-loaded = CTGANGenerator.load("saved_models/ctgan_low_level")
+loaded = UnivariateGenerator.load("saved_models/univariate_low_level")
 X_syn_model = loaded.generate(1000)
 ```
 
@@ -361,11 +356,11 @@ loaded_processor = DataProcessor.load("saved_models/processor")
 `SynthyverseGenerator` saves the wrapper state, processor, and wrapped generator together. This is the easiest persistence option when you want to generate data in the original schema after loading.
 
 ```python
-generator = SynthyverseGenerator("ctgan", generator_params={"epochs": 300})
+generator = SynthyverseGenerator("univariate")
 generator.fit(X, discrete_features=discrete_features)
-generator.save("saved_models/ctgan_wrapper")
+generator.save("saved_models/univariate_wrapper")
 
-loaded = SynthyverseGenerator.load("saved_models/ctgan_wrapper")
+loaded = SynthyverseGenerator.load("saved_models/univariate_wrapper")
 X_syn = loaded.generate(1000)
 ```
 

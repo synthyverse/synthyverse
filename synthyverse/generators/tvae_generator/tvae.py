@@ -1,12 +1,10 @@
-from ctgan import TVAE
-from ctgan.synthesizers.tvae import Encoder
-from ...utils.utils import (
-    get_total_trainable_params,
-    resolve_epochs_from_training_steps,
-)
+# Third-party notice: this wrapper requires the BSL-licensed ctgan package.
+# See THIRD_PARTY_NOTICES.md and LICENSES/CTGAN-BSL-1.1.txt.
+from ...utils.utils import resolve_epochs_from_training_steps
 
 import pandas as pd
 
+from .._optional import require_ctgan
 from ..base import BaseGenerator
 from ..persistence import load_generator_state, save_generator_state
 
@@ -72,6 +70,7 @@ class TVAEGenerator(BaseGenerator):
         verbose=True,
         random_state: int = 0,
     ):
+        require_ctgan()
         self.random_state = random_state
         self.embedding_dim = embedding_dim
         self.compress_dims = compress_dims
@@ -85,6 +84,8 @@ class TVAEGenerator(BaseGenerator):
         self.verbose = verbose
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
+        from ctgan import TVAE
+
         epochs = resolve_epochs_from_training_steps(
             self.epochs,
             self.training_steps,
@@ -106,16 +107,6 @@ class TVAEGenerator(BaseGenerator):
 
         self.model.fit(X, discrete_features)
 
-        encoder = Encoder(
-            self.model.transformer.output_dimensions,
-            self.compress_dims,
-            self.model.embedding_dim,
-        )
-        encoder_params = get_total_trainable_params(encoder)
-        decoder_params = get_total_trainable_params(self.model.decoder)
-
-        print(f"total trainable parameters: {encoder_params + decoder_params}")
-
         return self
 
     def _generate(self, n: int):
@@ -131,6 +122,7 @@ class TVAEGenerator(BaseGenerator):
 
     @classmethod
     def load(cls, path):
+        require_ctgan()
         state = load_generator_state(path)
         generator = cls.__new__(cls)
         if isinstance(state, dict):

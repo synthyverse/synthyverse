@@ -1,3 +1,5 @@
+# Third-party notice: based on MIT-licensed upstream code.
+# See THIRD_PARTY_NOTICES.md for attribution and modification details.
 from copy import deepcopy
 from pathlib import Path
 from typing import Literal
@@ -11,7 +13,10 @@ from tqdm import tqdm
 
 from ..base import BaseGenerator
 from ..persistence import load_generator_state, restore_generator, save_generator_state
-from ...utils.utils import get_total_trainable_params, resolve_epochs_from_training_steps
+from ...utils.utils import (
+    get_total_trainable_params,
+    resolve_epochs_from_training_steps,
+)
 from ..dgm_utils import FastTensorDataLoader
 from .diffusion import UnifiedCtimeDiffusion
 from .modules import Model, UniModMLP
@@ -33,9 +38,9 @@ class TabDiffGenerator(BaseGenerator):
     TabDiff uses a joint continuous-time diffusion process for numerical and categorical features, with
     feature-wise learnable noise schedules.
 
-    Paper: "Tabdiff: a mixed-type diffusion model for tabular data generation" by Shi et al. (2025).
+    Based on the implementation from the original paper: https://github.com/MinkaiXu/TabDiff/.
 
-    Based on the implementation from: https://github.com/MinkaiXu/TabDiff/.
+    Paper: "Tabdiff: a mixed-type diffusion model for tabular data generation" by Shi et al. (2025).
 
     Args:
         epochs (int): Number of training epochs. Default: 8000.

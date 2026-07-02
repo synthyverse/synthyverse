@@ -1,6 +1,7 @@
 import json
 import os
 
+import numpy as np
 import pandas as pd
 
 from sklearn.metrics import (
@@ -10,10 +11,12 @@ from sklearn.metrics import (
     f1_score,
     accuracy_score,
 )
+from sklearn.preprocessing import LabelEncoder
 from .ml import (
     HYPERPARAM_SAVE_DIR,
     ml_task,
     resolve_model_name,
+    score_ml_predictions,
     split_validation,
     tune_ml_model,
 )
@@ -102,7 +105,6 @@ class MLE:
         X_train: pd.DataFrame,
         X_test: pd.DataFrame,
         X_syn: pd.DataFrame,
-        X_syn_test: pd.DataFrame = None,
     ):
         """Evaluate synthetic data utility using machine learning efficacy.
 
@@ -110,17 +112,12 @@ class MLE:
             X_train: Real training data as a pandas DataFrame.
             X_test: Real test data as a pandas DataFrame.
             X_syn: Synthetic training data as a pandas DataFrame.
-            X_syn_test: Optional synthetic test data used when train_set="real".
 
         Returns:
             dict: Dictionary with metric scores for the configured train/test
                 direction plus a real-train/real-test baseline. Baseline keys
                 have the form "mle.baseline.<score>".
         """
-
-        assert not (
-            X_syn_test is None and self.train_set == "real"
-        ), "X_syn_test must be provided when train_set=real, since we need to evaluate on a synthetic test set."
 
         self.task = (
             "regression"
@@ -147,6 +144,14 @@ class MLE:
         X_syn_fit = X_syn.copy()
         X_val = None
         X_syn_val = None
+        constant_label = None
+        if (
+            self.task != "regression"
+            and self.train_set == "synthetic"
+            and X_syn[self.target_column].nunique() == 1
+        ):
+            constant_label = X_syn[self.target_column].iloc[0]
+
         if needs_val:
             stratify = self.task != "regression"
             X_train_fit, X_val, _, _ = split_validation(
@@ -156,13 +161,26 @@ class MLE:
                 self.random_state,
                 stratify=stratify,
             )
-            X_syn_fit, X_syn_val, _, _ = split_validation(
-                X_syn,
-                X_syn[self.target_column],
-                self.val_size,
-                self.random_state,
-                stratify=stratify,
-            )
+            if constant_label is None:
+                X_syn_split = X_syn
+                if self.task != "regression":
+                    label_counts = X_syn_split[self.target_column].value_counts()
+                    X_syn_split = X_syn_split[
+                        X_syn_split[self.target_column].isin(
+                            label_counts[label_counts > 1].index
+                        )
+                    ]
+                X_syn_fit, X_syn_val, _, _ = split_validation(
+                    X_syn_split,
+                    X_syn_split[self.target_column],
+                    self.val_size,
+                    self.random_state,
+                    stratify=stratify,
+                )
+                if self.train_set == "synthetic" and (
+                    X_syn_fit[self.target_column].nunique() == 1
+                ):
+                    constant_label = X_syn_fit[self.target_column].iloc[0]
 
         if self.tune and not uses_xgboost_early_stopping:
             # load tuned params from file if it exists
@@ -196,8 +214,6 @@ class MLE:
             else [roc_auc_score, f1_score, accuracy_score]
         )
 
-        synthetic_test = X_syn_test if X_syn_test is not None else X_syn
-
         if needs_val:
             val_data = X_syn_val if self.train_set == "real" else X_val
             x_val = val_data.drop(columns=[self.target_column])
@@ -208,24 +224,60 @@ class MLE:
 
         x_train = x_train_data.drop(columns=[self.target_column])
         y_train = x_train_data[self.target_column].copy()
-        x_test = synthetic_test.copy() if self.train_set == "real" else X_test.copy()
+        x_test = (
+            X_syn.sample(n=len(X_test), random_state=self.random_state).copy()
+            if self.train_set == "real"
+            else X_test.copy()
+        )
         y_test = x_test[self.target_column].copy()
         x_test = x_test.drop(columns=[self.target_column])
+        task = self.task
+        if task == "multiclass" and y_train.nunique() == 2:
+            task = "binary"
 
-        scores = ml_task(
-            x_train,
-            x_test,
-            y_train,
-            y_test,
-            self.discrete_features,
-            self.task,
-            self.model_name,
-            params,
-            random_state=self.random_state,
-            score_fns=score_fns,
-            X_val=x_val,
-            y_val=y_val,
-        )
+        if constant_label is None:
+            scores = ml_task(
+                x_train,
+                x_test,
+                y_train,
+                y_test,
+                self.discrete_features,
+                task,
+                self.model_name,
+                params,
+                random_state=self.random_state,
+                score_fns=score_fns,
+                X_val=x_val,
+                y_val=y_val,
+            )
+        else:
+            target_preprocessor = LabelEncoder()
+            target_preprocessor.fit(
+                pd.concat(
+                    [
+                        X_train[self.target_column],
+                        y_test,
+                        pd.Series([constant_label]),
+                    ]
+                )
+            )
+            y_test_transformed = target_preprocessor.transform(y_test)
+            constant_label_transformed = target_preprocessor.transform(
+                [constant_label]
+            )[0]
+            pred_labels = np.full(len(y_test), constant_label_transformed)
+            if self.task == "multiclass":
+                preds = np.zeros((len(y_test), len(target_preprocessor.classes_)))
+                preds[:, constant_label_transformed] = 1.0
+            else:
+                preds = pred_labels.astype(float)
+            scores = score_ml_predictions(
+                y_test_transformed,
+                preds,
+                pred_labels,
+                score_fns,
+                task,
+            )
         result = {}
         for key, value in scores.items():
             result[f"{self.name}.{key}"] = value

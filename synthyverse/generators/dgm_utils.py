@@ -55,12 +55,7 @@ class MLPDiffusion(nn.Module):
 
 
 class FastTensorDataLoader:
-    """
-    A DataLoader-like object for a set of tensors that can be much faster than
-    TensorDataset + DataLoader because dataloader grabs individual indices of
-    the dataset and calls cat (slow).
-    Adapted from: https://discuss.pytorch.org/t/dataloader-much-slower-than-manual-batching/27014/6
-    """
+    """Iterate over categorical and continuous tensors in mini-batches."""
 
     def __init__(self, X_cat, X_cont, batch_size=32, shuffle=False, drop_last=False):
         self.dataset_len = X_cat.shape[0] if X_cat is not None else X_cont.shape[0]

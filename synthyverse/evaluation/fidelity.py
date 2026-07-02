@@ -1,3 +1,5 @@
+# Third-party notice: selected fidelity metrics include upstream-derived code.
+# See THIRD_PARTY_NOTICES.md for attribution, NOTICE, and modification details.
 import numpy as np
 import pandas as pd
 import json
@@ -220,6 +222,8 @@ class AlphaPrecisionBetaRecall:
     """Alpha-Precision, Beta-Recall score.
 
     Paper: "How faithful is your synthetic data? sample-level metrics for evaluating and auditing generative models" by Alaa et al. (2022).
+
+    Based on the implementation from the synthcity Python library: https://github.com/vanderschaarlab/synthcity/.
 
     Args:
         discrete_features (list): List of discrete/categorical feature names. Default: [].
@@ -604,7 +608,8 @@ class ShapeTrend:
         >>> from synthyverse.evaluation import ShapeTrend
         >>>
         >>> # Prepare data
-        >>> X_real = pd.DataFrame(...)
+        >>> X_train = pd.DataFrame(...)
+        >>> X_test = pd.DataFrame(...)
         >>> X_syn = pd.DataFrame(...)
         >>> discrete_features = ["category_col"]
         >>>
@@ -612,7 +617,7 @@ class ShapeTrend:
         >>> metric = ShapeTrend(discrete_features=discrete_features)
         >>>
         >>> # Evaluate
-        >>> results = metric.evaluate(X_real, X_syn)
+        >>> results = metric.evaluate(X_train, X_test, X_syn)
     """
 
     name = "shapetrend"
@@ -638,22 +643,36 @@ class ShapeTrend:
     def evaluate(
         self,
         X_train: pd.DataFrame,
+        X_test: pd.DataFrame,
         X_syn: pd.DataFrame,
     ):
         """Evaluate synthetic data using SDMetrics shape and trend scores.
 
         Args:
             X_train: Real training data as a pandas DataFrame.
+            X_test: Real test data as a pandas DataFrame.
             X_syn: Synthetic data as a pandas DataFrame.
 
         Returns:
             dict: Dictionary with keys:
-                - "shapetrend.shape": Column shapes score
-                - "shapetrend.trend": Column pair trends score
+                - "shapetrend.train.shape": Training column shapes score
+                - "shapetrend.train.trend": Training column pair trends score
+                - "shapetrend.test.shape": Test column shapes score
+                - "shapetrend.test.trend": Test column pair trends score
         """
 
-        rd = X_train.copy()
-        sd = X_syn[X_train.columns].copy()
+        result = {}
+        for split, real, syn in (
+            ("train", X_train, X_syn),
+            ("test", X_test, X_syn),
+        ):
+            scores = self._evaluate_split(real, syn)
+            result.update({f"{self.name}.{split}.{k}": v for k, v in scores.items()})
+        return result
+
+    def _evaluate_split(self, real: pd.DataFrame, syn: pd.DataFrame) -> dict:
+        rd = real.copy()
+        sd = syn[real.columns].copy()
         cols = rd.columns.tolist()
 
         shape_scores = []
@@ -676,8 +695,8 @@ class ShapeTrend:
 
         trend = float(np.mean(trend_scores))
         return {
-            f"{self.name}.shape": float(shape),
-            f"{self.name}.trend": float(trend),
+            "shape": float(shape),
+            "trend": float(trend),
         }
 
     def _trend_score(
@@ -786,7 +805,8 @@ class Marginals:
         >>> from synthyverse.evaluation import Marginals
         >>>
         >>> # Prepare data
-        >>> X_real = pd.DataFrame(...)
+        >>> X_train = pd.DataFrame(...)
+        >>> X_test = pd.DataFrame(...)
         >>> X_syn = pd.DataFrame(...)
         >>> discrete_features = ["category_col"]
         >>>
@@ -796,7 +816,7 @@ class Marginals:
         ... )
         >>>
         >>> # Evaluate
-        >>> results = metric.evaluate(X_real, X_syn)
+        >>> results = metric.evaluate(X_train, X_test, X_syn)
     """
 
     name = "marginals"
@@ -815,20 +835,38 @@ class Marginals:
         if self.n_bins_numerical < 2:
             raise ValueError("n_bins_numerical must be >= 2")
 
-    def evaluate(self, X_train: pd.DataFrame, X_syn: pd.DataFrame):
+    def evaluate(
+        self,
+        X_train: pd.DataFrame,
+        X_test: pd.DataFrame,
+        X_syn: pd.DataFrame,
+    ):
         """Evaluate synthetic data by comparing marginal distributions.
 
         Args:
             X_train: Real training data as a pandas DataFrame.
+            X_test: Real test data as a pandas DataFrame.
             X_syn: Synthetic data as a pandas DataFrame.
 
         Returns:
             dict: Dictionary with keys:
-                - "marginals.num_<distance>": Mean distance over numerical features
-                - "marginals.cat_<distance>": Mean distance over categorical features
+                - "marginals.train.num_<distance>": Training numerical distance
+                - "marginals.train.cat_<distance>": Training categorical distance
+                - "marginals.test.num_<distance>": Test numerical distance
+                - "marginals.test.cat_<distance>": Test categorical distance
         """
-        rd = X_train.copy()
-        sd = X_syn.copy()
+        result = {}
+        for split, real, syn in (
+            ("train", X_train, X_syn),
+            ("test", X_test, X_syn),
+        ):
+            scores = self._evaluate_split(real, syn)
+            result.update({f"{self.name}.{split}.{k}": v for k, v in scores.items()})
+        return result
+
+    def _evaluate_split(self, real: pd.DataFrame, syn: pd.DataFrame) -> dict:
+        rd = real.copy()
+        sd = syn[real.columns].copy()
 
         numerical_features = [c for c in rd.columns if c not in self.discrete_features]
 
@@ -850,17 +888,13 @@ class Marginals:
                     num.append(dist_func[distance](rd_binned[col], sd_binned[col]))
                 else:
                     num.append(dist_func[distance](rd[col], sd[col]))
-            result[f"{self.name}.num_{distance}"] = (
-                float(np.mean(num)) if len(num) else np.nan
-            )
+            result[f"num_{distance}"] = float(np.mean(num)) if len(num) else np.nan
 
         for distance in self.categorical_distances:
             cat = []
             for col in self.discrete_features:
                 cat.append(dist_func[distance](rd[col], sd[col]))
-            result[f"{self.name}.cat_{distance}"] = (
-                float(np.mean(cat)) if len(cat) else np.nan
-            )
+            result[f"cat_{distance}"] = float(np.mean(cat)) if len(cat) else np.nan
 
         return result
 
@@ -995,7 +1029,8 @@ class Correlations:
         >>> from synthyverse.evaluation import Correlations
         >>>
         >>> # Prepare data
-        >>> X_real = pd.DataFrame(...)
+        >>> X_train = pd.DataFrame(...)
+        >>> X_test = pd.DataFrame(...)
         >>> X_syn = pd.DataFrame(...)
         >>> discrete_features = ["category_col"]
         >>>
@@ -1007,7 +1042,7 @@ class Correlations:
         ... )
         >>>
         >>> # Evaluate
-        >>> results = metric.evaluate(X_real, X_syn)
+        >>> results = metric.evaluate(X_train, X_test, X_syn)
     """
 
     name = "correlations"
@@ -1025,21 +1060,42 @@ class Correlations:
         self.img_save_path = img_save_path
         self.file_format = file_format.lower().lstrip(".")
 
-    def evaluate(self, X_train: pd.DataFrame, X_syn: pd.DataFrame):
+    def evaluate(
+        self,
+        X_train: pd.DataFrame,
+        X_test: pd.DataFrame,
+        X_syn: pd.DataFrame,
+    ):
         """Evaluate synthetic data by comparing pairwise correlation matrices.
 
         Args:
             X_train: Real training data as a pandas DataFrame.
+            X_test: Real test data as a pandas DataFrame.
             X_syn: Synthetic data as a pandas DataFrame.
 
         Returns:
             dict: Dictionary with key:
-                - "correlations.l2": L2 norm of the absolute difference between
-                  the real and synthetic correlation matrices
-                - "correlations.img_paths": Saved plot paths when img_save_path is set
+                - "correlations.train.l2": Training correlation matrix L2 distance
+                - "correlations.test.l2": Test correlation matrix L2 distance
+                - "correlations.<split>.img_paths": Saved plot path when img_save_path is set
         """
-        rd = X_train.copy()
-        sd = X_syn.copy()
+        result = {}
+        for split, real, syn in (
+            ("train", X_train, X_syn),
+            ("test", X_test, X_syn),
+        ):
+            scores = self._evaluate_split(real, syn, split)
+            result.update({f"{self.name}.{split}.{k}": v for k, v in scores.items()})
+        return result
+
+    def _evaluate_split(
+        self,
+        real: pd.DataFrame,
+        syn: pd.DataFrame,
+        split: str,
+    ) -> dict:
+        rd = real.copy()
+        sd = syn[real.columns].copy()
 
         cols = rd.columns.tolist()
         n = len(cols)
@@ -1063,13 +1119,11 @@ class Correlations:
         l2 = np.linalg.norm(diff)
 
         result = {
-            f"{self.name}.l2": float(l2),
+            "l2": float(l2),
         }
 
         if self.img_save_path:
-            result[f"{self.name}.img_paths"] = self._save_corr_plots(
-                C_rd, C_sd, diff, cols
-            )
+            result["img_paths"] = self._save_corr_plots(C_rd, C_sd, diff, cols, split)
 
         return result
 
@@ -1148,17 +1202,16 @@ class Correlations:
         C_sd: np.ndarray,
         diff: np.ndarray,
         cols: list,
+        split: str,
     ) -> list:
         save_dir, prefix, file_format = self._resolve_img_save_path()
         os.makedirs(save_dir, exist_ok=True)
 
-        matrix_path = os.path.join(save_dir, f"{prefix}matrices.{file_format}")
-        diff_path = os.path.join(save_dir, f"{prefix}diff.{file_format}")
+        path = os.path.join(save_dir, f"{prefix}{split}_matrices.{file_format}")
 
-        self._plot_corr_matrices(C_rd, C_sd, cols, matrix_path)
-        self._plot_corr_diff(diff, cols, diff_path)
+        self._plot_corr_matrices(C_rd, C_sd, diff, cols, path)
 
-        return [os.path.abspath(matrix_path), os.path.abspath(diff_path)]
+        return [os.path.abspath(path)]
 
     def _resolve_img_save_path(self) -> tuple[str, str, str]:
         path = os.fspath(self.img_save_path)
@@ -1179,13 +1232,16 @@ class Correlations:
         self,
         C_rd: np.ndarray,
         C_sd: np.ndarray,
+        diff: np.ndarray,
         cols: list,
         path: str,
     ):
         fig, axes = plt.subplots(
-            1, 2, figsize=self._heatmap_figsize(cols, 2), constrained_layout=True
+            1, 3, figsize=self._heatmap_figsize(cols, 3), constrained_layout=True
         )
-        for ax, matrix, title in zip(axes, [C_rd, C_sd], ["Real", "Synthetic"]):
+        for i, (ax, matrix, title) in enumerate(
+            zip(axes[:2], [C_rd, C_sd], ["Real", "Synthetic"])
+        ):
             sns.heatmap(
                 matrix,
                 ax=ax,
@@ -1195,37 +1251,32 @@ class Correlations:
                 center=0,
                 square=True,
                 xticklabels=cols,
-                yticklabels=cols,
+                yticklabels=cols if i == 0 else False,
                 cbar=False,
             )
             ax.set_title(title)
             self._format_heatmap_axis(ax)
 
-        fig.colorbar(
-            axes[-1].collections[0],
-            ax=axes.tolist(),
-            shrink=0.8,
-            ticks=np.linspace(-1, 1, 5),
-        )
-        fig.savefig(path, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-
-    def _plot_corr_diff(self, diff: np.ndarray, cols: list, path: str):
-        fig, ax = plt.subplots(figsize=self._heatmap_figsize(cols, 1))
         sns.heatmap(
             diff,
-            ax=ax,
+            ax=axes[2],
             cmap="viridis",
             vmin=0,
             square=True,
             xticklabels=cols,
-            yticklabels=cols,
-            cbar_kws={"shrink": 0.8},
+            yticklabels=False,
+            cbar=False,
         )
-        ax.set_title("Absolute Difference")
-        self._format_heatmap_axis(ax)
+        axes[2].set_title("Absolute Difference")
+        self._format_heatmap_axis(axes[2])
 
-        fig.tight_layout()
+        fig.colorbar(
+            axes[1].collections[0],
+            ax=axes[:2].tolist(),
+            shrink=0.8,
+            ticks=np.linspace(-1, 1, 5),
+        )
+        fig.colorbar(axes[2].collections[0], ax=axes[2], shrink=0.8)
         fig.savefig(path, dpi=150, bbox_inches="tight")
         plt.close(fig)
 
@@ -1536,7 +1587,8 @@ class NMI:
         >>> from synthyverse.evaluation import NMI
         >>>
         >>> # Prepare data
-        >>> X_real = pd.DataFrame(...)
+        >>> X_train = pd.DataFrame(...)
+        >>> X_test = pd.DataFrame(...)
         >>> X_syn = pd.DataFrame(...)
         >>> discrete_features = ["category_col"]
         >>>
@@ -1544,7 +1596,7 @@ class NMI:
         >>> metric = NMI(discrete_features=discrete_features)
         >>>
         >>> # Evaluate
-        >>> results = metric.evaluate(X_real, X_syn)
+        >>> results = metric.evaluate(X_train, X_test, X_syn)
     """
 
     name = "nmi"
@@ -1562,23 +1614,40 @@ class NMI:
         if self.n_bins_numerical < 2:
             raise ValueError("n_bins_numerical must be >= 2")
 
-    def evaluate(self, X_train: pd.DataFrame, X_syn: pd.DataFrame):
+    def evaluate(
+        self,
+        X_train: pd.DataFrame,
+        X_test: pd.DataFrame,
+        X_syn: pd.DataFrame,
+    ):
         """Evaluate synthetic data by comparing pairwise NMI values.
 
         Args:
             X_train: Real training data as a pandas DataFrame.
+            X_test: Real test data as a pandas DataFrame.
             X_syn: Synthetic data as a pandas DataFrame.
 
         Returns:
             dict: Dictionary with key:
-                - "nmi.score": Weighted pairwise NMI preservation score
+                - "nmi.train.score": Training weighted pairwise NMI preservation score
+                - "nmi.test.score": Test weighted pairwise NMI preservation score
         """
-        rd = X_train.copy()
-        sd = X_syn.copy()
+        result = {}
+        for split, real, syn in (
+            ("train", X_train, X_syn),
+            ("test", X_test, X_syn),
+        ):
+            scores = self._evaluate_split(real, syn)
+            result.update({f"{self.name}.{split}.{k}": v for k, v in scores.items()})
+        return result
+
+    def _evaluate_split(self, real: pd.DataFrame, syn: pd.DataFrame) -> dict:
+        rd = real.copy()
+        sd = syn[real.columns].copy()
 
         cols = rd.columns.tolist()
         if len(cols) < 2:
-            return {f"{self.name}.score": np.nan}
+            return {"score": np.nan}
 
         numerical_features = [c for c in cols if c not in self.discrete_features]
 
@@ -1609,9 +1678,7 @@ class NMI:
         else:
             score = np.sum((weights / weight_sum) * scores)
 
-        return {
-            f"{self.name}.score": float(score),
-        }
+        return {"score": float(score)}
 
     def _nmi(self, s1: pd.Series, s2: pd.Series) -> float:
         x = self._to_codes(s1)

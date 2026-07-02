@@ -1,3 +1,5 @@
+# Third-party notice: based on MIT-licensed upstream code.
+# See THIRD_PARTY_NOTICES.md for attribution and modification details.
 import pandas as pd
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
@@ -15,10 +17,12 @@ class SMOTEGenerator(BaseGenerator):
     Creates synthetic samples via interpolation in feature space using
     SMOTE.
 
+    Based on the implementation from https://github.com/muellermarkus/cdtd/blob/main/experiments/experiment_smote.py.
+
     For classification tasks, the provided target column is used directly for
     class-conditional oversampling. For regression tasks, a pseudo-binary target is
     derived by splitting the target at its median, following a strategy similar to the
-    TabDDPM paper.
+    TabDDPM paper ("Tabddpm: Modelling tabular data with diffusion models" by Kotelnikov et al. (2023))
 
 
     Args:
@@ -171,10 +175,11 @@ class SMOTEGenerator(BaseGenerator):
             syn_y = pd.Series(syn_y, name=self.target_column)
             syn_X = pd.concat([syn_X, syn_y], axis=1)
 
-        syn_X[self.discrete_features] = syn_X[self.discrete_features].astype(int)
+        discrete_features = list(self.ordinal_encoder.feature_names_in_)
+        syn_X[discrete_features] = syn_X[discrete_features].astype(int)
 
-        syn_X[self.discrete_features] = self.ordinal_encoder.inverse_transform(
-            syn_X[self.discrete_features]
+        syn_X[discrete_features] = self.ordinal_encoder.inverse_transform(
+            syn_X[discrete_features]
         )
 
         return syn_X

@@ -1,5 +1,7 @@
+# Third-party notice: based on MIT-licensed upstream code.
+# See THIRD_PARTY_NOTICES.md for attribution and modification details.
 import pandas as pd
-from arfpy.arf import arf
+from .model import arf
 import numpy as np
 
 from ..base import BaseGenerator
@@ -11,7 +13,7 @@ class ARFGenerator(BaseGenerator):
 
     ARF leverages random forests in alternating rounds of generation/discrimination to estimate densities and generate synthetic data.
 
-    Uses the arfpy package implementation.
+    Uses the implementation from the arfpy package (https://github.com/bips-hb/arfpy/) with some minor modifications to ensure robustness for resampling from leafs with 1 unique value.
 
     Paper: "Adversarial random forests for density estimation and generative modeling" by Watson et al. (2023).
 

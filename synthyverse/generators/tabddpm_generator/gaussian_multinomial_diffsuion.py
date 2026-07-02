@@ -1,3 +1,5 @@
+# Third-party notice: based on Apache-2.0/MIT-licensed upstream code.
+# See THIRD_PARTY_NOTICES.md for attribution, NOTICE, and modification details.
 """
 Based on
 - https://github.com/openai/guided-diffusion/blob/main/guided_diffusion

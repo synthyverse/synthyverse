@@ -1,3 +1,5 @@
+# Third-party notice: based on Apache-2.0-licensed upstream code.
+# See THIRD_PARTY_NOTICES.md for attribution, NOTICE, and modification details.
 # future
 from __future__ import annotations
 

@@ -19,6 +19,7 @@ Quick Start
 
    getting_started
    in_depth_usage
+   licensing
 
 API Reference
 -------------

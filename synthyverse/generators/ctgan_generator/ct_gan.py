@@ -1,13 +1,11 @@
-from ctgan import CTGAN
-from ctgan.synthesizers.ctgan import Discriminator
+# Third-party notice: this wrapper requires the BSL-licensed ctgan package.
+# See THIRD_PARTY_NOTICES.md and LICENSES/CTGAN-BSL-1.1.txt.
 import pandas as pd
 
+from .._optional import require_ctgan
 from ..base import BaseGenerator
 from ..persistence import load_generator_state, save_generator_state
-from ...utils.utils import (
-    get_total_trainable_params,
-    resolve_epochs_from_training_steps,
-)
+from ...utils.utils import resolve_epochs_from_training_steps
 
 
 class CTGANGenerator(BaseGenerator):
@@ -81,6 +79,7 @@ class CTGANGenerator(BaseGenerator):
         cuda=True,
         random_state: int = 0,
     ):
+        require_ctgan()
         self.random_state = random_state
         self.epochs = epochs
         self.training_steps = training_steps
@@ -100,6 +99,8 @@ class CTGANGenerator(BaseGenerator):
         self.cuda = cuda
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
+        from ctgan import CTGAN
+
         # round batch_size to be divisible by pac
         self.batch_size = self.batch_size // self.pac * self.pac
         epochs = resolve_epochs_from_training_steps(
@@ -128,18 +129,6 @@ class CTGANGenerator(BaseGenerator):
 
         self.model.fit(X, discrete_features)
 
-        gen_params = get_total_trainable_params(self.model._generator)
-        disc_params = get_total_trainable_params(
-            Discriminator(
-                self.model._transformer.output_dimensions
-                + self.model._data_sampler.dim_cond_vec(),
-                self.model._discriminator_dim,
-                pac=self.model.pac,
-            )
-        )
-
-        print(f"total trainable parameters: {gen_params + disc_params}")
-
         return self
 
     def _generate(self, n: int):
@@ -155,6 +144,7 @@ class CTGANGenerator(BaseGenerator):
 
     @classmethod
     def load(cls, path):
+        require_ctgan()
         state = load_generator_state(path)
         generator = cls.__new__(cls)
         if isinstance(state, dict):

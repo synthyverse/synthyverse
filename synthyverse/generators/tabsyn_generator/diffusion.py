@@ -1,3 +1,5 @@
+# Third-party notice: based on Apache-2.0-licensed upstream code.
+# See THIRD_PARTY_NOTICES.md for attribution, NOTICE, and modification details.
 from typing import Callable, Union
 
 import numpy as np

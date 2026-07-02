@@ -1,3 +1,5 @@
+# Third-party notice: based on Apache-2.0-licensed upstream code.
+# See THIRD_PARTY_NOTICES.md for attribution, NOTICE, and modification details.
 from copy import deepcopy
 from pathlib import Path
 import pandas as pd
@@ -24,8 +26,9 @@ class TabSynGenerator(BaseGenerator):
 
     Trains a VAE to learn a latent representation of tabular data, then fits a diffusion model in that latent space.
 
+    Based on the paper's original implementation: https://github.com/amazon-science/tabsyn/.
+
     Paper: "Mixed-type tabular data synthesis with score-based diffusion in latent space" by Zhang et al. (2023).
-    Based on the paper's original implementation: https://github.com/amazon-science/tabsyn/
 
     Args:
         target_column (str): Name of the target column used for stratified validation splitting.
@@ -552,9 +555,9 @@ class TabSynGenerator(BaseGenerator):
             mlp_dim=generator.mlp_dim,
             mlp_layers=generator.mlp_layers,
         ).to(generator.device)
-        generator.model = Model(
-            denoise_fn=denoise_fn, hid_dim=generator.sample_dim
-        ).to(generator.device)
+        generator.model = Model(denoise_fn=denoise_fn, hid_dim=generator.sample_dim).to(
+            generator.device
+        )
         generator.model.load_state_dict(
             torch.load(path / "diffusion_model.pt", map_location=generator.device)
         )

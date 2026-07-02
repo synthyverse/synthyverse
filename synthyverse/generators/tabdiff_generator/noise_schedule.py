@@ -1,3 +1,5 @@
+# Third-party notice: based on MIT-licensed upstream code.
+# See THIRD_PARTY_NOTICES.md for attribution and modification details.
 import abc
 
 import torch
