@@ -269,9 +269,7 @@ class TabSynGenerator(BaseGenerator):
             lr=self.vae_lr,
             weight_decay=self.vae_wd,
         )
-        scheduler = ReduceLROnPlateau(
-            optimizer, mode="min", factor=0.95, patience=10, verbose=True
-        )
+        scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.95, patience=10)
 
         current_lr = optimizer.param_groups[0]["lr"]
         patience = 0
@@ -437,9 +435,7 @@ class TabSynGenerator(BaseGenerator):
             lr=self.lr,
             weight_decay=self.diffusion_wd,
         )
-        scheduler = ReduceLROnPlateau(
-            optimizer, mode="min", factor=0.9, patience=20, verbose=True
-        )
+        scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.9, patience=20)
         model.train()
 
         epochs = resolve_epochs_from_training_steps(

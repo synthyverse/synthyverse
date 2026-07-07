@@ -45,10 +45,19 @@ The MIT license text for these adapted implementations is kept in
 - Upstream project: `TabDiff (https://github.com/MinkaiXu/TabDiff/)`
 - Upstream license: MIT License
 - Upstream copyright notice: `Copyright 2024 Minkai Xu`
-- Imported or last compared against: `5ecdb33`
+- Imported or last compared against: `Commit 5ecdb33`
 - Modifications: `Refactored API, speed-up masked diffusion by vectorizing loops, fast tensor dataloader.`
 - Upstream NOTICE text, if any: `None`
 
+### TabCascadeGenerator
+
+- Synthyverse files: `synthyverse/generators/tabcascade_generator/*`
+- Upstream project: `TabCascade (https://github.com/muellermarkus/tabcascade)`
+- Upstream license: MIT License
+- Upstream copyright notice: `Copyright (c) 2026 Markus Mueller`
+- Imported or last compared against: `Commit c8f44bb`
+- Modifications: `Refactored API, simple ordinal encoding for categories.`
+- Upstream NOTICE text, if any: `None`
 
 ## Apache-2.0-licensed adapted implementations
 

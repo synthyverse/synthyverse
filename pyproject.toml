@@ -43,6 +43,7 @@ dependencies = [
     "torch-ema",
     "einops",
     "imbalanced-learn",
+    "xgb-diffusion",
 ]
 
 [tool.setuptools]

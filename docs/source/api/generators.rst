@@ -17,8 +17,11 @@ For detailed examples of low-level generators, preprocessing, persistence, and w
    generators/cdtd
    generators/smote
    generators/tabddpm
+   generators/tabcascade
    generators/tabdiff
    generators/tabsyn
    generators/tvae
    generators/univariate
+   generators/xgbddpm
+   generators/xgbdiffusion
    generators/synthpop

@@ -55,15 +55,12 @@ class MLPDiffusion(nn.Module):
 
 
 class FastTensorDataLoader:
-    """Iterate over categorical and continuous tensors in mini-batches."""
+    """Iterate over tensors in mini-batches."""
 
-    def __init__(self, X_cat, X_cont, batch_size=32, shuffle=False, drop_last=False):
-        self.dataset_len = X_cat.shape[0] if X_cat is not None else X_cont.shape[0]
-        assert all(
-            t.shape[0] == self.dataset_len for t in (X_cat, X_cont) if t is not None
-        )
-        self.X_cat = X_cat
-        self.X_cont = X_cont
+    def __init__(self, *data, batch_size=32, shuffle=False, drop_last=False):
+        self.dataset_len = next(t.shape[0] for t in data if t is not None)
+        assert all(t.shape[0] == self.dataset_len for t in data if t is not None)
+        self.data = data
         self.batch_size = batch_size
         self.shuffle = shuffle
 
@@ -84,22 +81,14 @@ class FastTensorDataLoader:
 
         if self.indices is not None:
             indices = self.indices[self.i : self.i + self.batch_size]
-            batch = (
-                torch.index_select(self.X_cat, 0, indices)
-                if self.X_cat is not None
-                else None,
-                torch.index_select(self.X_cont, 0, indices)
-                if self.X_cont is not None
-                else None,
+            batch = tuple(
+                torch.index_select(t, 0, indices) if t is not None else None
+                for t in self.data
             )
         else:
-            batch = (
-                self.X_cat[self.i : self.i + self.batch_size]
-                if self.X_cat is not None
-                else None,
-                self.X_cont[self.i : self.i + self.batch_size]
-                if self.X_cont is not None
-                else None,
+            batch = tuple(
+                t[self.i : self.i + self.batch_size] if t is not None else None
+                for t in self.data
             )
 
         self.i += self.batch_size

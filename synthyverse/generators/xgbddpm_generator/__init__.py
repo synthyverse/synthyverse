@@ -1,0 +1,1 @@
+from .xgbddpm import XGBDDPMGenerator

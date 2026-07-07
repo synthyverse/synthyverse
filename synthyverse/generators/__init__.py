@@ -16,9 +16,12 @@ _BASE_GENERATORS = {
     "CDTDGenerator": (".cdtd_generator", "cdtd"),
     "TabDDPMGenerator": (".tabddpm_generator", "tabddpm"),
     "TabDiffGenerator": (".tabdiff_generator", "tabdiff"),
+    "TabCascadeGenerator": (".tabcascade_generator", "tabcascade"),
     "UnivariateGenerator": (".univariate_generator", "univariate"),
     "SMOTEGenerator": (".smote_generator", "smote"),
     "SynthpopGenerator": (".synthpop_generator", "synthpop"),
+    "XGBDDPMGenerator": (".xgbddpm_generator", "xgbddpm"),
+    "XGBDiffusionGenerator": (".xgbdiffusion_generator", "xgbdiffusion"),
 }
 
 _CTGAN_GENERATORS = {

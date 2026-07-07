@@ -75,6 +75,7 @@ autodoc_mock_imports = [
     "arfpy",
     "einops",
     "imblearn",
+    "xgb_diffusion",
 ]
 
 # Cross-refs to other package docs: potentially to be added later

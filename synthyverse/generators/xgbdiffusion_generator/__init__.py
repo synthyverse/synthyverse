@@ -1,0 +1,1 @@
+from .xgbdiffusion import XGBDiffusionGenerator
