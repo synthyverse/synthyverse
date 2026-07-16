@@ -17,19 +17,25 @@ from tqdm import tqdm
 from ..base import BaseGenerator
 
 
-def _vp_sched(
+def noise_schedule(
     T: int,
-    beta_min: float,
-    beta_max: float,
-    eps: float,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    ts = np.linspace(eps, 1.0, T)
-    dt = (1.0 - eps) / T
-    betas = dt * (beta_min + ts * (beta_max - beta_min))
-    betas = np.clip(betas, 1e-8, (1.0 - 1e-8))
-    alphas = 1.0 - betas
-    a_bars = np.cumprod(alphas, axis=0)
-    return betas, alphas, a_bars
+    alpha_bar_start: float = 0.9999,
+    alpha_bar_end: float = 1e-4,
+):
+    theta_start = np.arccos(np.sqrt(alpha_bar_start))
+    theta_end = np.arccos(np.sqrt(alpha_bar_end))
+
+    theta = np.linspace(theta_start, theta_end, T)
+    alpha_bars = np.cos(theta) ** 2
+
+    alphas = np.empty(T)
+    alphas[0] = alpha_bars[0]
+    alphas[1:] = alpha_bars[1:] / alpha_bars[:-1]
+
+    betas = np.clip(1.0 - alphas, 1e-8, 0.999)
+    alpha_bars = np.cumprod(1.0 - betas)
+
+    return betas, 1.0 - betas, alpha_bars
 
 
 class XGBDDPMGenerator(BaseGenerator):
@@ -56,22 +62,15 @@ class XGBDDPMGenerator(BaseGenerator):
             Default: -1.
         n_jobs_xgb (int): Number of threads used inside each XGBoost estimator.
             Default: 1.
-        beta_min (float): Minimum beta value for the variance-preserving noise
-            schedule. Default: 0.1.
-        beta_max (float): Maximum beta value for the variance-preserving noise
-            schedule. Default: 8.0.
-        eps (float): Lower endpoint of the diffusion time grid. Default: 0.0.
         xgboost_params (dict, optional): Parameters passed to each
             DDPM-enabled XGBoost estimator. Default: ``{"n_estimators": 500,
             "max_depth": 6, "early_stopping_rounds": 20,
             "min_boosting_round": 50, "eta": 0.06}``.
-        clip_extremes (bool): Whether to clip generated numerical values to
-            the training data range. Default: True.
         deterministic_sampler (bool): Whether to use DDIM-style deterministic
             numerical sampling instead of DDPM sampling. Default: False.
         objective (str): Numerical prediction objective. Options: "x" predicts
             the clean value, "epsilon" predicts the added noise, and "v" predicts
-            the velocity parameterization. Default: "epsilon".
+            the velocity parameterization. Default: "v".
         model_per_timestep (bool): Whether to train separate models per diffusion
             timestep. If False, timestep is appended as an input feature. Default:
             True.
@@ -110,19 +109,15 @@ class XGBDDPMGenerator(BaseGenerator):
         noise_samples_per_row: int = 1,
         n_jobs: int = -1,
         n_jobs_xgb: int = 1,
-        beta_min: float = 0.1,
-        beta_max: float = 8.0,
-        eps: float = 0.0,
         xgboost_params: Optional[Dict[str, Any]] = {
             "n_estimators": 500,
             "max_depth": 6,
-            "early_stopping_rounds": 20,
+            "early_stopping_rounds": 50,
             "min_boosting_round": 50,
             "eta": 0.06,
         },
-        clip_extremes: bool = True,
         deterministic_sampler: bool = False,
-        objective: str = "epsilon",  # x, epsilon, or v
+        objective: str = "v",  # x, epsilon, or v
         model_per_timestep: bool = True,
         model_per_label: bool = True,
         random_state: int = 0,
@@ -142,12 +137,8 @@ class XGBDDPMGenerator(BaseGenerator):
         self.noise_samples_per_row = noise_samples_per_row
         self.n_jobs = n_jobs
         self.n_jobs_xgb = n_jobs_xgb
-        self.beta_min = beta_min
-        self.beta_max = beta_max
-        self.eps = eps
 
         self.random_state = random_state
-        self.clip_extremes = clip_extremes
         self.model_per_timestep = model_per_timestep
         self.model_per_label = model_per_label
         self.refresh_every_k = refresh_every_k
@@ -202,18 +193,10 @@ class XGBDDPMGenerator(BaseGenerator):
             else None
         )
 
-        # store numeric min/max in ORIGINAL space for clipping during generation
-        self.clip_extremes = len(self.numerical_features) > 0 and self.clip_extremes
-        if self.clip_extremes:
-            self.num_min_ = X[self.numerical_features].min(axis=0).to_numpy()
-            self.num_max_ = X[self.numerical_features].max(axis=0).to_numpy()
-
         X_tr = self._scale(X_tr)
 
         # build diffusion schedule used by the DDPM estimators and sampler
-        self.betas_, self.alphas_, self.alpha_bars_ = _vp_sched(
-            self.timesteps, self.beta_min, self.beta_max, self.eps
-        )
+        self.betas_, self.alphas_, self.alpha_bars_ = noise_schedule(self.timesteps)
 
         self.n_cls_ = (
             self.n_cls.loc[self.disc_features_x].to_numpy(dtype=np.int64)
@@ -329,14 +312,6 @@ class XGBDDPMGenerator(BaseGenerator):
         if len(self.discrete_features) > 0:
             syn[self.discrete_features] = self.ord_enc.inverse_transform(
                 syn[self.discrete_features].astype(float)
-            )
-
-        # clip to original training ranges
-        if self.clip_extremes:
-            syn[self.numerical_features] = np.clip(
-                syn[self.numerical_features],
-                self.num_min_[None, :],
-                self.num_max_[None, :],
             )
 
         return syn

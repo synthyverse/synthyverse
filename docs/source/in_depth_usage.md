@@ -301,11 +301,11 @@ from synthyverse.benchmark.synthesis import TabularSynthesisBenchmark
 
 benchmark = TabularSynthesisBenchmark(
     X=X,
-    save_dir="runs/univariate",
     generator="univariate",
     generator_params={},
     categorical_features=discrete_features,
     target_column="target",
+    model_save_dir="runs/univariate",
     constraints=["total=part_a+part_b"],
     missing_imputation_method="median",
     random_state=42,

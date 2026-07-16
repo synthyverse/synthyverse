@@ -1,5 +1,7 @@
 # Third-party notice: this wrapper requires the BSL-licensed ctgan package.
 # See THIRD_PARTY_NOTICES.md and LICENSES/CTGAN-BSL-1.1.txt.
+from typing import Optional
+
 import pandas as pd
 
 from .._optional import require_ctgan
@@ -35,6 +37,8 @@ class CTGANGenerator(BaseGenerator):
             the training sample size and batch size. Default: None.
         pac (int): Number of samples per class for PAC discriminator. Default: 10.
         cuda (bool): Whether to use CUDA if available. Default: True.
+        cap_train_time (float): Time limit in seconds for training. Default: None.
+        log_steps (int): Steps between timeout checks. Default: 100.
         random_state (int): Random seed for reproducibility. Default: 0.
 
     Example:
@@ -77,6 +81,8 @@ class CTGANGenerator(BaseGenerator):
         training_steps=None,
         pac=10,
         cuda=True,
+        cap_train_time: Optional[float] = None,
+        log_steps: int = 100,
         random_state: int = 0,
     ):
         require_ctgan()
@@ -97,9 +103,11 @@ class CTGANGenerator(BaseGenerator):
         self.verbose = verbose
         self.pac = pac
         self.cuda = cuda
+        self.cap_train_time = cap_train_time
+        self.log_steps = log_steps
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
-        from ctgan import CTGAN
+        from .synthesizer import CTGAN
 
         # round batch_size to be divisible by pac
         self.batch_size = self.batch_size // self.pac * self.pac
@@ -125,6 +133,8 @@ class CTGANGenerator(BaseGenerator):
             epochs=epochs,
             pac=self.pac,
             cuda=self.cuda,
+            cap_train_time=self.cap_train_time,
+            log_steps=self.log_steps,
         )
 
         self.model.fit(X, discrete_features)

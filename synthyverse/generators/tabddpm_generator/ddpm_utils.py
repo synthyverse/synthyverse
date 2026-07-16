@@ -165,15 +165,30 @@ def log_sub_exp(a: Tensor, b: Tensor, epsilon: float = 1e-10) -> Tensor:
 
 @torch.jit.script
 def sliced_logsumexp(x: Tensor, slices: Tensor) -> Tensor:
-    lse = torch.logcumsumexp(
-        torch.nn.functional.pad(x, [1, 0, 0, 0], value=-float("inf")), dim=-1
-    )
 
-    slice_starts = slices[:-1]
-    slice_ends = slices[1:]
+    # below implementation can cause NaNs in loss
 
-    slice_lse = log_sub_exp(lse[:, slice_ends], lse[:, slice_starts])
-    slice_lse_repeated = torch.repeat_interleave(
-        slice_lse, slice_ends - slice_starts, dim=-1
+    # lse = torch.logcumsumexp(
+    #     torch.nn.functional.pad(x, [1, 0, 0, 0], value=-float("inf")), dim=-1
+    # )
+
+    # slice_starts = slices[:-1]
+    # slice_ends = slices[1:]
+
+    # slice_lse = log_sub_exp(lse[:, slice_ends], lse[:, slice_starts])
+    # slice_lse_repeated = torch.repeat_interleave(
+    #     slice_lse, slice_ends - slice_starts, dim=-1
+    # )
+    # return slice_lse_repeated
+
+    lengths = slices.diff()
+    segment_lengths = lengths.expand(x.size(0), -1)
+    maxes = torch.segment_reduce(x, "max", lengths=segment_lengths, axis=1)
+    safe_maxes = maxes.masked_fill(~torch.isfinite(maxes), 0)
+    sums = torch.segment_reduce(
+        torch.exp(x - torch.repeat_interleave(safe_maxes, lengths, dim=1)),
+        "sum",
+        lengths=segment_lengths,
+        axis=1,
     )
-    return slice_lse_repeated
+    return torch.repeat_interleave(maxes + torch.log(sums), lengths, dim=1)

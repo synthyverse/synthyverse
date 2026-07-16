@@ -7,6 +7,8 @@ import torch
 from sklearn.preprocessing import OrdinalEncoder, QuantileTransformer, StandardScaler
 from torch_ema import ExponentialMovingAverage
 from tqdm import tqdm
+from typing import Optional
+import time
 
 from ..base import BaseGenerator
 from ..dgm_utils import FastTensorDataLoader
@@ -104,6 +106,7 @@ class TabCascadeGenerator(BaseGenerator):
         clip_grad (bool): Whether to clip gradients for both cascade stages.
             Default: False.
         log_steps (int): Steps between progress logging. Default: 100.
+        cap_train_time (float): Time limit in seconds for training. Default: None.
         random_state (int): Random seed for reproducibility. Default: 0.
 
     Example:
@@ -159,6 +162,7 @@ class TabCascadeGenerator(BaseGenerator):
         clip_grad: bool = False,
         log_steps: int = 100,
         random_state: int = 0,
+        cap_train_time: Optional[float] = None,
     ):
         self.__dict__.update(locals())
         self.betas = tuple(betas)
@@ -166,6 +170,7 @@ class TabCascadeGenerator(BaseGenerator):
         self.seed = self.random_state
         self.config = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.cap_train_time = cap_train_time
 
     def encode_into_z(self, x_num):
         self.z_encoder = Discretizer(
@@ -327,6 +332,7 @@ class TabCascadeGenerator(BaseGenerator):
         lowres_loss_trn = highres_loss_trn = 0
         pbar = tqdm(total=self.config.lowres.training.num_steps_train)
 
+        start_time = time.monotonic()
         while step < self.config.lowres.training.num_steps_train:
             if step < self.config.lowres.training.num_steps_warmup:
                 lr = (
@@ -412,8 +418,17 @@ class TabCascadeGenerator(BaseGenerator):
                 )
                 lowres_loss_trn = highres_loss_trn = n_inputs = 0
                 scheduler_highres.step(highres_loss_trn)
+
             step += 1
             pbar.update(1)
+
+            # check if training timed out
+            if (self.cap_train_time is not None) and (
+                step % self.config.lowres.training.log_steps == 0
+            ):
+                if (time.monotonic() - start_time) > self.cap_train_time:
+                    print(f"Training timed out after {self.cap_train_time} seconds.")
+                    break
         pbar.close()
 
         ema_lowres.copy_to()

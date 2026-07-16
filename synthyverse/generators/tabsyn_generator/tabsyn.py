@@ -1,7 +1,9 @@
 # Third-party notice: based on Apache-2.0-licensed upstream code.
 # See THIRD_PARTY_NOTICES.md for attribution, NOTICE, and modification details.
+import time
 from copy import deepcopy
 from pathlib import Path
+from typing import Optional
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -60,6 +62,9 @@ class TabSynGenerator(BaseGenerator):
         vae_lambda (float): Multiplicative decay factor applied to beta when validation plateaus.
             Default: 0.7.
         diffusion_wd (float): Weight decay used by the diffusion optimizer. Default: 0.
+        cap_train_time (float): Time limit in seconds for VAE training and again
+            for diffusion training. Default: None.
+        log_steps (int): Steps between timeout checks. Default: 100.
         random_state (int): Random seed for reproducibility. Default: 0.
 
     Example:
@@ -111,6 +116,8 @@ class TabSynGenerator(BaseGenerator):
         mlp_dim: int = 2048,
         mlp_layers: int = 2,
         num_timesteps: int = 50,
+        cap_train_time: Optional[float] = None,
+        log_steps: int = 100,
     ):
         self.random_state = random_state
         self.target_column = target_column
@@ -123,6 +130,8 @@ class TabSynGenerator(BaseGenerator):
         self.mlp_dim = mlp_dim
         self.mlp_layers = mlp_layers
         self.num_timesteps = num_timesteps
+        self.cap_train_time = cap_train_time
+        self.log_steps = log_steps
         self.vae_lr = vae_lr
         self.vae_wd = vae_wd
         self.vae_d_token = vae_d_token
@@ -182,15 +191,10 @@ class TabSynGenerator(BaseGenerator):
             x_val[self.numerical_features]
         )
 
-        # filter out validation obs with cats not seen in training data
-        drop_mask = []
-        for col_idx in range(x[discrete_features].shape[1]):
-            drop_mask.append(
-                x_val[discrete_features].values[:, col_idx]
-                > x[discrete_features].values[:, col_idx].max()
-            )
-        drop_mask = np.column_stack(drop_mask)
-        drop_mask = np.sum(drop_mask, axis=1) > 0
+        # filter out validation obs with categories not embeddable from training data
+        x_val_cat = x_val[discrete_features].values
+        max_cat = x[discrete_features].max().values
+        drop_mask = ((x_val_cat < 0) | (x_val_cat > max_cat)).any(axis=1)
         x_val = x_val[~drop_mask]
         print(
             f"Number of observations dropped in validation set due to unseen categories: {sum(drop_mask)}"
@@ -302,6 +306,7 @@ class TabSynGenerator(BaseGenerator):
         x_val_cat = x_val_cat.to(self.device)
 
         best_val_loss = float("inf")
+        best_vae = deepcopy(vae.state_dict())
 
         epochs = resolve_epochs_from_training_steps(
             self.vae_num_epochs,
@@ -311,6 +316,9 @@ class TabSynGenerator(BaseGenerator):
         )
         pbar = tqdm(range(epochs))
 
+        start_time = time.monotonic()
+        timed_out = False
+        step = 0
         for _ in pbar:
             vae.train()
             for batch_num, batch_cat in train_loader:
@@ -328,6 +336,18 @@ class TabSynGenerator(BaseGenerator):
                 loss = loss_mse + loss_ce + beta * loss_kld
                 loss.backward()
                 optimizer.step()
+                step += 1
+                if (
+                    self.cap_train_time is not None
+                    and step % self.log_steps == 0
+                    and time.monotonic() - start_time > self.cap_train_time
+                ):
+                    print(f"Training timed out after {self.cap_train_time} seconds.")
+                    timed_out = True
+                    break
+
+            if timed_out:
+                break
 
             vae.eval()
             with torch.no_grad():
@@ -444,6 +464,9 @@ class TabSynGenerator(BaseGenerator):
             B,
             self.batch_size,
         )
+        start_time = time.monotonic()
+        timed_out = False
+        step = 0
         for _ in tqdm(range(epochs)):
             batch_loss = 0.0
             len_input = 0
@@ -458,9 +481,20 @@ class TabSynGenerator(BaseGenerator):
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
+                step += 1
+                if (
+                    self.cap_train_time is not None
+                    and step % self.log_steps == 0
+                    and time.monotonic() - start_time > self.cap_train_time
+                ):
+                    print(f"Training timed out after {self.cap_train_time} seconds.")
+                    timed_out = True
+                    break
 
             curr_loss = batch_loss / len_input
             scheduler.step(curr_loss)
+            if timed_out:
+                break
 
         return model
 
@@ -505,6 +539,8 @@ class TabSynGenerator(BaseGenerator):
             "mlp_dim": self.mlp_dim,
             "mlp_layers": self.mlp_layers,
             "num_timesteps": self.num_timesteps,
+            "cap_train_time": self.cap_train_time,
+            "log_steps": self.log_steps,
             "ori_columns": self.ori_columns,
             "discrete_features": self.discrete_features,
             "numerical_features": self.numerical_features,

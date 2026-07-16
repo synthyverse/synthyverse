@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "synthyverse"
-version = "0.2.4"
+version = "0.2.5"
 description = "Synthetic data generation and evaluation library"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -30,6 +30,7 @@ classifiers = [
 ]
 dependencies = [
     "pandas",
+    "pyarrow",
     "numpy",
     "scikit-learn",
     "tqdm",
@@ -61,7 +62,7 @@ Documentation = "https://synthyverse.readthedocs.io"
 
 [project.optional-dependencies]
 ctgan = [
-    "ctgan",
+    "ctgan==0.12.0",
 ]
 docs = [
     "sphinx",

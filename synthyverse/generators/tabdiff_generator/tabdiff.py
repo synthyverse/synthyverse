@@ -1,8 +1,9 @@
 # Third-party notice: based on MIT-licensed upstream code.
 # See THIRD_PARTY_NOTICES.md for attribution and modification details.
+import time
 from copy import deepcopy
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 import numpy as np
 import pandas as pd
@@ -99,6 +100,8 @@ class TabDiffGenerator(BaseGenerator):
         rho_offset (float): Rho offset for learned numerical schedules. Default: 5.0.
         k_init (float): Initial k for learned categorical schedules. Default: -6.0.
         k_offset (float): K offset for learned categorical schedules. Default: 1.0.
+        cap_train_time (float): Time limit in seconds for training. Default: None.
+        log_steps (int): Steps between timeout checks. Default: 100.
         random_state (int): Random seed for reproducibility. Default: 0.
 
     Example:
@@ -164,6 +167,8 @@ class TabDiffGenerator(BaseGenerator):
         rho_offset: float = 5.0,
         k_init: float = -6.0,
         k_offset: float = 1.0,
+        cap_train_time: Optional[float] = None,
+        log_steps: int = 100,
         random_state: int = 0,
     ):
         self.epochs = epochs
@@ -205,6 +210,8 @@ class TabDiffGenerator(BaseGenerator):
         self.rho_offset = rho_offset
         self.k_init = k_init
         self.k_offset = k_offset
+        self.cap_train_time = cap_train_time
+        self.log_steps = log_steps
         self.random_state = random_state
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -253,6 +260,9 @@ class TabDiffGenerator(BaseGenerator):
             for param in model.parameters():
                 param.detach_()
 
+        start_time = time.monotonic()
+        timed_out = False
+        step = 0
         for epoch in tqdm(range(epochs)):
             closs_weight = self.c_lambda
             if self.closs_weight_schedule == "anneal":
@@ -272,6 +282,15 @@ class TabDiffGenerator(BaseGenerator):
                 dloss_sum += dloss.item() * len(batch)
                 closs_sum += closs.item() * len(batch)
                 n_obs += len(batch)
+                step += 1
+                if (
+                    self.cap_train_time is not None
+                    and step % self.log_steps == 0
+                    and time.monotonic() - start_time > self.cap_train_time
+                ):
+                    print(f"Training timed out after {self.cap_train_time} seconds.")
+                    timed_out = True
+                    break
 
             total_loss = dloss_sum / n_obs + closs_sum / n_obs
             if np.isnan(total_loss):
@@ -300,6 +319,8 @@ class TabDiffGenerator(BaseGenerator):
                 self.diffusion.cat_schedule.parameters(),
                 self.ema_decay,
             )
+            if timed_out:
+                break
 
         self.diffusion._denoise_fn = ema_model
         self.diffusion.num_schedule = ema_num_schedule

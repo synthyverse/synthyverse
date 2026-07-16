@@ -15,6 +15,9 @@ from .utils import LinearScheduler, cycle, set_seeds
 from ..persistence import load_generator_state, restore_generator, save_generator_state
 from ...utils.utils import get_total_trainable_params
 
+from typing import Optional
+import time
+
 
 class CDTDGenerator(BaseGenerator):
     """Continuous Diffusion for mixed-type Tabular Data (CDTD).
@@ -46,6 +49,7 @@ class CDTDGenerator(BaseGenerator):
         lr (float): Learning rate. Default: 1e-3.
         ema_decay (float): Exponential moving average decay. Default: 0.999.
         log_steps (int): Steps between logging. Default: 100.
+        cap_train_time (float): Time limit in seconds for training. Default: None.
         random_state (int): Random seed for reproducibility. Default: 0.
 
     Example:
@@ -93,6 +97,7 @@ class CDTDGenerator(BaseGenerator):
         ema_decay: float = 0.999,
         log_steps: int = 100,
         random_state: int = 0,
+        cap_train_time: Optional[float] = None,
     ):
         self.random_state = random_state
         self.cat_emb_dim = cat_emb_dim
@@ -115,6 +120,7 @@ class CDTDGenerator(BaseGenerator):
         self.lr = lr
         self.ema_decay = ema_decay
         self.log_steps = log_steps
+        self.cap_train_time = cap_train_time
 
         if torch.cuda.is_available():
             torch.set_float32_matmul_precision("high")
@@ -232,6 +238,7 @@ class CDTDGenerator(BaseGenerator):
         current_step = 0
         n_obs = sum_loss = 0
 
+        start_time = time.monotonic()
         with tqdm(initial=current_step, total=self.training_steps) as pbar:
             while current_step < self.training_steps:
                 optimizer.zero_grad()
@@ -254,6 +261,7 @@ class CDTDGenerator(BaseGenerator):
                 pbar.update(1)
 
                 if current_step % self.log_steps == 0:
+                    # check loss and early stopping at log step
                     pbar.set_description(
                         f"Loss (last {self.log_steps} steps): {(sum_loss / n_obs):.3f}"
                     )
@@ -261,6 +269,16 @@ class CDTDGenerator(BaseGenerator):
 
                 for param_group in optimizer.param_groups:
                     param_group["lr"] = scheduler(current_step)
+
+                # check if training timed out
+                if (self.cap_train_time is not None) and (
+                    current_step % self.log_steps == 0
+                ):
+                    if (time.monotonic() - start_time) > self.cap_train_time:
+                        print(
+                            f"Training timed out after {self.cap_train_time} seconds."
+                        )
+                        break
 
         ema_diff_model.copy_to()
         self.diff_model.eval()

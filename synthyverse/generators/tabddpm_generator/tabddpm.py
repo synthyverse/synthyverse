@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from copy import deepcopy
 from pathlib import Path
 from typing import Optional
-
+import time
 import numpy as np
 import pandas as pd
 import torch
@@ -51,6 +51,7 @@ class TabDDPMGenerator(BaseGenerator):
         log_interval (int): Steps between logging. Default: 100.
         model_params (dict): Dictionary of model parameters. Default: {"n_layers_hidden": 3, "n_units_hidden": 256, "dropout": 0.0}.
         embedding_dim (int): Embedding dimension. Default: 128.
+        cap_train_time (float): Time limit in seconds for training. Default: None.
         random_state (int): Random seed for reproducibility. Default: 0.
 
     Example:
@@ -89,6 +90,7 @@ class TabDDPMGenerator(BaseGenerator):
         log_interval: int = 100,
         model_params: dict = {},
         embedding_dim: int = 128,
+        cap_train_time: Optional[float] = None,
         random_state: int = 0,
         training_steps: int = None,
     ):
@@ -106,6 +108,7 @@ class TabDDPMGenerator(BaseGenerator):
         self.target_column = target_column
         self.random_state = random_state
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.cap_train_time = cap_train_time
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -224,6 +227,8 @@ class TabDDPMGenerator(BaseGenerator):
         )
         pbar = trange(epochs, desc="Epoch", leave=True)
 
+        start_time = time.monotonic()
+        timed_out = False
         for epoch in pbar:
             self.diffusion.train()
             for x, y in self.dataloader:
@@ -251,10 +256,20 @@ class TabDDPMGenerator(BaseGenerator):
                     self.loss_history.append([steps, mloss, gloss, loss_value])
                     curr_count = 0
                     curr_loss_multi = curr_loss_gauss = 0.0
+                    if (
+                        self.cap_train_time is not None
+                        and time.monotonic() - start_time > self.cap_train_time
+                    ):
+                        print(
+                            f"Training timed out after {self.cap_train_time} seconds."
+                        )
+                        timed_out = True
+                        break
 
-            self.diffusion.eval()
             pbar.set_postfix(loss=loss_value)
-
+            if timed_out:
+                break
+        self.diffusion.eval()
         self.loss_history = pd.DataFrame(
             self.loss_history, columns=["step", "mloss", "gloss", "loss"]
         ).set_index("step")

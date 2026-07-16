@@ -107,7 +107,7 @@ not under the synthyverse MIT License.
 - Upstream license: Business Source License 1.1
 - Upstream copyright notice: `The Licensed Work is (c) DataCebo, Inc.; license text copyright (c) 2017 MariaDB Corporation Ab, All Rights Reserved.`
 - License text: `LICENSES/CTGAN-BSL-1.1.txt`
-- Imported or last compared against: `version 0.12.1`
+- Imported or last compared against: `version 0.12.0`
 - Modifications: `No ctgan source code is vendored.`
 - Upstream NOTICE text, if any: `The Business Source License (this document, or the "License") is not an Open Source license. However, the Licensed Work will eventually be made available under an Open Source License, as stated in this License.`
 

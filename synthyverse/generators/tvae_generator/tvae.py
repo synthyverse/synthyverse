@@ -1,5 +1,7 @@
 # Third-party notice: this wrapper requires the BSL-licensed ctgan package.
 # See THIRD_PARTY_NOTICES.md and LICENSES/CTGAN-BSL-1.1.txt.
+from typing import Optional
+
 from ...utils.utils import resolve_epochs_from_training_steps
 
 import pandas as pd
@@ -31,6 +33,8 @@ class TVAEGenerator(BaseGenerator):
         loss_factor (int): Loss factor for Beta-VAE. Default: 2.
         cuda (bool): Whether to use CUDA if available. Default: True.
         verbose (bool): Whether to print training progress. Default: True.
+        cap_train_time (float): Time limit in seconds for training. Default: None.
+        log_steps (int): Steps between timeout checks. Default: 100.
         random_state (int): Random seed for reproducibility. Default: 0.
 
     Example:
@@ -68,6 +72,8 @@ class TVAEGenerator(BaseGenerator):
         loss_factor=2,
         cuda=True,
         verbose=True,
+        cap_train_time: Optional[float] = None,
+        log_steps: int = 100,
         random_state: int = 0,
     ):
         require_ctgan()
@@ -82,9 +88,11 @@ class TVAEGenerator(BaseGenerator):
         self.loss_factor = loss_factor
         self.cuda = cuda
         self.verbose = verbose
+        self.cap_train_time = cap_train_time
+        self.log_steps = log_steps
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
-        from ctgan import TVAE
+        from .synthesizer import TVAE
 
         epochs = resolve_epochs_from_training_steps(
             self.epochs,
@@ -103,6 +111,8 @@ class TVAEGenerator(BaseGenerator):
             epochs=epochs,
             cuda=self.cuda,
             loss_factor=self.loss_factor,
+            cap_train_time=self.cap_train_time,
+            log_steps=self.log_steps,
         )
 
         self.model.fit(X, discrete_features)
