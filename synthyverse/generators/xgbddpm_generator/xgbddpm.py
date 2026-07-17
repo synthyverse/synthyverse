@@ -230,13 +230,22 @@ class XGBDDPMGenerator(BaseGenerator):
         )
 
         fit_timesteps = range(self.timesteps) if self.model_per_timestep else [None]
-        tasks = (
+        tasks = [
             delayed(self._fit_one)(X_tr, t, lv, col)
-            for t in tqdm(fit_timesteps, desc="Fitting models")
+            for t in fit_timesteps
             for lv in cond
             for col in cols
-        )
-        res = Parallel(n_jobs=self.n_jobs, prefer="threads")(tasks)
+        ]
+        res = []
+        fits = Parallel(
+            n_jobs=self.n_jobs,
+            prefer="threads",
+            return_as="generator_unordered",
+        )(tasks)
+        with tqdm(total=len(tasks), desc="Fitting models") as pbar:
+            for out in fits:
+                res.append(out)
+                pbar.update()
 
         self.models = {}
         self.label_encoders = {}
