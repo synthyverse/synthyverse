@@ -227,7 +227,7 @@ class AlphaPrecisionBetaRecall:
 
     Args:
         discrete_features (list): List of discrete/categorical feature names. Default: [].
-        k (int): Number of nearest neighbors to use in Beta-Recall. Default: 2.
+        k (int): Number of nearest neighbors to use in Beta-Recall. Must be >= 2. Default: 2.
 
     Example:
         >>> import pandas as pd
@@ -1836,8 +1836,7 @@ class FeatureWisePlots:
             X_syn: Synthetic data as a pandas DataFrame.
 
         Returns:
-            dict: Dictionary with keys "featurewiseplots.n_plots",
-                "featurewiseplots.save_dir", and "featurewiseplots.files".
+            dict: Dictionary with key "featurewiseplots.save_dir".
         """
         missing = [col for col in X_train.columns if col not in X_syn.columns]
         if missing:
@@ -1888,7 +1887,7 @@ class FeatureWisePlots:
 
         path = self._save_figure(fig)
 
-        return {f"{self.name}.save_dir": os.path.abspath(self.img_save_path)}
+        return {f"{self.name}.save_dir": path}
 
     def _plot_feature(
         self,

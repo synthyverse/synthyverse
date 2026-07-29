@@ -512,6 +512,7 @@ class MIA(ABC):
         "tpr_at_fpr_005",
         "tpr_at_fpr_001",
     )
+    name = "mia"
 
     def __init__(
         self,
@@ -695,7 +696,7 @@ class DOMIAS(MIA):
         self,
         ref_prop: float = 0.5,
         member_prop: float = 1.0,
-        n_components: int = 0.99,
+        n_components: float = 0.99,
         random_state: int = 0,
         discrete_features: list = None,
         subsample: bool = False,
@@ -855,7 +856,7 @@ class DPI(MIA):
         return np.divide(
             synthetic_counts,
             reference_counts,
-            out=np.zeros(len(synthetic_counts), dtype=float),
+            out=np.full(len(synthetic_counts), np.inf, dtype=float),
             where=reference_counts > 0,
         )
 
