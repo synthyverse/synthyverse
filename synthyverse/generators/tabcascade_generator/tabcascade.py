@@ -416,8 +416,8 @@ class TabCascadeGenerator(BaseGenerator):
                         "loss (highres)": f"{highres_loss_trn:.4f}",
                     },
                 )
-                lowres_loss_trn = highres_loss_trn = n_inputs = 0
                 scheduler_highres.step(highres_loss_trn)
+                lowres_loss_trn = highres_loss_trn = n_inputs = 0
 
             step += 1
             pbar.update(1)
