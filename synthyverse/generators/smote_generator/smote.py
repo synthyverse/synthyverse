@@ -3,12 +3,10 @@
 import pandas as pd
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
-from sklearn.preprocessing import OrdinalEncoder
 from sklearn.utils import check_random_state
 from imblearn.over_sampling import SMOTENC, SMOTE, SMOTEN
 
 from ..base import BaseGenerator
-from ..persistence import load_generator_state, restore_generator, save_generator_state
 
 
 class SMOTEGenerator(BaseGenerator):
@@ -31,7 +29,6 @@ class SMOTEGenerator(BaseGenerator):
             Default: 5.
         n_jobs (int): Number of parallel jobs for nearest-neighbor search.
             Default: -1.
-        random_state (int): Random seed for reproducibility. Default: 0.
 
     Example:
         >>> import pandas as pd
@@ -44,8 +41,7 @@ class SMOTEGenerator(BaseGenerator):
         >>> # Create generator
         >>> generator = SMOTEGenerator(
         ...     target_column="target",
-        ...     k_neighbors=5,
-        ...     random_state=42
+        ...     k_neighbors=5
         ... )
         >>>
         >>> # Fit and generate synthetic rows
@@ -61,26 +57,18 @@ class SMOTEGenerator(BaseGenerator):
         k_neighbors: int = 5,
         n_jobs: int = -1,
         random_state: int = 0,
+        full_determinism: bool = False,
     ):
+        super().__init__(random_state=random_state, full_determinism=full_determinism)
         self.target_column = target_column
         self.k_neighbors = k_neighbors
         self.n_jobs = n_jobs
-        self.random_state = random_state
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
 
         self.is_classification = self.target_column in discrete_features
 
         self.X = X.copy()
-
-        self.ordinal_encoder = OrdinalEncoder(
-            handle_unknown="use_encoded_value",
-            unknown_value=-1,
-            encoded_missing_value=-2,
-        )
-        self.X[discrete_features] = self.ordinal_encoder.fit_transform(
-            self.X[discrete_features]
-        )
 
         if not self.is_classification:
             # pseudo outcome similar to TabDDPM paper
@@ -175,21 +163,17 @@ class SMOTEGenerator(BaseGenerator):
             syn_y = pd.Series(syn_y, name=self.target_column)
             syn_X = pd.concat([syn_X, syn_y], axis=1)
 
-        discrete_features = list(self.ordinal_encoder.feature_names_in_)
-        syn_X[discrete_features] = syn_X[discrete_features].astype(int)
-
-        syn_X[discrete_features] = self.ordinal_encoder.inverse_transform(
-            syn_X[discrete_features]
-        )
+        syn_X[self._base_discrete_features] = syn_X[
+            self._base_discrete_features
+        ].astype(int)
 
         return syn_X
 
-    def save(self, path):
-        state = {
+    def _state(self):
+        return {
             "target_column": self.target_column,
             "k_neighbors": self.k_neighbors,
             "n_jobs": self.n_jobs,
-            "random_state": self.random_state,
             "is_classification": self.is_classification,
             "X": self.X,
             "ordinal_encoder": self.ordinal_encoder,
@@ -197,8 +181,3 @@ class SMOTEGenerator(BaseGenerator):
             "discrete_features": self.discrete_features,
             "numerical_features": self.numerical_features,
         }
-        return save_generator_state(path, state)
-
-    @classmethod
-    def load(cls, path):
-        return restore_generator(cls, load_generator_state(path))

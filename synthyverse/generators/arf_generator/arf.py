@@ -5,7 +5,6 @@ from .model import arf
 import numpy as np
 
 from ..base import BaseGenerator
-from ..persistence import load_generator_state, restore_generator, save_generator_state
 
 
 class ARFGenerator(BaseGenerator):
@@ -26,7 +25,6 @@ class ARFGenerator(BaseGenerator):
         min_node_size (int): Minimum leaf node samples in trees. Default: 5.
         retain_value_ranges (bool): Whether to clip numerical features to training
             ranges after generation. Default: False.
-        random_state (int): Random seed for reproducibility. Default: 0.
 
     Example:
         >>> import pandas as pd
@@ -40,8 +38,7 @@ class ARFGenerator(BaseGenerator):
         >>> generator = ARFGenerator(
         ...     num_trees=50,
         ...     max_iters=10,
-        ...     early_stop=True,
-        ...     random_state=42
+        ...     early_stop=True
         ... )
         >>>
         >>> # Fit and generate
@@ -61,8 +58,9 @@ class ARFGenerator(BaseGenerator):
         min_node_size: int = 5,
         retain_value_ranges: bool = False,  # whether to retain numerical feature ranges
         random_state: int = 0,
+        full_determinism: bool = False,
     ):
-        self.random_state = random_state
+        super().__init__(random_state=random_state, full_determinism=full_determinism)
         self.num_trees = num_trees
         self.delta = delta
         self.max_iters = max_iters
@@ -73,10 +71,13 @@ class ARFGenerator(BaseGenerator):
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
         xx = X.copy()
-        xx[discrete_features] = xx[discrete_features].astype(str)
+        self.discrete_features = list(discrete_features)
         self.numerical_features = [
-            col for col in xx.columns if col not in discrete_features
+            col for col in xx.columns if col not in self.discrete_features
         ]
+        if self.discrete_features:
+            xx[self.discrete_features] = xx[self.discrete_features].astype("category")
+
         if self.retain_value_ranges:
             self.value_ranges = {}
             for col in self.numerical_features:
@@ -101,6 +102,7 @@ class ARFGenerator(BaseGenerator):
 
     def _generate(self, n: int):
         syn = self.model.forge(n)
+
         if self.retain_value_ranges:
             for col in self.value_ranges.keys():
                 syn[col] = np.clip(
@@ -111,14 +113,18 @@ class ARFGenerator(BaseGenerator):
 
         return syn
 
-    def save(self, path):
-        state = {
+    def _state(self):
+        return {
             "model": self.model,
+            "num_trees": self.num_trees,
+            "delta": self.delta,
+            "max_iters": self.max_iters,
+            "early_stop": self.early_stop,
+            "verbose": self.verbose,
+            "min_node_size": self.min_node_size,
             "retain_value_ranges": self.retain_value_ranges,
             "value_ranges": getattr(self, "value_ranges", None),
+            "discrete_features": self.discrete_features,
+            "numerical_features": self.numerical_features,
+            "ordinal_encoder": self.ordinal_encoder,
         }
-        return save_generator_state(path, state)
-
-    @classmethod
-    def load(cls, path):
-        return restore_generator(cls, load_generator_state(path))

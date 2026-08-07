@@ -33,14 +33,11 @@ processor = DataProcessor(
 X_model = processor.preprocess(X, discrete_features=discrete_features)
 ```
 
-If you provide validation data, both datasets are transformed with the same fitted processor.
+After fitting, reuse the same processor to transform held-out data.
 
 ```python
-X_train_model, X_val_model = processor.preprocess(
-    X_train,
-    discrete_features=discrete_features,
-    X_val=X_val,
-)
+X_train_model = processor.preprocess(X_train, discrete_features=discrete_features)
+X_val_model = processor.preprocess(X_val)
 ```
 
 After a generator produces model-space data, call `postprocess()` to return to the original schema.
@@ -65,7 +62,7 @@ Missing categorical values are left in categorical columns and can be handled by
 
 ### Constraints
 
-Constraints are strings evaluated against the tabular columns.
+Constraints are trusted strings evaluated against the tabular columns.
 
 Equality constraints remove one side of the equation during preprocessing and recompute it during postprocessing.
 
@@ -122,7 +119,6 @@ import pandas as pd
 from synthyverse.generators import DataProcessor, UnivariateGenerator
 
 X_train = pd.read_csv("train.csv")
-X_val = pd.read_csv("validation.csv")
 discrete_features = ["category", "target"]
 
 processor = DataProcessor(
@@ -131,11 +127,7 @@ processor = DataProcessor(
     random_state=42,
 )
 
-X_train_model, X_val_model = processor.preprocess(
-    X_train,
-    discrete_features=discrete_features,
-    X_val=X_val,
-)
+X_train_model = processor.preprocess(X_train, discrete_features=discrete_features)
 
 generator = UnivariateGenerator(random_state=42)
 generator.fit(X_train_model, discrete_features=discrete_features)
@@ -243,18 +235,32 @@ Metric classes can be used directly when you want full control.
 ```python
 from synthyverse.evaluation import Marginals, DCR, MLE
 
-marginals = Marginals(discrete_features=discrete_features)
-dcr = DCR(discrete_features=discrete_features)
+marginals = Marginals()
+dcr = DCR()
 mle = MLE(
     target_column="target",
-    discrete_features=discrete_features,
     train_set="synthetic",
     random_state=42,
 )
 
-fidelity_results = marginals.evaluate(X_train=X_train, X_syn=X_syn)
-privacy_results = dcr.evaluate(X_train=X_train, X_syn=X_syn)
-utility_results = mle.evaluate(X_train=X_train, X_test=X_test, X_syn=X_syn, X_val=X_val)
+fidelity_results = marginals.evaluate(
+    X=X_train,
+    X_syn=X_syn,
+    X_test=X_test,
+    discrete_features=discrete_features,
+)
+privacy_results = dcr.evaluate(
+    X=X_train,
+    X_syn=X_syn,
+    X_test=X_test,
+    discrete_features=discrete_features,
+)
+utility_results = mle.evaluate(
+    X=X_train,
+    X_syn=X_syn,
+    X_test=X_test,
+    discrete_features=discrete_features,
+)
 ```
 
 Use `TabularMetricEvaluator` to run a group of metrics with consistent metadata. The evaluator is imported from the `eval` submodule.
@@ -269,32 +275,30 @@ evaluator = TabularMetricEvaluator(
         "mle-tstr": {"train_set": "synthetic"},
         "mle-trts": {"train_set": "real"},
     },
-    discrete_features=discrete_features,
     target_column="target",
     random_state=42,
 )
 
 results = evaluator.evaluate(
-    X_train=X_train,
-    X_test=X_test,
+    X=X_train,
     X_syn=X_syn,
-    X_syn_test=X_syn_test,
-    X_val=X_val,
+    X_test=X_test,
+    discrete_features=discrete_features,
 )
 ```
 
-Metric registry names are resolved with `get_metric()`. The suffix after a dash is ignored for lookup, which lets you run several configurations of the same metric in one evaluator.
+Metric registry names are resolved with `get_metric()`. In `TabularMetricEvaluator`, keys may include a `-config` suffix (for example `mle-tstr`); only the part before `-` is passed to `get_metric()`, which lets you run several configurations of the same metric in one evaluator.
 
 ```python
 from synthyverse.evaluation import get_metric
 
 Metric = get_metric("marginals")
-metric = Metric(discrete_features=discrete_features)
+metric = Metric()
 ```
 
 ## Benchmarking
 
-`TabularSynthesisBenchmark` is the highest-level workflow. It creates train/validation/test splits, fits or loads processors, trains or loads generators, samples synthetic datasets, evaluates metrics, and writes long-format result rows.
+`TabularSynthesisBenchmark` is the highest-level workflow. It creates reproducible train/test splits, fits or loads processors, trains or loads generators, samples synthetic datasets, evaluates metrics, and writes long-format result rows. 
 
 ```python
 from synthyverse.benchmark.synthesis import TabularSynthesisBenchmark

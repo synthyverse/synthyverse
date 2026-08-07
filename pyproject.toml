@@ -36,7 +36,6 @@ dependencies = [
     "tqdm",
     "scipy",
     "xgboost",
-    "optuna",
     "seaborn",
     "numba",
     "psutil",

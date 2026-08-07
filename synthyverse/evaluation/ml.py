@@ -1,30 +1,55 @@
+import json
+import warnings
+from functools import lru_cache
+
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
-from sklearn.linear_model import LogisticRegression, ElasticNet
-from sklearn.svm import SVC, SVR
-from sklearn.preprocessing import (
-    OneHotEncoder,
-    StandardScaler,
-    LabelEncoder,
-    OrdinalEncoder,
-)
 from sklearn.compose import ColumnTransformer
-import optuna
-from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.linear_model import ElasticNet, LogisticRegression
 from sklearn.metrics import (
-    roc_auc_score,
-    f1_score,
     accuracy_score,
+    f1_score,
     r2_score,
+    roc_auc_score,
     root_mean_squared_error,
 )
+from sklearn.model_selection import (
+    KFold,
+    StratifiedKFold,
+    cross_val_score,
+    train_test_split,
+)
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import (
+    LabelEncoder,
+    OneHotEncoder,
+    OrdinalEncoder,
+    StandardScaler,
+)
+from sklearn.svm import SVC, SVR
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
-from sklearn.ensemble import RandomForestRegressor
 
-HYPERPARAM_SAVE_DIR = "synthyverse_hyperparams_tuned"
+SCORE_FNS = {
+    "auc": roc_auc_score,
+    "f1": f1_score,
+    "accuracy": accuracy_score,
+    "r2": r2_score,
+    "rmse": root_mean_squared_error,
+}
+
+SCORE_ALIASES = {
+    "roc_auc": "auc",
+    "roc_auc_score": "auc",
+    "f1_score": "f1",
+    "accuracy_score": "accuracy",
+    "r2_score": "r2",
+    "root_mean_squared_error": "rmse",
+}
+
+XGBOOST_GPU_MIN_ELEMENTS = 1_000_000
 
 
 def split_validation(X, y, val_size: float, random_state: int, stratify: bool = True):
@@ -50,50 +75,91 @@ def split_validation(X, y, val_size: float, random_state: int, stratify: bool = 
     )
 
 
-def tune_ml_model(
-    X_train: pd.DataFrame,
-    X_val: pd.DataFrame,
-    y_train: pd.Series,
-    y_val: pd.Series,
+def order_features(X: pd.DataFrame = None, discrete_features: list = None):
+    discrete_features = discrete_features or []
+    if X is None:
+        return X
+    numerical_features = [col for col in X.columns if col not in discrete_features]
+    return X[numerical_features + discrete_features]
+
+
+def build_ml_preprocessor(
+    model_name: str, categorical_features: list, numerical_features: list
+):
+    cat_encoder, num_scaler = get_preprocessors(model_name)
+    return ColumnTransformer(
+        transformers=[
+            ("cat", cat_encoder, categorical_features),
+            ("num", num_scaler, numerical_features),
+        ],
+        remainder="drop",
+    )
+
+
+def cv_ml_task(
+    X: pd.DataFrame,
+    y: pd.Series,
     discrete_features: list,
     task: str = "binary",
     model_name: str = "xgboost",
-    tuning_trials: int = 32,
+    model_params: dict = None,
     random_state: int = 0,
-    score_fns: list = None,
+    score_fn="auc",
+    nfold: int = 3,
+    n_jobs: int = -1,
 ):
+    X = X.copy().reset_index(drop=True)
+    y = y.copy().reset_index(drop=True)
+    numerical_features = [col for col in X.columns if col not in discrete_features]
+    categorical_features = [col for col in X.columns if col in discrete_features]
+    X = order_features(X, categorical_features)
+    if task != "regression":
+        y = pd.Series(LabelEncoder().fit_transform(y))
+        min_class_count = int(y.value_counts().min())
+        if min_class_count < 2:
+            raise ValueError(
+                "Stratified cross-validation requires at least two rows in each class."
+            )
+        nfold = min(nfold, min_class_count)
 
     model_name = resolve_model_name(model_name)
-    tuning_score_fns = (
-        get_default_tuning_score_fns(task) if score_fns is None else score_fns
-    )
+    model_params = {} if model_params is None else model_params.copy()
+    key = score_key(resolve_score_fn(score_fn)[0])
 
-    def objective(trial: optuna.Trial):
-        params = get_hyperparams(model_name, task, trial)
-        scores = ml_task(
-            X_train,
-            X_val,
-            y_train,
-            y_val,
-            discrete_features,
-            task,
-            model_name,
-            params,
-            random_state=random_state,
-            score_fns=tuning_score_fns,
-        )
-        return next(iter(scores.values()))
+    if model_name == "xgboost":
+        return {
+            key: _xgboost_cv_score(
+                X,
+                y,
+                categorical_features,
+                task,
+                key,
+                model_params,
+                random_state,
+                nfold,
+            )
+        }
 
-    study = optuna.create_study(
-        sampler=optuna.samplers.TPESampler(seed=random_state),
-        direction="maximize",
+    model = Pipeline(
+        [
+            (
+                "preprocess",
+                build_ml_preprocessor(
+                    model_name, categorical_features, numerical_features
+                ),
+            ),
+            ("model", build_ml_model(model_name, task, model_params, random_state)),
+        ]
     )
-    study.optimize(
-        objective,
-        n_trials=tuning_trials,
-        show_progress_bar=True,
+    cv = (
+        StratifiedKFold(n_splits=nfold, shuffle=True, random_state=random_state)
+        if task != "regression"
+        else KFold(n_splits=nfold, shuffle=True, random_state=random_state)
     )
-    return study.best_params.copy()
+    score = cross_val_score(
+        model, X, y, cv=cv, scoring=_cv_scoring(key, task), n_jobs=n_jobs
+    ).mean()
+    return {key: float(-score if key == "rmse" else score)}
 
 
 def ml_task(
@@ -110,106 +176,75 @@ def ml_task(
     X_val: pd.DataFrame = None,
     y_val: pd.Series = None,
 ):
-    numerical_features = [x for x in X_train.columns if x not in discrete_features]
-    categorical_features = [x for x in X_train.columns if x in discrete_features]
+    X_train = X_train.copy().reset_index(drop=True)
+    X_test = X_test.copy().reset_index(drop=True)
+    X_val = X_val.copy().reset_index(drop=True) if X_val is not None else None
+    y_train = y_train.copy().reset_index(drop=True)
+    y_test = y_test.copy().reset_index(drop=True)
+    y_val = y_val.copy().reset_index(drop=True) if y_val is not None else None
 
-    # reorder to align with columntransformer
-    X_train = X_train[categorical_features + numerical_features]
-    X_test = X_test[categorical_features + numerical_features]
+    numerical_features = [
+        col for col in X_train.columns if col not in discrete_features
+    ]
+    categorical_features = [col for col in X_train.columns if col in discrete_features]
 
-    # resolve model name
+    X_train = order_features(X_train, categorical_features)
+    X_test = order_features(X_test, categorical_features)
+    X_val = order_features(X_val, categorical_features)
     model_name = resolve_model_name(model_name)
+
+    has_validation_data = (X_val is not None) and (y_val is not None)
+
     model_params = {} if model_params is None else model_params.copy()
-    uses_xgboost_early_stopping = (
-        model_name == "xgboost"
-        and model_params.get("early_stopping_rounds") is not None
-    )
-    has_validation_data = X_val is not None and y_val is not None
-    if (X_val is None) != (y_val is None):
-        raise ValueError("X_val and y_val must be provided together.")
-    if uses_xgboost_early_stopping and not has_validation_data:
+
+    if task != "regression" and y_train.nunique() == 1:
+        return _constant_classification_result(y_train, y_test, score_fns)
+
+    if (
+        _uses_xgboost_early_stopping(model_name, model_params)
+        and not has_validation_data
+    ):
         raise ValueError(
             "X_val and y_val must be provided when using XGBoost early stopping."
         )
 
-    # xgboost requires specifying which features are categorical from the data
     if model_name == "xgboost":
         model_params.setdefault(
             "feature_types",
-            ["c" if x in categorical_features else "q" for x in X_train.columns],
+            ["c"] * len(categorical_features) + ["q"] * len(numerical_features),
         )
 
-    if task != "regression":
-        target_preprocessor = LabelEncoder()
-        target_preprocessor.fit(y_train)
-        # drop any unseen labels; issue for non-stratified splits, which may occur in AIA
-        test_mask = y_test.isin(target_preprocessor.classes_)
-        X_test = X_test.loc[test_mask]
-        y_test = y_test.loc[test_mask]
-        if has_validation_data:
-            val_mask = y_val.isin(target_preprocessor.classes_)
-            X_val = X_val.loc[val_mask]
-            y_val = y_val.loc[val_mask]
+    target_info = _fit_target(y_train, y_test, y_val, task)
+    if task != "regression" and has_validation_data:
+        X_val = X_val.loc[target_info["val_mask"]]
+        y_val = y_val.loc[target_info["val_mask"]]
 
-    cat_encoder, num_scaler = get_preprocessors(model_name)
-    transformer = ColumnTransformer(
-        transformers=[
-            ("cat", cat_encoder, categorical_features),
-            ("num", num_scaler, numerical_features),
-        ],
-        remainder="drop",
+    X_train, X_test, X_val = _transform_features(
+        model_name, categorical_features, numerical_features, X_train, X_test, X_val
     )
-    X_train_transformed = transformer.fit_transform(X_train)
-    X_test_transformed = transformer.transform(X_test)
-    if has_validation_data:
-        X_val = X_val[categorical_features + numerical_features]
-        X_val_transformed = transformer.transform(X_val)
+    y_train, y_test, y_val = _transform_target(
+        y_train, y_test, y_val, task, target_info
+    )
 
-    if task == "regression":
-        target_preprocessor = StandardScaler()  # required for interpretable error
-        y_train_transformed = target_preprocessor.fit_transform(y_train.to_frame())
-        y_test_transformed = target_preprocessor.transform(y_test.to_frame())
-        y_train_transformed = y_train_transformed.ravel()
-        y_test_transformed = y_test_transformed.ravel()
-        if has_validation_data:
-            y_val_transformed = target_preprocessor.transform(y_val.to_frame()).ravel()
-    else:
-        y_train_transformed = target_preprocessor.transform(y_train)
-        y_test_transformed = target_preprocessor.transform(y_test)
-        if has_validation_data:
-            y_val_transformed = target_preprocessor.transform(y_val)
-
-    # build model
+    if model_name == "xgboost":
+        _maybe_enable_xgboost_gpu(model_params, *X_train.shape)
     model = build_ml_model(model_name, task, model_params, random_state=random_state)
+    model.fit(
+        X_train,
+        y_train,
+        **_fit_kwargs(model_name, model_params, X_val, y_val),
+    )
 
-    # train model
-    fit_kwargs = {}
-    if uses_xgboost_early_stopping:
-        fit_kwargs["eval_set"] = [(X_val_transformed, y_val_transformed)]
-    model.fit(X_train_transformed, y_train_transformed, **fit_kwargs)
-
-    if task == "multiclass":
-        preds = model.predict_proba(X_test_transformed)
-        pred_labels = model.predict(X_test_transformed)
-    elif task == "binary":
-        preds = model.predict_proba(X_test_transformed)[:, 1]
-        pred_labels = model.predict(X_test_transformed)
-    elif task == "regression":
-        preds = model.predict(X_test_transformed)
-        pred_labels = preds
-    else:
-        raise ValueError(f"Task {task} not supported")
-
-    if score_fns is not None:
-        return score_ml_predictions(
-            y_test_transformed,
-            preds,
-            pred_labels,
-            score_fns,
-            task,
-        )
-
-    return preds
+    preds, pred_labels = _predict(model, X_test, y_test, task, target_info)
+    if score_fns is None:
+        return preds
+    return score_ml_predictions(
+        y_test,
+        preds,
+        pred_labels,
+        score_fns,
+        target_info["score_task"] if task != "regression" else task,
+    )
 
 
 def score_ml_predictions(
@@ -225,21 +260,42 @@ def score_ml_predictions(
         key = score_key(name)
 
         if key == "auc":
+            y_true_series = pd.Series(y_true)
+            if y_true_series.nunique() < 2:
+                warnings.warn(
+                    "AUC is undefined when labels are constant; returning NaN.",
+                    UserWarning,
+                )
+                scores[key] = float(np.nan)
+                continue
             if task == "multiclass":
-                value = fn(
+                labels = np.arange(preds.shape[1])
+                missing = labels[~np.isin(labels, y_true_series)]
+                if len(missing):
+                    warnings.warn(
+                        "Multiclass AUC is undefined when y_true is missing "
+                        f"classes {missing.tolist()}; returning NaN.",
+                        UserWarning,
+                    )
+                    scores[key] = float(np.nan)
+                    continue
+            value = (
+                fn(
                     y_true,
                     preds,
-                    average="micro",
+                    average="macro",
                     multi_class="ovr",
                     labels=np.arange(preds.shape[1]),
                 )
-            else:
-                value = fn(y_true, preds)
+                if task == "multiclass"
+                else fn(y_true, preds)
+            )
         elif key == "f1":
-            if task == "multiclass":
-                value = fn(y_true, pred_labels, average="weighted")
-            else:
-                value = fn(y_true, pred_labels)
+            value = (
+                fn(y_true, pred_labels, average="weighted")
+                if task == "multiclass"
+                else fn(y_true, pred_labels)
+            )
         elif key == "accuracy":
             value = fn(y_true, pred_labels)
         else:
@@ -251,23 +307,10 @@ def score_ml_predictions(
 
 def resolve_score_fn(score_fn):
     if isinstance(score_fn, str):
-        score_fn = score_fn.lower()
-        score_fns = {
-            "auc": roc_auc_score,
-            "roc_auc": roc_auc_score,
-            "roc_auc_score": roc_auc_score,
-            "f1": f1_score,
-            "f1_score": f1_score,
-            "accuracy": accuracy_score,
-            "accuracy_score": accuracy_score,
-            "r2": r2_score,
-            "r2_score": r2_score,
-            "rmse": root_mean_squared_error,
-            "root_mean_squared_error": root_mean_squared_error,
-        }
-        if score_fn not in score_fns:
+        key = score_key(score_fn.lower())
+        if key not in SCORE_FNS:
             raise ValueError(f"Score function {score_fn} not supported")
-        return score_fn, score_fns[score_fn]
+        return score_fn, SCORE_FNS[key]
 
     if isinstance(score_fn, tuple):
         if len(score_fn) != 2:
@@ -279,59 +322,219 @@ def resolve_score_fn(score_fn):
 
 
 def score_key(score_name: str):
-    score_name = score_name.lower()
-    aliases = {
-        "roc_auc": "auc",
-        "roc_auc_score": "auc",
-        "f1_score": "f1",
-        "accuracy_score": "accuracy",
-        "r2_score": "r2",
-        "root_mean_squared_error": "rmse",
-    }
-    return aliases.get(score_name, score_name)
+    return SCORE_ALIASES.get(score_name.lower(), score_name.lower())
 
 
-def get_default_tuning_score_fns(task: str):
+def _constant_classification_result(y_train, y_test, score_fns):
+    encoder = LabelEncoder().fit(pd.concat([y_train, y_test], ignore_index=True))
+    y_test = encoder.transform(y_test)
+    constant_label = encoder.transform([y_train.iloc[0]])[0]
+    pred_labels = np.full(len(y_test), constant_label)
+    score_task = "multiclass" if len(encoder.classes_) > 2 else "binary"
+    if score_task == "multiclass":
+        preds = np.zeros((len(y_test), len(encoder.classes_)))
+        preds[:, constant_label] = 1.0
+    else:
+        preds = pred_labels.astype(float)
+    return (
+        score_ml_predictions(y_test, preds, pred_labels, score_fns, score_task)
+        if score_fns is not None
+        else preds
+    )
+
+
+def _uses_xgboost_early_stopping(model_name, model_params):
+    return (
+        model_name == "xgboost"
+        and model_params.get("early_stopping_rounds") is not None
+    )
+
+
+def _fit_target(y_train, y_test, y_val, task):
     if task == "regression":
-        return [r2_score]
-    elif task in ["binary", "multiclass"]:
-        return [roc_auc_score]
-    else:
-        raise ValueError(f"Task {task} not supported")
+        return {"encoder": StandardScaler(), "score_task": task}
+
+    model_encoder = LabelEncoder().fit(y_train)
+    score_encoder = LabelEncoder().fit(pd.concat([y_train, y_test], ignore_index=True))
+    return {
+        "model_encoder": model_encoder,
+        "score_encoder": score_encoder,
+        "class_map": score_encoder.transform(model_encoder.classes_),
+        "score_task": "multiclass" if len(score_encoder.classes_) > 2 else "binary",
+        "val_mask": None if y_val is None else y_val.isin(model_encoder.classes_),
+    }
 
 
-def score_ml_model(model, X_test, y_test, task: str = "binary"):
-    if task == "multiclass":
-        preds = model.predict_proba(X_test)
-        pred_labels = model.predict(X_test)
-        return score_ml_predictions(
-            y_test,
-            preds,
-            pred_labels,
-            [roc_auc_score, f1_score, accuracy_score],
-            task,
+def _transform_features(
+    model_name, categorical_features, numerical_features, X_train, X_test, X_val
+):
+    transformer = build_ml_preprocessor(
+        model_name, categorical_features, numerical_features
+    )
+    return (
+        transformer.fit_transform(X_train),
+        transformer.transform(X_test),
+        None if X_val is None else transformer.transform(X_val),
+    )
+
+
+def _transform_target(y_train, y_test, y_val, task, target):
+    if task == "regression":
+        encoder = target["encoder"]
+        return (
+            encoder.fit_transform(y_train.to_frame()).ravel(),
+            encoder.transform(y_test.to_frame()).ravel(),
+            None if y_val is None else encoder.transform(y_val.to_frame()).ravel(),
         )
-    if task == "binary":
-        preds = model.predict_proba(X_test)[:, 1]
-        pred_labels = model.predict(X_test)
-        return score_ml_predictions(
-            y_test,
-            preds,
-            pred_labels,
-            [roc_auc_score, f1_score, accuracy_score],
-            task,
-        )
-    elif task == "regression":
+
+    return (
+        target["model_encoder"].transform(y_train),
+        target["score_encoder"].transform(y_test),
+        None if y_val is None else target["model_encoder"].transform(y_val),
+    )
+
+
+def _fit_kwargs(model_name, model_params, X_val, y_val):
+    if _uses_xgboost_early_stopping(model_name, model_params):
+        return {"eval_set": [(X_val, y_val)]}
+    return {}
+
+
+def _predict(model, X_test, y_test, task, target):
+    if task == "regression":
         preds = model.predict(X_test)
-        return score_ml_predictions(
-            y_test,
-            preds,
-            preds,
-            [r2_score, root_mean_squared_error],
-            task,
-        )
+        return preds, preds
+
+    raw_preds = model.predict_proba(X_test)
+    model_classes = np.asarray(
+        getattr(model, "classes_", np.arange(raw_preds.shape[1])), dtype=int
+    )
+    class_map = target["class_map"]
+    pred_labels = class_map[np.asarray(model.predict(X_test), dtype=int)]
+
+    if task == "multiclass" or target["score_task"] == "multiclass":
+        preds = np.zeros((len(y_test), len(target["score_encoder"].classes_)))
+        preds[:, class_map[model_classes]] = raw_preds
     else:
-        raise ValueError(f"Task {task} not supported")
+        preds = raw_preds[:, np.where(class_map[model_classes] == 1)[0][0]]
+    return preds, pred_labels
+
+
+def _xgboost_cv_score(
+    X: pd.DataFrame,
+    y: pd.Series,
+    categorical_features: list,
+    task: str,
+    score_key_: str,
+    model_params: dict,
+    random_state: int,
+    nfold: int,
+):
+    if categorical_features:
+        X = X.copy()
+        X[categorical_features] = OrdinalEncoder().fit_transform(
+            X[categorical_features]
+        )
+
+    params = model_params.copy()
+    num_boost_round = params.pop("num_boost_round", params.pop("n_estimators", 100))
+    early_stopping_rounds = params.pop("early_stopping_rounds", None)
+    params.update(
+        {
+            "objective": (
+                "binary:logistic"
+                if task == "binary"
+                else ("multi:softprob" if task == "multiclass" else "reg:squarederror")
+            ),
+            "seed": random_state,
+            "tree_method": "hist",
+        }
+    )
+    _maybe_enable_xgboost_gpu(params, len(X), X.shape[1])
+    if task == "multiclass":
+        params.setdefault("num_class", y.nunique())
+
+    metric, maximize = _xgboost_cv_metric(score_key_)
+    results = xgb.cv(
+        params=params,
+        dtrain=xgb.DMatrix(
+            X,
+            label=y,
+            feature_types=[
+                "c" if x in categorical_features else "q" for x in X.columns
+            ],
+        ),
+        num_boost_round=num_boost_round,
+        nfold=nfold,
+        stratified=task != "regression",
+        early_stopping_rounds=early_stopping_rounds,
+        seed=random_state,
+        shuffle=True,
+        metrics=metric,
+        maximize=maximize,
+        as_pandas=True,
+    )
+    return float(results[f"test-{metric}-mean"].iloc[-1])
+
+
+def _xgboost_cv_metric(score_key_: str):
+    if score_key_ == "auc":
+        return "auc", True
+    if score_key_ == "rmse":
+        return "rmse", False
+    raise ValueError(f"Score function {score_key_} is not supported for XGBoost CV")
+
+
+def _maybe_enable_xgboost_gpu(params, n_rows, n_features):
+    if "device" not in params and n_rows * n_features > XGBOOST_GPU_MIN_ELEMENTS:
+        if _xgboost_can_use_gpu():
+            params["device"] = "cuda"
+
+
+@lru_cache(maxsize=1)
+def _xgboost_can_use_gpu():
+    X = np.array([[0, 0], [1, 1], [0, 1], [1, 0]], dtype=np.float32)
+    y = np.array([0, 1, 0, 1], dtype=np.float32)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            booster = xgb.train(
+                {
+                    "objective": "binary:logistic",
+                    "tree_method": "hist",
+                    "device": "cuda",
+                    "verbosity": 0,
+                },
+                xgb.DMatrix(X, label=y),
+                num_boost_round=1,
+            )
+        except Exception:
+            return False
+
+    messages = " ".join(str(w.message).lower() for w in caught)
+    if (
+        "no visible gpu" in messages
+        or "not compiled with cuda" in messages
+        or "setting device to cpu" in messages
+    ):
+        return False
+
+    config = json.loads(booster.save_config())
+    device = config["learner"]["generic_param"]["device"]
+    return device.startswith("cuda")
+
+
+def _cv_scoring(score_key_: str, task: str):
+    scoring = {
+        "auc": "roc_auc_ovr" if task == "multiclass" else "roc_auc",
+        "f1": "f1_weighted" if task == "multiclass" else "f1",
+        "accuracy": "accuracy",
+        "r2": "r2",
+        "rmse": "neg_root_mean_squared_error",
+    }
+    if score_key_ not in scoring:
+        raise ValueError(f"Score function {score_key_} not supported for CV")
+    return scoring[score_key_]
 
 
 def resolve_model_name(model_name: str):
@@ -341,9 +544,9 @@ def resolve_model_name(model_name: str):
 
     if model_name == "rf" or model_name.startswith("randomforest"):
         return "randomforest"
-    elif model_name == "dt" or model_name.startswith("decisiontree"):
+    if model_name == "dt" or model_name.startswith("decisiontree"):
         return "decisiontree"
-    elif model_name in [
+    if model_name in [
         "lr",
         "linearregression",
         "logisticregression",
@@ -352,16 +555,11 @@ def resolve_model_name(model_name: str):
         "elasticnet",
     ]:
         return "linearregression"
-    elif model_name in [
-        "svm",
-        "svc",
-        "svr",
-    ] or model_name.startswith("supportvector"):
+    if model_name in ["svm", "svc", "svr"] or model_name.startswith("supportvector"):
         return "svm"
-    elif model_name.startswith("xgb"):
+    if model_name.startswith("xgb"):
         return "xgboost"
-    else:
-        raise ValueError(f"Model {model_name} not supported")
+    raise ValueError(f"Model {model_name} not supported")
 
 
 def build_ml_model(
@@ -370,10 +568,11 @@ def build_ml_model(
     model_params: dict = None,
     random_state: int = 0,
 ):
+    model_params = {} if model_params is None else model_params.copy()
 
     if model_name == "xgboost":
         model = xgb.XGBRegressor if task == "regression" else xgb.XGBClassifier
-        default_params = {
+        defaults = {
             "random_state": random_state,
             "objective": (
                 "binary:logistic"
@@ -386,119 +585,35 @@ def build_ml_model(
         model = (
             RandomForestRegressor if task == "regression" else RandomForestClassifier
         )
-        default_params = {
-            "random_state": random_state,
-        }
+        defaults = {"random_state": random_state}
     elif model_name == "decisiontree":
         model = (
             DecisionTreeRegressor if task == "regression" else DecisionTreeClassifier
         )
-        default_params = {
-            "random_state": random_state,
-        }
+        defaults = {"random_state": random_state}
     elif model_name == "linearregression":
         model = ElasticNet if task == "regression" else LogisticRegression
-        default_params = {
-            "random_state": random_state,
-        }
+        defaults = {"random_state": random_state}
     elif model_name == "svm":
-        if task == "regression":
-            model = SVR
-            default_params = {}
-        else:
-            model = SVC
-            default_params = {
-                "random_state": random_state,
-                "probability": True,
-            }
+        model = SVR if task == "regression" else SVC
+        defaults = {} if task == "regression" else {"random_state": random_state}
+        if task != "regression":
+            defaults["probability"] = True
     else:
         raise ValueError(f"Model {model_name} not supported")
 
-    model_params = {} if model_params is None else model_params.copy()
-
-    default_params.update(model_params)
-    return model(**default_params)
+    defaults.update(model_params)
+    return model(**defaults)
 
 
 def get_preprocessors(model_name: str):
     if model_name in ["linearregression", "svm"]:
-        num_scaler = StandardScaler()
-        cat_encoder = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
-    else:
-        # tree-based methods don't need scaling and can use ordinal encoding
-        num_scaler = "passthrough"
-        cat_encoder = OrdinalEncoder(
-            handle_unknown="use_encoded_value", unknown_value=-1
+        return (
+            OneHotEncoder(sparse_output=False, handle_unknown="ignore"),
+            StandardScaler(),
         )
 
-    return cat_encoder, num_scaler
-
-
-def get_hyperparams(model_name: str, task: str, trial: optuna.Trial):
-    if model_name == "xgboost":
-        return {
-            "max_depth": trial.suggest_int("max_depth", 3, 10),
-            "n_estimators": trial.suggest_int("n_estimators", 50, 200),
-            "learning_rate": trial.suggest_float("learning_rate", 0.05, 0.35, log=True),
-            "min_child_weight": trial.suggest_float(
-                "min_child_weight", 0.1, 10.0, log=True
-            ),
-            "subsample": trial.suggest_float("subsample", 0.7, 1.0),
-            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.7, 1.0),
-        }
-    elif model_name == "randomforest":
-        params = {
-            "n_estimators": trial.suggest_int("n_estimators", 50, 250),
-            "max_depth": trial.suggest_categorical(
-                "max_depth", [None, 4, 8, 16, 32, 64]
-            ),
-            "min_samples_split": trial.suggest_int(
-                "min_samples_split", 2, 16, log=True
-            ),
-            "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 16, log=True),
-            "max_features": trial.suggest_categorical(
-                "max_features", ["sqrt", 0.5, 0.75, 1.0]
-            ),
-        }
-        return params
-    elif model_name == "decisiontree":
-        return {
-            "max_depth": trial.suggest_categorical(
-                "max_depth", [None, 4, 8, 16, 32, 64]
-            ),
-            "min_samples_split": trial.suggest_int(
-                "min_samples_split", 2, 16, log=True
-            ),
-            "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 16, log=True),
-            "max_features": trial.suggest_categorical(
-                "max_features", [None, "sqrt", 0.5, 0.75, 1.0]
-            ),
-        }
-    elif model_name == "linearregression":
-        if task == "regression":
-            return {
-                "alpha": trial.suggest_float("alpha", 1e-4, 100.0, log=True),
-                "l1_ratio": trial.suggest_float("l1_ratio", 0.0, 1.0),
-            }
-        else:
-            params = {
-                "C": trial.suggest_float("C", 1e-4, 1000.0, log=True),
-            }
-            params["l1_ratio"] = trial.suggest_float("l1_ratio", 0.0, 1.0)
-            return params
-    elif model_name == "svm":
-        params = {
-            "C": trial.suggest_float("C", 1e-4, 1000.0, log=True),
-            "kernel": trial.suggest_categorical(
-                "kernel", ["linear", "rbf", "poly", "sigmoid"]
-            ),
-        }
-        if params["kernel"] in ["rbf", "poly", "sigmoid"]:
-            params["gamma"] = trial.suggest_float("gamma", 1e-5, 10.0, log=True)
-        if params["kernel"] == "poly":
-            params["degree"] = trial.suggest_int("degree", 2, 5)
-        if params["kernel"] in ["poly", "sigmoid"]:
-            params["coef0"] = trial.suggest_float("coef0", -1.0, 1.0)
-        return params
-    else:
-        raise ValueError(f"Model {model_name} not supported")
+    return (
+        OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1),
+        "passthrough",
+    )

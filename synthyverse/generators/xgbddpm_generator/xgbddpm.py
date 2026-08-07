@@ -6,15 +6,13 @@ from xgb_diffusion import XGBDDPMRegressor, XGBDDPMClassifier
 
 from joblib import Parallel, delayed
 from sklearn.preprocessing import (
-    QuantileTransformer,
-    StandardScaler,
-    OrdinalEncoder,
     LabelEncoder,
 )
 from sklearn.utils import check_random_state
 from tqdm import tqdm
 
 from ..base import BaseGenerator
+from ..dgm_utils import QuantileStandardScaler
 
 
 def noise_schedule(
@@ -50,8 +48,8 @@ class XGBDDPMGenerator(BaseGenerator):
     Supports stochastic (DDPM) and deterministic (DDIM) sampling.
 
     Args:
-        target_column (str): Column used for conditional generation when it is
-            categorical and ``model_per_label=True``.
+        target_column (str): Required target column. Used for label-conditional
+            modeling when it is categorical and ``model_per_label=True``.
         num_timesteps (int): Number of diffusion timesteps for training and
             sampling. Default: 50.
         refresh_every_k (int): Number of boosting rounds between noise seed
@@ -64,7 +62,7 @@ class XGBDDPMGenerator(BaseGenerator):
             Default: 1.
         xgboost_params (dict, optional): Parameters passed to each
             DDPM-enabled XGBoost estimator. Default: ``{"n_estimators": 500,
-            "max_depth": 6, "early_stopping_rounds": 20,
+            "max_depth": 6, "early_stopping_rounds": 50,
             "min_boosting_round": 50, "eta": 0.06}``.
         deterministic_sampler (bool): Whether to use DDIM-style deterministic
             numerical sampling instead of DDPM sampling. Default: False.
@@ -76,7 +74,6 @@ class XGBDDPMGenerator(BaseGenerator):
             True.
         model_per_label (bool): Whether to train separate models per categorical
             ``target_column`` value. Default: True.
-        random_state (int): Random seed for reproducibility. Default: 0.
         **kwargs: Additional keyword arguments accepted for API compatibility.
 
     Example:
@@ -90,8 +87,7 @@ class XGBDDPMGenerator(BaseGenerator):
         >>> # Create generator
         >>> generator = XGBDDPMGenerator(
         ...     target_column="target",
-        ...     num_timesteps=50,
-        ...     random_state=42
+        ...     num_timesteps=50
         ... )
         >>>
         >>> # Fit and generate
@@ -121,8 +117,10 @@ class XGBDDPMGenerator(BaseGenerator):
         model_per_timestep: bool = True,
         model_per_label: bool = True,
         random_state: int = 0,
+        full_determinism: bool = False,
         **kwargs,
     ):
+        super().__init__(random_state=random_state, full_determinism=full_determinism)
         self.objective = str(objective).lower()
         assert self.objective in (
             "x",
@@ -138,7 +136,6 @@ class XGBDDPMGenerator(BaseGenerator):
         self.n_jobs = n_jobs
         self.n_jobs_xgb = n_jobs_xgb
 
-        self.random_state = random_state
         self.model_per_timestep = model_per_timestep
         self.model_per_label = model_per_label
         self.refresh_every_k = refresh_every_k
@@ -180,13 +177,6 @@ class XGBDDPMGenerator(BaseGenerator):
         )
 
         X_tr = X.copy()
-
-        # ensure contiguous encoding of categoricals
-        if len(self.discrete_features) > 0:
-            self.ord_enc = OrdinalEncoder()
-            X_tr[self.discrete_features] = self.ord_enc.fit_transform(
-                X_tr[self.discrete_features]
-            ).astype(int)
         self.n_cls = (
             X_tr[self.discrete_features].max(axis=0) + 1
             if len(self.discrete_features) > 0
@@ -261,6 +251,7 @@ class XGBDDPMGenerator(BaseGenerator):
                 self.label_encoders[t][lv].setdefault(col, label_enc)
 
     def _generate(self, n: int):
+        self.rng = check_random_state(self.random_state)
 
         if self.is_conditional:
             lv_samples = self.labels.sample(n, replace=True, random_state=self.rng)
@@ -317,11 +308,6 @@ class XGBDDPMGenerator(BaseGenerator):
 
         # inverse scale
         syn = self._inverse_scale(syn)
-
-        if len(self.discrete_features) > 0:
-            syn[self.discrete_features] = self.ord_enc.inverse_transform(
-                syn[self.discrete_features].astype(float)
-            )
 
         return syn
 
@@ -537,28 +523,45 @@ class XGBDDPMGenerator(BaseGenerator):
     def _scale(self, X: pd.DataFrame):
 
         if len(self.num_features_x) > 0:
-            self.qt = QuantileTransformer(
-                output_distribution="normal",
-                n_quantiles=max(min(len(X) // 30, 1000), 10),
-                subsample=int(1e9),
-                random_state=self.random_state,
-            )
+            self.qt = QuantileStandardScaler(len(X), self.random_state)
             X[self.num_features_x] = self.qt.fit_transform(X[self.num_features_x])
-            self.st_scaler = StandardScaler()
-            X[self.num_features_x] = self.st_scaler.fit_transform(
-                X[self.num_features_x]
-            )
 
         else:
-            self.qt, self.st_scaler = None, None
+            self.qt = None
         return X
 
     def _inverse_scale(self, X: pd.DataFrame):
-        if self.st_scaler is not None:
-            X[self.num_features_x] = self.st_scaler.inverse_transform(
-                X[self.num_features_x]
-            )
         if self.qt is not None:
             X[self.num_features_x] = self.qt.inverse_transform(X[self.num_features_x])
 
         return X
+
+    def _state(self):
+        return {
+            "objective": self.objective,
+            "deterministic_sampler": self.deterministic_sampler,
+            "target_column": self.target_column,
+            "timesteps": self.timesteps,
+            "n_jobs": self.n_jobs,
+            "model_per_timestep": self.model_per_timestep,
+            "ori_cols": self.ori_cols,
+            "discrete_features": self.discrete_features,
+            "numerical_features_set": self.numerical_features_set,
+            "disc_features_x": self.disc_features_x,
+            "num_features_x": self.num_features_x,
+            "is_conditional": self.is_conditional,
+            "n_cls_": self.n_cls_,
+            "labels": self.labels,
+            "model_cols_x": self.model_cols_x,
+            "betas_": self.betas_,
+            "alphas_": self.alphas_,
+            "alpha_bars_": self.alpha_bars_,
+            "models": self.models,
+            "label_encoders": self.label_encoders,
+            "qt": self.qt,
+        }
+
+    def _load_extra(self, path) -> None:
+        self.num_sampler = (
+            self._ddim_update if self.deterministic_sampler else self._ddpm_update
+        )

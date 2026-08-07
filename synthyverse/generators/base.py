@@ -1,16 +1,22 @@
 import pickle
 import importlib
 import inspect
+import re
+from copy import deepcopy
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
+import numpy as np
 import pandas as pd
+import torch
 
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.experimental import enable_iterative_imputer  # noqa: F401
 from sklearn.impute import IterativeImputer, SimpleImputer
 from sklearn.preprocessing import OrdinalEncoder
+
+from ..utils.reproducibility import set_seed
 
 
 PROCESSOR_FILENAME = "processor.pkl"
@@ -26,22 +32,128 @@ class BaseGenerator(ABC):
     the shared public API, docstrings, and fluent ``fit`` return value.
     """
 
+    supports_purely_numerical = True
+    supports_purely_categorical = True
+
+    def __init__(self, random_state: int = 0, full_determinism: bool = False):
+        """Initialize shared generator reproducibility settings.
+
+        Args:
+            random_state: Training seed used by :meth:`fit`. Default: 0.
+            full_determinism: Whether to request deterministic backend behavior
+                when setting the training seed. Default: False.
+        """
+        self.random_state = random_state
+        self.full_determinism = full_determinism
+        self.ordinal_encoder = None
+        self._base_discrete_features = []
+        if torch.cuda.is_available():
+            torch.set_float32_matmul_precision("high")
+
+    def _validate_feature_mix(self, X: pd.DataFrame, discrete_features: list) -> None:
+        missing_features = [col for col in discrete_features if col not in X.columns]
+        if missing_features:
+            missing = ", ".join(missing_features)
+            raise ValueError(f"discrete_features are not present in X: {missing}")
+
+        non_numerical_features = [
+            col
+            for col in X.columns
+            if col not in discrete_features
+            and not pd.api.types.is_numeric_dtype(X[col])
+        ]
+        if non_numerical_features:
+            non_numerical = ", ".join(non_numerical_features)
+            raise ValueError(
+                f"Non-discrete features must be numerical: {non_numerical}"
+            )
+
+        n_discrete_features = sum(col in discrete_features for col in X.columns)
+        if n_discrete_features == 0 and not self.supports_purely_numerical:
+            raise ValueError(
+                f"{self.__class__.__name__} requires at least one categorical feature."
+            )
+        if (
+            n_discrete_features == len(X.columns)
+            and not self.supports_purely_categorical
+        ):
+            raise ValueError(
+                f"{self.__class__.__name__} requires at least one numerical feature."
+            )
+
     def fit(
         self,
         X: pd.DataFrame,
-        discrete_features: list,
+        discrete_features: list = [],
     ):
         """Fit the generator to tabular data.
 
         Args:
             X: Training data in the generator's input space.
             discrete_features: Names of categorical/discrete columns in ``X``.
+                Default: [].
 
         Returns:
             The fitted generator.
         """
-        self._fit(X, discrete_features)
+        discrete_features = list(discrete_features)
+        self._validate_feature_mix(X, discrete_features)
+        self.schema = TabularSchema.from_dataframe(X)
+        X = self._fit_encode_categoricals(X, discrete_features)
+        set_seed(self.random_state, self.full_determinism)
+        self._generate_model_space = True
+        try:
+            self._fit(X, discrete_features)
+        finally:
+            self._generate_model_space = False
         return self
+
+    def _fit_encode_categoricals(
+        self, X: pd.DataFrame, discrete_features: list
+    ) -> pd.DataFrame:
+        self._base_discrete_features = [
+            col for col in X.columns if col in discrete_features
+        ]
+        self.ordinal_encoder = None
+        if not self._base_discrete_features:
+            return X.copy()
+
+        missing_value = np.iinfo("int64").max - 2
+        x = X.copy()
+        categorical = x[self._base_discrete_features].astype(object)
+        categorical = categorical.mask(categorical.isna(), np.nan)
+        self.ordinal_encoder = OrdinalEncoder(
+            handle_unknown="use_encoded_value",
+            unknown_value=np.iinfo("int64").max - 3,
+            encoded_missing_value=missing_value,
+            dtype=np.int64,
+        )
+        encoded = self.ordinal_encoder.fit_transform(categorical)
+        for i, categories in enumerate(self.ordinal_encoder.categories_):
+            missing = np.flatnonzero(pd.isna(categories))
+            if len(missing):
+                encoded[:, i] = np.where(
+                    encoded[:, i] == missing_value, missing[0], encoded[:, i]
+                )
+        x[self._base_discrete_features] = encoded.astype(np.int64)
+        return x
+
+    def _decode_categoricals(self, X: pd.DataFrame) -> pd.DataFrame:
+        x = X.copy()
+        if self.ordinal_encoder is not None and len(x) > 0:
+            x[self._base_discrete_features] = self.ordinal_encoder.inverse_transform(
+                x[self._base_discrete_features].round().astype(np.int64)
+            )
+        return x
+
+    def _categorical_cardinality(self, col: str) -> int:
+        idx = self._base_discrete_features.index(col)
+        return len(self.ordinal_encoder.categories_[idx])
+
+    def _categorical_cardinalities(self, cols: list = None) -> list:
+        if cols is None:
+            cols = self._base_discrete_features
+        return [self._categorical_cardinality(col) for col in cols]
 
     @abstractmethod
     def _fit(
@@ -51,33 +163,77 @@ class BaseGenerator(ABC):
     ):
         """Generator-specific fitting implementation."""
 
-    def generate(self, n: int):
+    def generate(self, n: int, random_state: int = 0):
         """Generate synthetic tabular data.
 
         Args:
             n: Number of synthetic rows to generate.
+            random_state: Sampling seed. Default: 0.
 
         Returns:
-            Synthetic data in the generator's model space.
+            Synthetic data restored to the schema passed to :meth:`fit`.
         """
-        return self._generate(n)
+        if not hasattr(self, "schema"):
+            raise ValueError("Cannot generate before the generator is fitted.")
+        fit_random_state = self.random_state
+        set_seed(random_state, self.full_determinism)
+        self.random_state = random_state
+        try:
+            syn = self._generate(n)
+        finally:
+            self.random_state = fit_random_state
+        if getattr(self, "_generate_model_space", False):
+            return syn
+        return self.schema.restore(self._decode_categoricals(syn))
 
     @abstractmethod
     def _generate(self, n: int):
         """Generator-specific sampling implementation."""
 
+    def _state(self) -> dict:
+        return self.__dict__.copy()
+
+    def _base_state(self) -> dict:
+        return {
+            "random_state": self.random_state,
+            "full_determinism": self.full_determinism,
+            "ordinal_encoder": self.ordinal_encoder,
+            "_base_discrete_features": self._base_discrete_features,
+        }
+
+    def _save_extra(self, path: Path) -> None:
+        pass
+
+    @classmethod
+    def _restore_state(cls, state: dict):
+        from .persistence import restore_generator
+
+        return restore_generator(cls, state)
+
+    def _load_extra(self, path: Path) -> None:
+        pass
+
     def save(self, path):
         """Persist the generator state with the default pickle layout."""
         from .persistence import save_generator_state
 
-        return save_generator_state(path, self.__dict__)
+        state = self._state()
+        state.update(self._base_state())
+        if hasattr(self, "schema"):
+            state["schema"] = self.schema
+        path = save_generator_state(path, state)
+        self._save_extra(path)
+        return path
 
     @classmethod
     def load(cls, path):
         """Load a generator persisted with the default pickle layout."""
-        from .persistence import load_generator_state, restore_generator
+        from .persistence import load_generator_state
 
-        return restore_generator(cls, load_generator_state(path))
+        path = Path(path)
+        generator = cls._restore_state(load_generator_state(path))
+        generator._load_extra(path)
+        return generator
 
 
 class TabularSchema:
@@ -459,12 +615,34 @@ class DataProcessor:
             )
             self.imputer.imputer = legacy_imputer
             self.imputer.imputer_base_cols = getattr(self, "imputer_base_cols", None)
+            if self.imputer.imputer_base_cols is not None:
+                self.imputer.categorical_features = [
+                    col
+                    for col in self.imputer.imputer_base_cols
+                    if col not in self.imputer.numerical_features
+                ]
+            else:
+                self.imputer.categorical_features = list(
+                    getattr(self, "categorical_features", [])
+                )
+            self.imputer.ordinal_encoder = getattr(
+                self,
+                "ordinal_encoder",
+                getattr(self, "ord_encoder", None),
+            )
+        if self.fitted and not hasattr(self, "input_schema_fingerprint"):
+            self.input_schema_fingerprint = self._schema_fingerprint_from_schema(
+                self.schema
+            )
+        if self.fitted and not hasattr(self, "input_categorical_features"):
+            self.input_categorical_features = list(
+                getattr(self, "categorical_features", [])
+            )
 
     def preprocess(
         self,
         X: pd.DataFrame,
         discrete_features: list = None,
-        X_val: pd.DataFrame = None,
     ):
         """Fit-if-needed and transform input data for model training.
 
@@ -479,28 +657,26 @@ class DataProcessor:
             discrete_features (list): Names of categorical/discrete columns.
                 Required on the first call and optional after the processor is
                 fitted. Default: None.
-            X_val (pd.DataFrame): Optional validation data in the same schema
-                as ``X``. Default: None.
 
         Returns:
-            pd.DataFrame or tuple: Processed ``X`` when ``X_val`` is None, or
-            ``(X_processed, X_val_processed)`` when validation data is provided.
+            pd.DataFrame: Processed ``X``.
         """
         if self.fitted:
-            return self._transform(X, X_val)
+            return self._transform(X)
 
         if discrete_features is None:
             raise ValueError(
                 "discrete_features must be provided when fitting a DataProcessor."
             )
-        return self._fit_transform(X, discrete_features, X_val)
+        return self._fit_transform(X, discrete_features)
 
     def postprocess(self, X: pd.DataFrame) -> pd.DataFrame:
         """Transform generated model-space data back to the original schema.
 
-        Applies inverse constraints, restores dropped constraint columns,
-        rounds numeric columns to the original precision, restores the original
-        column order, and casts columns back to their original pandas dtypes.
+        Restores the processed model-space schema, applies inverse constraints,
+        restores dropped constraint columns, rounds numeric columns to the
+        original precision, restores the original column order, and casts
+        columns back to their original pandas dtypes.
 
         Args:
             X (pd.DataFrame): Generated data in the processor's model-space
@@ -512,7 +688,7 @@ class DataProcessor:
         if not self.fitted:
             raise ValueError("Cannot postprocess before the DataProcessor is fitted.")
 
-        syn_X = self.schema.round_numeric(X)
+        syn_X = self.model_schema.restore(X)
         syn_X = self.constraint_enforcer.inverse_transform(syn_X)
         for col, value in self.constant_values.items():
             syn_X[col] = value
@@ -560,9 +736,12 @@ class DataProcessor:
         self,
         X: pd.DataFrame,
         discrete_features: list,
-        X_val: pd.DataFrame = None,
     ):
-        self._validate_fit_input(X, X_val)
+        discrete_features = list(discrete_features)
+        self._validate_fit_input(X)
+        self._validate_feature_mix(X, discrete_features)
+        self.input_schema_fingerprint = self._schema_fingerprint_from_dataframe(X)
+        self.input_categorical_features = list(discrete_features)
 
         self.categorical_features = [x for x in X.columns if x in discrete_features]
         self.numerical_features = [
@@ -574,7 +753,6 @@ class DataProcessor:
         self.ori_precision = self.schema.precision
 
         x = X.copy()
-        x_val = X_val.copy() if X_val is not None else None
 
         self.ord_encoder = None
 
@@ -582,21 +760,23 @@ class DataProcessor:
             self.missing_imputation_method,
             self.random_state,
         )
-        x, x_val = self.imputer.fit_transform(
+        x, _ = self.imputer.fit_transform(
             x,
             self.numerical_features,
-            x_val,
         )
+        self.constraint_enforcer = ConstraintEnforcer(self.constraints)
+        self.constraint_enforcer.validate(x)
+        x = self.constraint_enforcer.transform(x)
+
+        constraint_columns = self.constraint_enforcer.referenced_columns(x.columns)
         self.constant_values = {
             col: x[col].iloc[0]
             for col in x.columns
-            if x[col].nunique(dropna=False) == 1
+            if col not in constraint_columns and x[col].nunique(dropna=False) == 1
         }
         if self.constant_values:
             constant_cols = list(self.constant_values)
             x = x.drop(columns=constant_cols)
-            if x_val is not None:
-                x_val = x_val.drop(columns=constant_cols)
             self.categorical_features = [
                 col
                 for col in self.categorical_features
@@ -607,24 +787,20 @@ class DataProcessor:
                 for col in self.numerical_features
                 if col not in self.constant_values
             ]
-
-        self.constraint_enforcer = ConstraintEnforcer(self.constraints)
-        x = self.constraint_enforcer.transform(x)
-        if x_val is not None:
-            x_val = self.constraint_enforcer.transform(x_val)
+        self.categorical_features = [
+            col for col in self.categorical_features if col in x.columns
+        ]
+        self.numerical_features = [
+            col for col in self.numerical_features if col in x.columns
+        ]
+        self.model_schema = TabularSchema.from_dataframe(x)
 
         self.fitted = True
 
-        if X_val is None:
-            return x
-        return x, x_val
+        return x
 
-    def _transform(self, X: pd.DataFrame, X_val: pd.DataFrame = None):
-        x = self._transform_one(X)
-        x_val = self._transform_one(X_val) if X_val is not None else None
-        if X_val is None:
-            return x
-        return x, x_val
+    def _transform(self, X: pd.DataFrame):
+        return self._transform_one(X)
 
     def _transform_one(self, X: pd.DataFrame) -> pd.DataFrame:
         if X is None:
@@ -640,7 +816,7 @@ class DataProcessor:
         x = self.constraint_enforcer.transform(x)
         return x
 
-    def _validate_fit_input(self, X: pd.DataFrame, X_val: pd.DataFrame = None) -> None:
+    def _validate_fit_input(self, X: pd.DataFrame) -> None:
         if any(" " in x for x in X.columns):
             raise ValueError(
                 "Feature names cannot contain spaces. Please rename the features and try again."
@@ -651,10 +827,32 @@ class DataProcessor:
                 raise ValueError(
                     f"Column {col} has only missing values in the training set, which we currently do not support."
                 )
-            if X_val is not None and X_val[col].isna().all():
-                raise ValueError(
-                    f"Column {col} has only missing values in the validation set, which we currently do not support."
-                )
+
+    def _validate_feature_mix(self, X: pd.DataFrame, discrete_features: list) -> None:
+        missing_features = [col for col in discrete_features if col not in X.columns]
+        if missing_features:
+            missing = ", ".join(missing_features)
+            raise ValueError(f"discrete_features are not present in X: {missing}")
+
+        non_numerical_features = [
+            col
+            for col in X.columns
+            if col not in discrete_features
+            and not pd.api.types.is_numeric_dtype(X[col])
+        ]
+        if non_numerical_features:
+            non_numerical = ", ".join(non_numerical_features)
+            raise ValueError(
+                f"Non-discrete features must be numerical: {non_numerical}"
+            )
+
+    @staticmethod
+    def _schema_fingerprint_from_dataframe(X: pd.DataFrame) -> list[tuple[object, str]]:
+        return [(col, str(X[col].dtype)) for col in X.columns]
+
+    @staticmethod
+    def _schema_fingerprint_from_schema(schema) -> list[tuple[object, str]]:
+        return [(col, str(schema.dtypes[col])) for col in schema.column_order]
 
 
 class SynthyverseGenerator:
@@ -687,6 +885,9 @@ class SynthyverseGenerator:
             and by generator classes that accept ``random_state`` when no value
             is supplied in ``generator_params`` or ``generator_kwargs``.
             Default: 0.
+        full_determinism (bool): Whether the wrapped generator should request
+            stricter deterministic framework behavior during fitting. Default:
+            False.
         **generator_kwargs: Additional keyword arguments passed to the wrapped
             generator constructor. These override keys in ``generator_params``.
 
@@ -718,6 +919,7 @@ class SynthyverseGenerator:
         constraints: Union[list, str, None] = None,
         missing_imputation_method: str = "drop",
         random_state: int = 0,
+        full_determinism: bool = False,
         **generator_kwargs,
     ):
         """Create a high-level Synthyverse generator wrapper.
@@ -735,9 +937,12 @@ class SynthyverseGenerator:
             random_state: Random seed used by the created ``DataProcessor`` and
                 by generator classes that accept ``random_state`` when it is not
                 already specified in ``generator_params`` or ``generator_kwargs``.
+            full_determinism: Whether the wrapped generator should request
+                stricter deterministic framework behavior during fitting.
             **generator_kwargs: Additional generator constructor arguments.
         """
         self.random_state = random_state
+        self.full_determinism = full_determinism
         self.processor = processor or DataProcessor(
             constraints=constraints,
             missing_imputation_method=missing_imputation_method,
@@ -748,6 +953,7 @@ class SynthyverseGenerator:
             generator_params=generator_params,
             generator_kwargs=generator_kwargs,
             random_state=random_state,
+            full_determinism=full_determinism,
         )
         self.fitted = False
 
@@ -755,7 +961,6 @@ class SynthyverseGenerator:
         self,
         X: pd.DataFrame,
         discrete_features: list = None,
-        val_size: float = None,
     ):
         """Preprocess data and fit the wrapped low-level generator.
 
@@ -763,32 +968,33 @@ class SynthyverseGenerator:
             X (pd.DataFrame): Training data in the original tabular schema.
             discrete_features (list): Names of categorical/discrete columns in
                 ``X``. Required when fitting a new processor. Default: None.
-            val_size (float): Optional validation fraction passed to wrapped
-                generators that use validation data.
 
         Returns:
             SynthyverseGenerator: The fitted high-level generator.
         """
-        processed = self.processor.preprocess(
-            X=X,
-            discrete_features=discrete_features,
-        )
-        X_processed = processed
+        if discrete_features is not None:
+            self.generator._validate_feature_mix(X, discrete_features)
 
-        if discrete_features is None:
-            discrete_features = self.processor.categorical_features
-        else:
-            discrete_features = [
-                col for col in discrete_features if col in X_processed.columns
-            ]
+        processor_state = deepcopy(self.processor.__dict__)
+        try:
+            processed = self.processor.preprocess(
+                X=X,
+                discrete_features=discrete_features,
+            )
+            X_processed = processed
 
-        fit_kwargs = {"X": X_processed, "discrete_features": discrete_features}
-        if (
-            val_size is not None
-            and "val_size" in inspect.signature(self.generator.fit).parameters
-        ):
-            fit_kwargs["val_size"] = val_size
-        self.generator.fit(**fit_kwargs)
+            if discrete_features is None:
+                discrete_features = self.processor.categorical_features
+            else:
+                discrete_features = [
+                    col for col in discrete_features if col in X_processed.columns
+                ]
+
+            self.generator.fit(X=X_processed, discrete_features=discrete_features)
+        except Exception:
+            self.processor.__dict__.clear()
+            self.processor.__dict__.update(processor_state)
+            raise
         self.fitted = True
         return self
 
@@ -796,7 +1002,6 @@ class SynthyverseGenerator:
         self,
         X: pd.DataFrame,
         discrete_features: list = None,
-        val_size: float = None,
     ):
         """Fit the high-level generator to tabular data.
 
@@ -806,19 +1011,19 @@ class SynthyverseGenerator:
             X (pd.DataFrame): Training data in the original tabular schema.
             discrete_features (list): Names of categorical/discrete columns in
                 ``X``. Required when fitting a new processor. Default: None.
-            val_size (float): Optional validation fraction passed to wrapped
-                generators that use validation data.
 
         Returns:
             SynthyverseGenerator: The fitted high-level generator.
         """
-        return self.train(X=X, discrete_features=discrete_features, val_size=val_size)
+        return self.train(X=X, discrete_features=discrete_features)
 
-    def sample(self, n: int) -> pd.DataFrame:
+    def sample(self, n: int, random_state: int = 0) -> pd.DataFrame:
         """Generate synthetic rows and restore the original tabular schema.
 
         Args:
             n (int): Number of synthetic rows to generate.
+            random_state (int): Sampling seed passed to the wrapped generator.
+                Default: 0.
 
         Returns:
             pd.DataFrame: Synthetic data with the original columns, dtypes, and
@@ -826,22 +1031,24 @@ class SynthyverseGenerator:
         """
         if not self.processor.fitted:
             raise ValueError("Cannot sample before the generator is trained.")
-        syn = self.generator.generate(n)
+        syn = self.generator.generate(n, random_state=random_state)
         return self.processor.postprocess(syn)
 
-    def generate(self, n: int) -> pd.DataFrame:
+    def generate(self, n: int, random_state: int = 0) -> pd.DataFrame:
         """Generate synthetic tabular data.
 
         Alias for :meth:`sample` for consistency with low-level generators.
 
         Args:
             n (int): Number of synthetic rows to generate.
+            random_state (int): Sampling seed passed to the wrapped generator.
+                Default: 0.
 
         Returns:
             pd.DataFrame: Synthetic data with the original columns, dtypes, and
             numeric precision restored.
         """
-        return self.sample(n)
+        return self.sample(n, random_state=random_state)
 
     def save(self, path: Union[str, Path]) -> Path:
         """Persist the wrapper, processor, and wrapped generator to a directory.
@@ -863,6 +1070,7 @@ class SynthyverseGenerator:
             "generator_class": self.generator.__class__.__name__,
             "generator_name": getattr(self.generator, "name", None),
             "random_state": self.random_state,
+            "full_determinism": self.full_determinism,
             "fitted": self.fitted,
         }
         with (path / WRAPPER_FILENAME).open("wb") as f:
@@ -891,6 +1099,8 @@ class SynthyverseGenerator:
         wrapper.generator = generator
         wrapper.processor = processor
         wrapper.random_state = state.get("random_state", 0)
+        wrapper.full_determinism = state.get("full_determinism", False)
+        wrapper.generator.full_determinism = wrapper.full_determinism
         wrapper.fitted = state.get("fitted", True)
         return wrapper
 
@@ -900,8 +1110,10 @@ class SynthyverseGenerator:
         generator_params: dict = None,
         generator_kwargs: dict = None,
         random_state: int = 0,
+        full_determinism: bool = False,
     ):
         if isinstance(generator, BaseGenerator):
+            generator.full_determinism = full_determinism
             return generator
 
         generator_cls = SynthyverseGenerator._resolve_generator_class(generator)
@@ -914,6 +1126,8 @@ class SynthyverseGenerator:
             signature = inspect.signature(generator_cls.__init__)
             if "random_state" in signature.parameters:
                 params["random_state"] = random_state
+        if "full_determinism" not in params:
+            params["full_determinism"] = full_determinism
         return generator_cls(**params)
 
     @staticmethod
@@ -976,8 +1190,10 @@ class ConstraintEnforcer:
     directly when you want explicit control over constraint transformations.
 
     Args:
-        constraints (list): Constraint strings. Equalities use ``=`` and
-            inequalities use ``<``, ``<=``, ``>``, or ``>=``. Examples:
+        constraints (list): Constraint strings with one binary operator.
+            Equalities use ``=`` or ``==`` and inequalities use ``<``, ``<=``,
+            ``>``, or ``>=``. One side must be a single feature that can be
+            removed or converted to a margin. Examples:
             ``"total=part_a+part_b"``, ``"age>=18"``, and
             ``"income>expenses"``.
 
@@ -991,17 +1207,123 @@ class ConstraintEnforcer:
         >>> X_restored = enforcer.inverse_transform(X_model)
     """
 
+    _OPERATORS = (">=", "<=", "==", "!=", "=", ">", "<")
+
     def __init__(self, constraints: list):
-        self.constraints = constraints.copy()
+        self.constraints = list(constraints or [])
         self.equalities = []
         self.inequalities = []
         for c in self.constraints:
-            c = c.replace(" ", "")
-            if "=" in c and not ("<" in c or ">" in c):
-                self.equalities.append(c)
-            elif "<" in c or ">" in c:
-                c = c.replace("=", "")
-                self.inequalities.append(c)
+            parsed = self._parse(c)
+            if parsed["op"] in ("=", "=="):
+                self.equalities.append(parsed)
+            else:
+                self.inequalities.append(parsed)
+
+    def _parse(self, constraint):
+        if not isinstance(constraint, str):
+            raise TypeError("Constraints must be strings.")
+        raw = constraint
+        c = constraint.replace(" ", "")
+        matches = [op for op in self._OPERATORS if op in c]
+        if not matches:
+            raise ValueError(f"Constraint {raw} does not contain a supported operator.")
+        op = matches[0]
+        if op == "!=":
+            raise ValueError(f"Constraint {raw} uses !=, which cannot be enforced.")
+        parts = c.split(op)
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            raise ValueError(
+                f"Constraint {raw} must contain exactly one binary operator."
+            )
+        if any(extra_op in part for part in parts for extra_op in self._OPERATORS):
+            raise ValueError(
+                f"Constraint {raw} must contain exactly one binary operator."
+            )
+        return {"raw": raw, "left": parts[0], "op": op, "right": parts[1]}
+
+    def referenced_columns(self, columns) -> set:
+        refs = set()
+        for c in self.equalities + self.inequalities:
+            refs.update(self._expression_columns(c["left"], columns))
+            refs.update(self._expression_columns(c["right"], columns))
+        return refs
+
+    def validate(self, X: pd.DataFrame) -> None:
+        for c in self.equalities + self.inequalities:
+            valid = self._holds(X, c)
+            if not isinstance(valid, pd.Series):
+                valid = pd.Series(bool(valid), index=X.index)
+            if not bool(valid.all()):
+                n = int((~valid).sum())
+                raise ValueError(
+                    f"Constraint {c['raw']} is violated by {n} training rows."
+                )
+
+    def _holds(self, X: pd.DataFrame, c: dict) -> pd.Series:
+        left = self._eval(X, c["left"])
+        right = self._eval(X, c["right"])
+        if c["op"] in ("=", "=="):
+            if pd.api.types.is_numeric_dtype(left) and pd.api.types.is_numeric_dtype(
+                right
+            ):
+                return (left - right).abs() <= 1e-9
+            return left == right
+        if c["op"] == ">=":
+            return left >= right
+        if c["op"] == "<=":
+            return left <= right
+        if c["op"] == ">":
+            return left > right
+        return left < right
+
+    def _eval(self, X: pd.DataFrame, expression: str):
+        if expression in X.columns:
+            return X[expression]
+        return X.eval(expression)
+
+    def _expression_columns(self, expression: str, columns) -> set:
+        return {
+            col
+            for col in columns
+            if re.search(rf"(?<![\w`]){re.escape(str(col))}(?![\w`])", expression)
+        }
+
+    def _target(self, x: pd.DataFrame, c: dict) -> str:
+        target = c.get("target")
+        if target is not None:
+            if target not in x.columns:
+                raise ValueError(f"Constraint {c['raw']} is missing column {target}.")
+            return target
+        if c["left"] in x.columns:
+            target = c["left"]
+        elif c["right"] in x.columns:
+            target = c["right"]
+        else:
+            raise ValueError(
+                f"Constraint {c['raw']} is not valid. One side must be a single feature."
+            )
+        c["target"] = target
+        return target
+
+    def _check_dependencies(self, x: pd.DataFrame, c: dict, dropped: set) -> None:
+        available_or_dropped = set(x.columns) | dropped
+        refs = self._expression_columns(c["left"], available_or_dropped)
+        refs.update(self._expression_columns(c["right"], available_or_dropped))
+        blocked = refs & dropped
+        if blocked:
+            cols = ", ".join(sorted(blocked))
+            raise ValueError(
+                f"Constraint {c['raw']} references columns dropped by earlier "
+                f"equality constraints: {cols}."
+            )
+
+    def _minimum_margin(self, series: pd.Series, op: str):
+        if op not in (">", "<"):
+            return 0
+        if pd.api.types.is_integer_dtype(series):
+            return 1
+        return 1e-12
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """Transform constrained data into model space.
@@ -1017,27 +1339,21 @@ class ConstraintEnforcer:
 
         x = X.copy()
 
+        dropped = set()
         for c in self.equalities:
-            left, right = tuple(c.split("="))
-            if left in x.columns:
-                x = x.drop(columns=[left])
-            elif right in x.columns:
-                x = x.drop(columns=[right])
-            else:
-                raise ValueError(
-                    f"Constraint {c} is not valid. Potentially both sides of the equation contain multiple features."
-                )
+            self._check_dependencies(x, c, dropped)
+            target = self._target(x, c)
+            x = x.drop(columns=[target])
+            dropped.add(target)
         for c in self.inequalities:
-            token = "<" if "<" in c else ">"
-            left, right = tuple(c.split(token))
-            if left in x.columns:
-                x[left] = x[left] - x.eval(right)
-            elif right in x.columns:
-                x[right] = x[right] - x.eval(left)
+            self._check_dependencies(x, c, dropped)
+            target = self._target(x, c)
+            left = self._eval(x, c["left"])
+            right = self._eval(x, c["right"])
+            if c["op"] in (">", ">="):
+                x[target] = left - right
             else:
-                raise ValueError(
-                    f"Constraint {c} is not valid. Potentially both sides of the inequality contain multiple features."
-                )
+                x[target] = right - left
 
         return x
 
@@ -1052,26 +1368,31 @@ class ConstraintEnforcer:
             pd.DataFrame: Copy of ``X`` with constrained columns reconstructed.
         """
         x = X.copy()
-        for c in self.equalities:
-            left, right = tuple(c.split("="))
-            if left in x.columns:
-                x[left] = x.eval(right)
-            elif right in x.columns:
-                x[right] = x.eval(left)
+        for c in reversed(self.equalities):
+            target = c.get("target")
+            if target == c["left"]:
+                x[target] = self._eval(x, c["right"])
+            elif target == c["right"]:
+                x[target] = self._eval(x, c["left"])
             else:
                 raise ValueError(
-                    f"Constraint {c} is not valid. Potentially both sides of the equation contain multiple features."
+                    f"Constraint {c['raw']} cannot be reversed before transform is called."
                 )
         for c in self.inequalities:
-            token = "<" if "<" in c else ">"
-            left, right = tuple(c.split(token))
-            if left in x.columns:
-                x[left] = x[left] + x.eval(right)
-            elif right in x.columns:
-                x[right] = x[right] + x.eval(left)
-            else:
+            target = c.get("target")
+            if target not in x.columns:
                 raise ValueError(
-                    f"Constraint {c} is not valid. Potentially both sides of the inequality contain multiple features."
+                    f"Constraint {c['raw']} cannot be reversed before transform is called."
                 )
+            margin = x[target].clip(lower=self._minimum_margin(x[target], c["op"]))
+            if c["op"] in (">", ">="):
+                if target == c["left"]:
+                    x[target] = margin + self._eval(x, c["right"])
+                else:
+                    x[target] = self._eval(x, c["left"]) - margin
+            elif target == c["left"]:
+                x[target] = self._eval(x, c["right"]) - margin
+            else:
+                x[target] = margin + self._eval(x, c["left"])
 
         return x

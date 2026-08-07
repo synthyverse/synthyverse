@@ -1,5 +1,97 @@
+import random
+from contextlib import contextmanager
+
+import numpy as np
 import torch
 import torch.nn as nn
+from sklearn.preprocessing import QuantileTransformer, StandardScaler
+from sklearn.model_selection import train_test_split
+import pandas as pd
+from typing import Optional
+from ..evaluation.fidelity import ClassifierTwoSampleTest
+
+
+@contextmanager
+def preserve_rng_state(generator):
+    generator_random_state = generator.random_state
+    random_state = random.getstate()
+    numpy_state = np.random.get_state()
+    torch_state = torch.random.get_rng_state()
+    cuda_states = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    try:
+        yield
+    finally:
+        generator.random_state = generator_random_state
+        random.setstate(random_state)
+        np.random.set_state(numpy_state)
+        torch.random.set_rng_state(torch_state)
+        if cuda_states is not None:
+            torch.cuda.set_rng_state_all(cuda_states)
+
+
+def validate_c2st(
+    self, X_val: pd.DataFrame, n_sets: int = 3, nfolds: int = 3, random_state: int = 0
+):
+    # preserves rng state for training the DGM
+    with preserve_rng_state(self):
+        result = 0
+        for i in range(n_sets):
+            state = random_state + i + 1
+            syn = self.generate(len(X_val), random_state=state)
+            score = ClassifierTwoSampleTest(nfold=nfolds, random_state=state).evaluate(
+                X_val, syn, discrete_features=self.discrete_features
+            )["c2st.auc"]
+            result += abs(score - 0.5)
+        return result / n_sets
+
+
+def clone_state_dict(model):
+    return {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
+
+def split_validation(
+    X: pd.DataFrame,
+    val_size: float,
+    target_column: Optional[str] = None,
+    discrete_features: list[str] = [],
+    random_state: int = 42,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if val_size <= 0:
+        return X.copy(), None
+    if target_column is not None and target_column in discrete_features:
+        return train_test_split(
+            X, test_size=val_size, random_state=random_state, stratify=X[target_column]
+        )
+    else:
+        return train_test_split(X, test_size=val_size, random_state=random_state)
+
+
+class QuantileStandardScaler:
+    def __init__(self, n_samples: int, random_state: int):
+        self.quantile_transformer = QuantileTransformer(
+            output_distribution="normal",
+            n_quantiles=max(min(n_samples // 30, 1000), 10),
+            subsample=int(1e9),
+            random_state=random_state,
+        )
+        self.standard_scaler = StandardScaler()
+
+    def fit(self, X, y=None):
+        self.standard_scaler.fit(self.quantile_transformer.fit_transform(X))
+        return self
+
+    def transform(self, X):
+        return self.standard_scaler.transform(self.quantile_transformer.transform(X))
+
+    def fit_transform(self, X, y=None):
+        return self.standard_scaler.fit_transform(
+            self.quantile_transformer.fit_transform(X)
+        )
+
+    def inverse_transform(self, X):
+        return self.quantile_transformer.inverse_transform(
+            self.standard_scaler.inverse_transform(X)
+        )
 
 
 class PositionalEmbedding(torch.nn.Module):
@@ -22,6 +114,9 @@ class PositionalEmbedding(torch.nn.Module):
 class MLPDiffusion(nn.Module):
     def __init__(self, d_in, embedding_dim=512, mlp_dim=2048, mlp_layers=2):
         super().__init__()
+        if embedding_dim % 2 != 0:
+            raise ValueError("MLPDiffusion requires an even embedding_dim")
+
         self.embedding_dim = embedding_dim
         self.dim_t = embedding_dim
         self.mlp_dim = mlp_dim
@@ -63,12 +158,11 @@ class FastTensorDataLoader:
         self.data = data
         self.batch_size = batch_size
         self.shuffle = shuffle
-
-        if drop_last:
-            self.dataset_len = (self.dataset_len // self.batch_size) * self.batch_size
+        self.drop_last = drop_last
 
         n_batches, remainder = divmod(self.dataset_len, self.batch_size)
-        self.n_batches = n_batches + (remainder > 0)
+        self.n_batches = n_batches if drop_last else n_batches + (remainder > 0)
+        self.iter_len = self.n_batches * self.batch_size if drop_last else self.dataset_len
 
     def __iter__(self):
         self.indices = torch.randperm(self.dataset_len) if self.shuffle else None
@@ -76,7 +170,7 @@ class FastTensorDataLoader:
         return self
 
     def __next__(self):
-        if self.i >= self.dataset_len:
+        if self.i >= self.iter_len:
             raise StopIteration
 
         if self.indices is not None:

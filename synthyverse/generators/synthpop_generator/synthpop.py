@@ -1,12 +1,10 @@
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
-from sklearn.preprocessing import OrdinalEncoder
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from tqdm.auto import tqdm
 
 from ..base import BaseGenerator
-from ..persistence import load_generator_state, restore_generator, save_generator_state
 
 
 class SynthpopGenerator(BaseGenerator):
@@ -25,7 +23,7 @@ class SynthpopGenerator(BaseGenerator):
             a tree leaf. Passed to sklearn as ``min_samples_leaf``. Default: 10.
         minibucket_sampling (int): Minimum number of source samples used when
             sampling from honest-tree leaves. Leaves with fewer source samples
-            are collapsed upward. Default: 5.
+            are collapsed upward. Default: 3.
         K (int): Number of bagged feature-order models. When ``K < 1``, the
             original feature order is used. Default: 100.
         n_jobs (int): Number of parallel jobs used during training and
@@ -63,7 +61,6 @@ class SynthpopGenerator(BaseGenerator):
             ``{"bandwidth": value}`` to set an absolute bandwidth; otherwise
             Scott's rule is used. Default: None.
             Default: None.
-        random_state (int): Random seed for reproducibility. Default: 0.
 
     Example:
         >>> import pandas as pd
@@ -76,7 +73,6 @@ class SynthpopGenerator(BaseGenerator):
         ...     minibucket=5,
         ...     minibucket_sampling=5,
         ...     tree_kwargs={"max_depth": 10},
-        ...     random_state=42,
         ... )
         >>> generator.fit(X, discrete_features)
         >>> X_syn = generator.generate(1000)
@@ -101,7 +97,9 @@ class SynthpopGenerator(BaseGenerator):
         smoothing: str = None,
         kde_kwargs: dict = None,
         random_state: int = 0,
+        full_determinism: bool = False,
     ):
+        super().__init__(random_state=random_state, full_determinism=full_determinism)
         if condition_y not in {None, "first", "last"}:
             raise ValueError("condition_y must be one of None, 'first', or 'last'.")
         if condition_y is not None and target_column is None:
@@ -111,7 +109,6 @@ class SynthpopGenerator(BaseGenerator):
         self.minibucket_sampling = int(minibucket_sampling)
         self.K = int(K)
         self.n_jobs = n_jobs
-        self.random_state = random_state
         self.subsample = float(subsample)
         self.subsample_with_replacement = bool(subsample_with_replacement)
         self.honest_trees = bool(honest_trees)
@@ -146,26 +143,12 @@ class SynthpopGenerator(BaseGenerator):
             i for i, col in enumerate(self.columns) if col in self.discrete_features
         }
 
-        X_fit = X.copy()
-        if self.discrete_features:
-            self.encoder = OrdinalEncoder()
-            X_fit[self.discrete_features] = self.encoder.fit_transform(
-                X_fit[self.discrete_features]
-            )
-        else:
-            self.encoder = None
-
-        X_np = X_fit.to_numpy(dtype=float)
+        X_np = X.to_numpy(dtype=float)
         n_models = max(1, self.K)
         n_cols = len(self.columns)
         self.marginal_values = [X_np[:, i] for i in range(n_cols)]
-        self.order_seeds = None
-        self.split_seeds = None
-        if self.random_state is None:
-            rng = np.random.default_rng()
-            high = np.iinfo(np.uint32).max
-            self.order_seeds = rng.integers(high, size=n_models).tolist()
-            self.split_seeds = rng.integers(high, size=n_models).tolist()
+        self.fit_random_state = self.random_state
+        self.tree_kwargs["random_state"] = self.fit_random_state
         self.models = [{} for _ in range(n_models)]
 
         def fit_model(model_idx):
@@ -233,11 +216,6 @@ class SynthpopGenerator(BaseGenerator):
             columns=self.columns,
         )
 
-        if self.discrete_features and len(syn) > 0:
-            syn[self.discrete_features] = self.encoder.inverse_transform(
-                syn[self.discrete_features]
-            )
-
         return syn[self.columns]
 
     def _generate_model(self, model_idx: int, n: int, show_progress: bool = False):
@@ -247,7 +225,7 @@ class SynthpopGenerator(BaseGenerator):
         source_idx = (
             self._source_indices_from_train(train_idx) if self.honest_trees else None
         )
-        rng = np.random.default_rng(self._derive_seed(2, model_idx))
+        rng = np.random.default_rng(self._derive_seed(self.random_state, 2, model_idx))
         syn = np.empty((n, len(self.columns)))
 
         columns = enumerate(order)
@@ -395,7 +373,9 @@ class SynthpopGenerator(BaseGenerator):
         ]
 
     def _ensure_runtime_caches(self):
-        if len(getattr(self, "_real_leaf_cache", [])) != len(self.models):
+        if len(getattr(self, "_real_leaf_cache", [])) != len(self.models) or len(
+            getattr(self, "_honest_lookup_cache", [])
+        ) != len(self.models):
             self._reset_runtime_caches()
 
     def __post_load__(self):
@@ -428,11 +408,7 @@ class SynthpopGenerator(BaseGenerator):
         model = self.models[model_idx]
         if "order" in model:
             return model["order"]
-        seed = (
-            self._derive_seed(0, model_idx)
-            if self.random_state is not None
-            else self.order_seeds[model_idx]
-        )
+        seed = self._derive_seed(self.fit_random_state, 0, model_idx)
         order = np.random.default_rng(seed).permutation(n_cols).tolist()
         if self.condition_y is not None:
             order = self._condition_order(order)
@@ -458,19 +434,11 @@ class SynthpopGenerator(BaseGenerator):
         if n_train <= 0:
             raise ValueError("subsample leaves no rows for tree training.")
 
-        seed = (
-            self._derive_seed(1, model_idx)
-            if self.random_state is not None
-            else self.split_seeds[model_idx]
-        )
+        seed = self._derive_seed(self.fit_random_state, 1, model_idx)
         sampled = np.random.default_rng(seed).choice(
             n_rows, n_train, replace=self.subsample_with_replacement
         )
         return sampled
-
-    def _source_indices(self, model_idx):
-        train_idx = self._train_indices(model_idx)
-        return self._source_indices_from_train(train_idx)
 
     def _source_indices_from_train(self, train_idx):
         if train_idx is None:
@@ -509,11 +477,8 @@ class SynthpopGenerator(BaseGenerator):
             "'kde', or 'eqf'."
         )
 
-    def _derive_seed(self, *parts):
-        if self.random_state is None:
-            return None
-
-        entropy = [int(self.random_state) & 0xFFFFFFFF]
+    def _derive_seed(self, random_state, *parts):
+        entropy = [int(random_state) & 0xFFFFFFFF]
         entropy.extend(int(part) & 0xFFFFFFFF for part in parts)
         seed = np.random.SeedSequence(entropy).generate_state(1, dtype=np.uint32)[0]
         return int(seed)
@@ -630,21 +595,33 @@ class SynthpopGenerator(BaseGenerator):
 
         return sampled
 
-    def save(self, path):
-        state = self.__dict__.copy()
-        state.pop("marginal_samplers", None)
-        state.pop("_real_leaf_cache", None)
-        state.pop("_honest_lookup_cache", None)
-        state["models"] = [
-            {
-                "columns": {
-                    col: self._column_tree(model, col) for col in model["columns"]
+    def _state(self):
+        state = {
+            "minibucket_sampling": self.minibucket_sampling,
+            "K": self.K,
+            "n_jobs": self.n_jobs,
+            "subsample": self.subsample,
+            "subsample_with_replacement": self.subsample_with_replacement,
+            "honest_trees": self.honest_trees,
+            "cache_real_leafs": self.cache_real_leafs,
+            "cache_honest_lookup": self.cache_honest_lookup,
+            "condition_y": self.condition_y,
+            "smoothing": self.smoothing,
+            "kde_kwargs": self.kde_kwargs,
+            "columns": self.columns,
+            "discrete_features": self.discrete_features,
+            "discrete_idx": self.discrete_idx,
+            "marginal_values": self.marginal_values,
+            "fit_random_state": self.fit_random_state,
+            "models": [
+                {
+                    "columns": {
+                        col: self._column_tree(model, col) for col in model["columns"]
+                    }
                 }
-            }
-            for model in self.models
-        ]
-        return save_generator_state(path, state)
-
-    @classmethod
-    def load(cls, path):
-        return restore_generator(cls, load_generator_state(path))
+                for model in self.models
+            ],
+        }
+        if self.condition_y is not None:
+            state["target_column"] = self.target_column
+        return state

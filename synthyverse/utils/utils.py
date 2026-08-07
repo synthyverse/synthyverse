@@ -1,4 +1,6 @@
-import gc, math, sys
+import gc, math
+from typing import Any, Iterable
+import torch
 
 
 def get_total_trainable_params(model):
@@ -18,6 +20,7 @@ def resolve_epochs_from_training_steps(
     training_steps: int,
     sample_size: int,
     batch_size: int,
+    drop_last: bool = False,
 ) -> int:
     """Resolve epochs, optionally overriding them with a fixed training step count."""
     if training_steps is None:
@@ -28,65 +31,29 @@ def resolve_epochs_from_training_steps(
     if batch_size <= 0:
         raise ValueError("batch_size must be a positive integer.")
 
-    steps_per_epoch = max(sample_size // batch_size, 1)
+    steps_per_epoch = (
+        sample_size // batch_size if drop_last else math.ceil(sample_size / batch_size)
+    )
+    steps_per_epoch = max(steps_per_epoch, 1)
     return math.ceil(training_steps / steps_per_epoch)
 
 
+def memory_guarded(items: Iterable[Any]) -> Iterable[Any]:
+    """memory guarded iterator to release memory in costly loop-based pipelines."""
+    for item in items:
+        free_up_memory()
+        try:
+            yield item
+        finally:
+            free_up_memory()
+
+
 def free_up_memory():
-    """Aggressively release Python-level CPU and GPU memory.
+    gc.collect()
 
-    This function performs comprehensive memory cleanup across multiple frameworks:
-    - Python garbage collection
-    - PyTorch CUDA cache clearing
-    - TensorFlow/Keras session clearing
-    - JAX engine clearing
-    - Matplotlib figure closing
-    """
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        torch.cuda.reset_peak_memory_stats()
 
-    # --- 1. Drop Python references ----------------------------------------
-    gc.collect()  # clear cyclic refs first pass
-    for name, mod in list(sys.modules.items()):
-        # Unload large, one-off modules you know you won't reuse (optional).
-        # Example heuristic: anything imported from inside a loop.
-        if mod is None or "your_temp_pkg" in name:
-            sys.modules.pop(name, None)
-    gc.collect()  # second pass after pruning modules
-
-    # --- 2. PyTorch (if present) ------------------------------------------
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()  # release unused cached blocks
-            torch.cuda.ipc_collect()  # flush inter-process cached blocks
-            torch.cuda.reset_peak_memory_stats()
-    except ImportError:
-        pass
-
-    # --- 3. TensorFlow / Keras (if present) -------------------------------
-    try:
-        import tensorflow as tf
-
-        tf.keras.backend.clear_session()  # frees graph + variables
-    except ImportError:
-        pass
-
-    # --- 4. JAX (if present) ----------------------------------------------
-    try:
-        import jax
-        from jax._src import api
-
-        api._clear_engine()  # clears XLA backend cache
-    except Exception:
-        pass  # JAX API is private; ignore if not available
-
-    # --- 5. Forcefully close matplotlib figures (notorious leak) ----------
-    try:
-        import matplotlib.pyplot as plt
-
-        plt.close("all")
-    except ImportError:
-        pass
-
-    # Final sweep
     gc.collect()

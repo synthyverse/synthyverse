@@ -5,7 +5,7 @@ import pandas as pd
 from xgb_diffusion import XGBDiffusionRegressor
 
 from joblib import Parallel, delayed
-from sklearn.preprocessing import MinMaxScaler, OrdinalEncoder
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.utils import check_random_state
 from tqdm import tqdm
 
@@ -49,14 +49,13 @@ class XGBDiffusionGenerator(BaseGenerator):
             diffusion-enabled XGBoost regressor. Default: ``{"n_estimators": 500,
             "max_depth": 6, "early_stopping_rounds": 20,
             "min_boosting_round": 50, "eta": 0.06}``.
-        clip_extremes (bool): Whether to clip generated values to the encoded
-            training data range before inverse transforming. Default: True.
+        clip_extremes (bool): Whether to clip generated values to the training
+            data range. Default: True.
         model_per_timestep (bool): Whether to train separate models per diffusion
             timestep. If False, timestep is appended as an input feature. Default:
             True.
         model_per_label (bool): Whether to train separate models per categorical
             ``target_column`` value. Default: True.
-        random_state (int): Random seed for reproducibility. Default: 0.
         **kwargs: Additional keyword arguments accepted for API compatibility.
 
     Example:
@@ -71,8 +70,7 @@ class XGBDiffusionGenerator(BaseGenerator):
         >>> generator = XGBDiffusionGenerator(
         ...     target_column="target",
         ...     diffusion_type="flow",
-        ...     num_timesteps=50,
-        ...     random_state=42
+        ...     num_timesteps=50
         ... )
         >>>
         >>> # Fit and generate
@@ -105,8 +103,10 @@ class XGBDiffusionGenerator(BaseGenerator):
         model_per_timestep: bool = True,
         model_per_label: bool = True,
         random_state: int = 0,
+        full_determinism: bool = False,
         **kwargs,
     ):
+        super().__init__(random_state=random_state, full_determinism=full_determinism)
         self.diffusion_type = str(diffusion_type).lower()
         assert self.diffusion_type in (
             "flow",
@@ -122,7 +122,6 @@ class XGBDiffusionGenerator(BaseGenerator):
         self.beta_min = beta_min
         self.beta_max = beta_max
         self.eps = eps
-        self.random_state = random_state
         self.clip_extremes = clip_extremes
         self.model_per_timestep = model_per_timestep
         self.model_per_label = model_per_label
@@ -151,11 +150,6 @@ class XGBDiffusionGenerator(BaseGenerator):
         ]
 
         X_tr = X.copy()
-        if self.discrete_features:
-            self.ord_enc = OrdinalEncoder()
-            X_tr[self.discrete_features] = self.ord_enc.fit_transform(
-                X_tr[self.discrete_features]
-            ).astype(int)
         self.n_cls = (
             X_tr[self.discrete_features].max(axis=0) + 1
             if self.discrete_features
@@ -208,6 +202,7 @@ class XGBDiffusionGenerator(BaseGenerator):
             self.models[t][lv][col] = model
 
     def _generate(self, n: int):
+        self.rng = check_random_state(self.random_state)
         if self.is_conditional:
             lv_samples = self.labels.sample(n, replace=True, random_state=self.rng)
         else:
@@ -230,11 +225,6 @@ class XGBDiffusionGenerator(BaseGenerator):
 
         if self.is_conditional:
             syn[self.target_column] = lv_samples.to_numpy()
-
-        if self.discrete_features:
-            syn[self.discrete_features] = self.ord_enc.inverse_transform(
-                syn[self.discrete_features].astype(float)
-            )
 
         return syn[self.ori_cols]
 
@@ -264,11 +254,10 @@ class XGBDiffusionGenerator(BaseGenerator):
         return model, 0 if t is None else t, lv, col
 
     def _sample_flow(self, x: np.ndarray, lv: int) -> np.ndarray:
-        h = 1.0 / (self.timesteps - 1)
-        t = 0.0
-        for _ in range(self.timesteps - 1):
+        times = getattr(self, "times_", np.linspace(self.eps, 1.0, self.timesteps))
+        for t, t_next in zip(times[:-1], times[1:]):
+            h = t_next - t
             x = x + h * self._model(t, x, lv)
-            t += h
         return x
 
     def _sample_vp(self, x: np.ndarray, lv: int) -> np.ndarray:
@@ -283,8 +272,11 @@ class XGBDiffusionGenerator(BaseGenerator):
         return x + self.eps_sigma_**2 * self._model(self.eps, x, lv)
 
     def _model(self, t: float, x: np.ndarray, lv: int) -> np.ndarray:
-        step = int(round(t * (self.timesteps - 1)))
-        step = min(max(step, 0), self.timesteps - 1)
+        if hasattr(self, "times_"):
+            step = int(np.argmin(np.abs(self.times_ - t)))
+        else:
+            step = int(round(t * (self.timesteps - 1)))
+            step = min(max(step, 0), self.timesteps - 1)
         model_t = step if self.model_per_timestep else 0
         x_in = (
             x if self.model_per_timestep else np.column_stack([x, np.full(len(x), t)])
@@ -338,3 +330,34 @@ class XGBDiffusionGenerator(BaseGenerator):
                 self.X_max.to_numpy()[None, :],
             )
         return X
+
+    def _state(self):
+        return {
+            "diffusion_type": self.diffusion_type,
+            "target_column": self.target_column,
+            "timesteps": self.timesteps,
+            "n_jobs": self.n_jobs,
+            "beta_min": self.beta_min,
+            "beta_max": self.beta_max,
+            "eps": self.eps,
+            "clip_extremes": self.clip_extremes,
+            "model_per_timestep": self.model_per_timestep,
+            "ori_cols": self.ori_cols,
+            "discrete_features": self.discrete_features,
+            "features_x": self.features_x,
+            "disc_features_x": self.disc_features_x,
+            "cat_features_x": self.cat_features_x,
+            "X_min": self.X_min,
+            "X_max": self.X_max,
+            "labels": self.labels,
+            "model_cols": self.model_cols,
+            "scaler": self.scaler,
+            "times_": self.times_,
+            "alpha_bars_": self.alpha_bars_,
+            "vp_sample_ts_": self.vp_sample_ts_,
+            "vp_sample_hs_": self.vp_sample_hs_,
+            "eps_sigma_": self.eps_sigma_,
+            "dummy_cols": self.dummy_cols,
+            "models": self.models,
+            "is_conditional": self.is_conditional,
+        }

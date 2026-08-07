@@ -1,24 +1,9 @@
 import math
-import random
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
-
-
-def set_seeds(seed, cuda_deterministic=False):
-    if seed is not None:
-        random.seed(seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed(seed)
-            torch.cuda.manual_seed_all(seed)
-            if cuda_deterministic:
-                torch.backends.cudnn.deterministic = True
-                torch.backends.cudnn.benchmark = False
 
 
 def low_discrepancy_sampler(num_samples, device):
@@ -244,8 +229,7 @@ class HighResFlowModel(nn.Module):
         return x_next.cpu()
 
     @torch.inference_mode()
-    def sample_data(self, x_cat, z_num, num_steps=200, batch_size=4096, seed=42, verbose=True):
-        set_seeds(seed, cuda_deterministic=True)
+    def sample_data(self, x_cat, z_num, num_steps=200, batch_size=4096, verbose=True):
         n_batches, remainder = divmod(x_cat.shape[0], batch_size)
         sample_sizes = n_batches * [batch_size] + ([remainder] if remainder else [])
         x_cat_parts = torch.split(x_cat, sample_sizes, dim=0)

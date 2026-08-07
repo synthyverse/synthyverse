@@ -13,13 +13,12 @@ from sklearn.metrics import (
     r2_score,
     root_mean_squared_error,
     roc_auc_score,
-    roc_curve,
 )
-from sklearn.neighbors import KDTree
 from scipy.stats import gaussian_kde, rankdata
-from .gower import FastGowerNN
+from .base import BaseMetric
+from .distances import FastGowerNN
 from .ml import ml_task
-from .preprocessing import fast_gower_transform, gower_like_transform
+from .preprocessing import fast_gower_transform
 
 
 def _metric_key_part(value) -> str:
@@ -56,41 +55,18 @@ def lift_at_k(y_true, y_score, k=0.1):
     return float(precision_at_k / prevalence)
 
 
-def tpr_at_fpr(y_true, y_score, max_fpr=0.1):
-    """
-    Return the highest true positive rate achievable at or below max_fpr.
-
-    This is a thresholded attack metric: it measures member recall while
-    constraining the fraction of non-members incorrectly flagged as members.
-    """
-    if not 0 <= max_fpr <= 1:
-        raise ValueError("max_fpr must be in the interval [0, 1].")
-
-    y_true = np.asarray(y_true, dtype=int)
-    y_score = np.nan_to_num(np.asarray(y_score, dtype=float))
-    if len(y_true) != len(y_score):
-        raise ValueError("y_true and y_score must have the same length.")
-    if len(y_true) == 0:
-        return 0.0
-    if not np.any(y_true == 1) or not np.any(y_true == 0):
-        return 0.0
-
-    fpr, tpr, _ = roc_curve(y_true, y_score)
-    valid = fpr <= max_fpr
-    if not np.any(valid):
-        return 0.0
-    return float(np.max(tpr[valid]))
-
-
-class DCR:
+class DCR(BaseMetric):
     """Distance to Closest Record (DCR) privacy metrics.
 
     Measures whether synthetic records are more often closer to a training record than an independent test record.
 
     Args:
-        discrete_features (list): List of discrete/categorical feature names. Default: [].
-        subsample_test_size (bool): Whether to subsample the training set and synthetic set to the test set size. Prevents biasing DCR due to different sample sizes. If used, multiple iterations of the DCR score are computed and aggregated, to ensure the metric is based on all training and synthetic records. Default: True.
+        subsample_test_size (bool): Whether to subsample the training set and synthetic set to the test set size. Prevents biasing DCR due to different sample sizes. If used, multiple iterations average random train/synthetic subsamples of size ``|X_test|``. Default: True.
         random_state (int): Random seed for reproducibility. Default: 0.
+
+    Outputs:
+        DCR score, nearest-neighbor direction proportions, threshold risks,
+        and NNDR ratio summaries.
 
     Example:
         >>> import pandas as pd
@@ -104,65 +80,40 @@ class DCR:
         >>>
         >>> # Create metric
         >>> metric = DCR(
-        ...     discrete_features=discrete_features,
         ...     subsample_test_size=True
         ... )
         >>>
         >>> # Evaluate
-        >>> results = metric.evaluate(X_train, X_test, X_syn)
+        >>> results = metric.evaluate(X_train, X_syn, X_test=X_test, discrete_features=discrete_features)
     """
 
     name = "dcr"
 
     def __init__(
         self,
-        discrete_features: list = None,
         subsample_test_size: bool = True,
         random_state: int = 0,
     ):
-        super().__init__()
-        self.discrete_features = (
-            discrete_features if discrete_features is not None else []
-        )
+        super().__init__(random_state=random_state)
         self.subsample_test_size = subsample_test_size
-        self.random_state = random_state
 
-    def evaluate(
-        self, X_train: pd.DataFrame, X_test: pd.DataFrame, X_syn: pd.DataFrame
+    def _evaluate(
+        self,
+        X: pd.DataFrame,
+        X_syn: pd.DataFrame,
+        X_test: pd.DataFrame = None,
+        discrete_features: list = None,
     ):
-        """Evaluate synthetic data privacy using DCR metrics.
-
-        Args:
-            X_train: Training data as a pandas DataFrame.
-            X_test: Test data as a pandas DataFrame.
-            X_syn: Synthetic data as a pandas DataFrame.
-
-        Returns:
-            dict: Dictionary with keys:
-                - "dcr.score": DCR score such that higher scores indicate better privacy
-                - "dcr.train": Proportion closer to train
-                - "dcr.test": Proportion closer to test
-                - "dcr.002": Proportion closer to train than the 2% test-to-train distance quantile
-                - "dcr.005": Proportion closer to train than the 5% test-to-train distance quantile
-                - "dcr.nndr_train": Mean NNDR score from synthetic records to train records
-                - "dcr.nndr_train_002": 2% NNDR quantile from synthetic records to train records
-                - "dcr.nndr_train_005": 5% NNDR quantile from synthetic records to train records
-                - "dcr.nndr_baseline": Mean NNDR score from test records to train records
-                - "dcr.nndr_baseline_002": 2% NNDR quantile from test records to train records
-                - "dcr.nndr_baseline_005": 5% NNDR quantile from test records to train records
-                - "dcr.nndr_ratio": Ratio of mean train NNDR to mean baseline NNDR
-                - "dcr.nndr_ratio_002": Ratio of 2% train NNDR quantile to 2% baseline NNDR quantile
-                - "dcr.nndr_ratio_005": Ratio of 5% train NNDR quantile to 5% baseline NNDR quantile
-
-        Raises:
-            AssertionError: If test set is larger than train set.
-        """
+        if X_test is None:
+            raise ValueError("DCR requires X_test.")
+        self.discrete_features = discrete_features
         # compare training set to same size synthetic set
-        train, test, sd = X_train, X_test, X_syn
+        train, test, sd = X, X_test, X_syn
 
-        assert len(test) <= len(
-            train
-        ), "Test set must be smaller than or equal to train size to compute DCR"
+        if len(test) > len(train):
+            raise ValueError(
+                "Test set must be smaller than or equal to train size to compute DCR."
+            )
 
         num_rows_subsample = len(test) if self.subsample_test_size else len(train)
         if len(sd) < num_rows_subsample:
@@ -181,7 +132,6 @@ class DCR:
         train = data["train"]
         test = data["test"]
         sd = data["sd"]
-        syn = sd.iloc[: len(train)]
 
         # Optionally subsample train and synthetic data to match the test size.
         if len(train) < 2 or len(test) < 2 or num_rows_subsample < 2:
@@ -207,10 +157,7 @@ class DCR:
                     f"Need at least {n_neighbors} reference records to compute "
                     "nearest-neighbor distances."
                 )
-            nbrs = FastGowerNN(
-                categorical_cols=self.discrete_features,
-                normalize=False,
-            ).fit(reference)
+            nbrs = FastGowerNN(categorical_cols=self.discrete_features).fit(reference)
             distances, _ = nbrs.kneighbors(query, k=n_neighbors)
             if n_neighbors == 1:
                 distances = distances.ravel()
@@ -239,7 +186,7 @@ class DCR:
                 metric_values.setdefault(name, []).append(value)
 
         for _ in range(num_iterations):
-            syn_curr = choose(syn, num_rows_subsample)
+            syn_curr = choose(sd, num_rows_subsample)
             train_curr = choose(train, num_rows_subsample)
             test_curr = choose(test, min(len(test), num_rows_subsample))
 
@@ -257,8 +204,9 @@ class DCR:
             d_s_te = nearest_distances(syn_curr, test_curr)
             d_te_tr = d_te_tr_neighbors[:, 0]
 
-            closer_to_train_ = np.mean(d_s_tr < d_s_te)
-            closer_to_test_ = 1 - closer_to_train_
+            ties = np.isclose(d_s_tr, d_s_te)
+            closer_to_train_ = np.mean(np.where(ties, 0.5, d_s_tr < d_s_te))
+            closer_to_test_ = np.mean(np.where(ties, 0.5, d_s_te < d_s_tr))
 
             nndr_train_scores = nearest_distance_ratio(d_s_tr_neighbors)
             nndr_baseline_scores = nearest_distance_ratio(d_te_tr_neighbors)
@@ -297,7 +245,7 @@ class DCR:
         return {f"{self.name}.{name}": value for name, value in scores.items()}
 
 
-class AIA:
+class AIA(BaseMetric):
     """Attribute Inference Attack (AIA) privacy metric.
 
     Trains a supervised ML model on synthetic data to infer each sensitive
@@ -311,14 +259,15 @@ class AIA:
             None, all other features are used for each target feature.
         sensitive_features (list): Sensitive feature names to infer. If None,
             all features are evaluated as sensitive features.
-        discrete_features (list): List of discrete/categorical feature names.
-            Used as the authoritative source for classification vs. regression
-            targets and quasi-identifier preprocessing.
         model_name (str): Model family. Supported values include "xgboost",
             "randomforest", "decisiontree", "linearregression", and "svm",
             including some common aliases. Every model except for XGBoost is a scikit-learn model. Default: "xgboost".
         model_params (dict): Model parameters passed to the selected estimator.
         random_state (int): Random seed for reproducibility. Default: 0.
+
+    Outputs:
+        Per-sensitive-feature scores under ``"aia.<feature>.auc"`` or
+        ``"aia.<feature>.{r2,rmse}"``.
     """
 
     name = "aia"
@@ -327,46 +276,32 @@ class AIA:
         self,
         quasi_identifiers: list = None,
         sensitive_features: list = None,
-        discrete_features: list = None,
         model_name: str = "xgboost",
         model_params: dict = None,
         random_state: int = 0,
     ):
-        super().__init__()
+        super().__init__(random_state=random_state)
         self.quasi_identifiers = (
             list(quasi_identifiers) if quasi_identifiers is not None else None
         )
         self.sensitive_features = (
             list(sensitive_features) if sensitive_features is not None else None
         )
-        self.discrete_features = (
-            list(discrete_features) if discrete_features is not None else []
-        )
         self.model_name = model_name
         self.model_params = {} if model_params is None else model_params.copy()
-        self.random_state = random_state
 
-    def evaluate(
+    def _evaluate(
         self,
-        X_train: pd.DataFrame,
+        X: pd.DataFrame,
         X_syn: pd.DataFrame,
+        X_test: pd.DataFrame = None,
+        discrete_features: list = None,
     ):
-        """Evaluate AIA on real training data using models trained on synthetic data.
+        self.discrete_features = discrete_features
+        self._validate_columns(X, X_syn)
 
-        Args:
-            X_train: Real training data as a pandas DataFrame.
-            X_syn: Synthetic data used to train the attribute inference models.
-
-        Returns:
-            dict: Dictionary with per-sensitive-feature attack scores. Keys have
-                the form "aia.<sensitive_feature>.<score>".
-        """
-        self._validate_columns(X_train, X_syn)
-
-        sensitive_features = self._sensitive_features(X_train)
-        base_quasi_identifiers = self._base_quasi_identifiers(
-            X_train, sensitive_features
-        )
+        sensitive_features = self._sensitive_features(X)
+        base_quasi_identifiers = self._base_quasi_identifiers(X, sensitive_features)
 
         results = {}
         for sensitive_feature in sensitive_features:
@@ -383,8 +318,8 @@ class AIA:
 
             x_attack_train = X_syn[quasi_identifiers].copy()
             y_attack_train = X_syn[sensitive_feature].copy()
-            x_attack_test = X_train[quasi_identifiers].copy()
-            y_attack_test = X_train[sensitive_feature].copy()
+            x_attack_test = X[quasi_identifiers].copy()
+            y_attack_test = X[sensitive_feature].copy()
 
             task = self._task_for_sensitive_feature(sensitive_feature, y_attack_train)
             discrete_quasi_identifiers = [
@@ -483,7 +418,7 @@ class MIAData:
     y_eval: pd.Series
 
 
-class MIA(ABC):
+class MIA(BaseMetric, ABC):
     """Base class for membership inference attacks.
 
     The base class owns the common attack protocol: create reference,
@@ -501,6 +436,9 @@ class MIA(ABC):
             repeat. If False, all selected members and synthetic records are used
             once. Default: False.
         random_state (int): Random seed for reproducibility. Default: 0.
+
+    Outputs:
+        "<attack_name>.auc" and lift-at-k scores.
     """
 
     score_metrics = (
@@ -508,9 +446,6 @@ class MIA(ABC):
         "lift_010",
         "lift_005",
         "lift_001",
-        "tpr_at_fpr_010",
-        "tpr_at_fpr_005",
-        "tpr_at_fpr_001",
     )
 
     def __init__(
@@ -523,32 +458,27 @@ class MIA(ABC):
     ):
         if repeats < 1:
             raise ValueError("repeats must be at least 1.")
+        super().__init__(random_state=random_state)
         self.ref_prop = ref_prop
         self.member_prop = member_prop
         self.repeats = repeats
         self.subsample = subsample
-        self.random_state = random_state
 
-    def evaluate(
-        self, X_train: pd.DataFrame, X_test: pd.DataFrame, X_syn: pd.DataFrame
+    def _evaluate(
+        self,
+        X: pd.DataFrame,
+        X_syn: pd.DataFrame,
+        X_test: pd.DataFrame = None,
+        discrete_features: list = None,
     ):
-        """Evaluate membership inference risk.
-
-        Args:
-            X_train: Real training data whose rows are treated as members.
-            X_test: Independent real test data split into reference records and
-                evaluation non-members.
-            X_syn: Synthetic data available to the attacker.
-
-        Returns:
-            dict: Dictionary with attack AUC and lift-at-k scores. Keys have the
-                form "<attack_name>.<score>".
-        """
+        if X_test is None:
+            raise ValueError(f"{self.name} requires X_test.")
+        self.discrete_features = discrete_features
         scores = {}
         n_repeats = self.repeats if self.subsample else 1
         for repeat_idx in range(n_repeats):
             seed = self.random_state + repeat_idx
-            mia_data = self._create_mia_data(X_train, X_test, X_syn, seed)
+            mia_data = self._create_mia_data(X, X_test, X_syn, seed)
             membership_scores = np.asarray(self._membership_scores(mia_data, seed))
 
             if len(membership_scores) != len(mia_data.y_eval):
@@ -562,9 +492,6 @@ class MIA(ABC):
                 "lift_010": lift_at_k(mia_data.y_eval, membership_scores, 0.10),
                 "lift_005": lift_at_k(mia_data.y_eval, membership_scores, 0.05),
                 "lift_001": lift_at_k(mia_data.y_eval, membership_scores, 0.01),
-                "tpr_at_fpr_010": tpr_at_fpr(mia_data.y_eval, membership_scores, 0.10),
-                "tpr_at_fpr_005": tpr_at_fpr(mia_data.y_eval, membership_scores, 0.05),
-                "tpr_at_fpr_001": tpr_at_fpr(mia_data.y_eval, membership_scores, 0.01),
             }
 
         avg_scores = {
@@ -656,7 +583,6 @@ class DOMIAS(MIA):
     Uses Gaussian KDE on PCA-transformed data for density estimation.
 
     Args:
-        discrete_features (list): List of discrete/categorical feature names. Default: [].
         ref_prop (float): Proportion of test set to use as reference for density estimation. Default: 0.5.
         member_prop (float): Proportion of train set to use as members. Default: 1.0.
         n_components (int or float): Number of PCA components. Float in (0,1] = variance target,
@@ -666,6 +592,9 @@ class DOMIAS(MIA):
         repeats (int): Number of repeated evaluations when subsampling records.
             Default: 1.
         random_state (int): Random seed for reproducibility. Default: 0.
+
+    Outputs:
+        "mia.domias.auc" and lift-at-k scores.
 
     Example:
         >>> import pandas as pd
@@ -679,14 +608,13 @@ class DOMIAS(MIA):
         >>>
         >>> # Create metric
         >>> metric = DOMIAS(
-        ...     discrete_features=discrete_features,
         ...     ref_prop=0.5,
         ...     n_components=0.95,
         ...     random_state=42
         ... )
         >>>
         >>> # Evaluate
-        >>> results = metric.evaluate(X_train, X_test, X_syn)
+        >>> results = metric.evaluate(X_train, X_syn, X_test=X_test, discrete_features=discrete_features)
     """
 
     name = "mia.domias"
@@ -695,9 +623,8 @@ class DOMIAS(MIA):
         self,
         ref_prop: float = 0.5,
         member_prop: float = 1.0,
-        n_components: int = 0.99,
+        n_components: float = 0.99,
         random_state: int = 0,
-        discrete_features: list = None,
         subsample: bool = False,
         repeats: int = 1,
     ):
@@ -709,9 +636,6 @@ class DOMIAS(MIA):
             random_state=random_state,
         )
         self.n_components = n_components
-        self.discrete_features = (
-            discrete_features if discrete_features is not None else []
-        )
 
     def _membership_scores(self, mia_data: MIAData, seed: int) -> np.ndarray:
         syn = mia_data.synthetic.copy()
@@ -778,8 +702,6 @@ class DPI(MIA):
     Args:
         k (int): Number of nearest neighbors from the combined reference and
             synthetic pool. Default: 20.
-        discrete_features (list): List of discrete/categorical feature names.
-            Default: [].
         ref_prop (float): Proportion of test set to use as attacker reference
             non-members. Default: 0.5.
         member_prop (float): Proportion of train set to use as members.
@@ -789,6 +711,9 @@ class DPI(MIA):
         subsample (bool): Whether to subsample synthetic and member sets to
             match reference and evaluation non-member sizes. Default: False.
         random_state (int): Random seed for reproducibility. Default: 0.
+
+    Outputs:
+        "mia.dpi.auc" and lift-at-k scores.
     """
 
     name = "mia.dpi"
@@ -796,7 +721,6 @@ class DPI(MIA):
     def __init__(
         self,
         k: int = 20,
-        discrete_features: list = None,
         ref_prop: float = 0.5,
         member_prop: float = 1.0,
         repeats: int = 1,
@@ -813,9 +737,6 @@ class DPI(MIA):
         if k < 1:
             raise ValueError("k must be at least 1.")
         self.k = k
-        self.discrete_features = (
-            discrete_features if discrete_features is not None else []
-        )
 
     def _membership_scores(self, mia_data: MIAData, seed: int) -> np.ndarray:
         reference = mia_data.reference.copy()
@@ -827,7 +748,7 @@ class DPI(MIA):
                 "records to compute DPI."
             )
 
-        data = gower_like_transform(
+        data = fast_gower_transform(
             {
                 "reference": reference,
                 "synthetic": synthetic,
@@ -836,26 +757,29 @@ class DPI(MIA):
             reference_data=reference,
             discrete_features=self.discrete_features,
             categorical_fit_data=[reference, synthetic],
-            categorical_handle_unknown="ignore",
         )
 
-        reference_array = data["reference"]
-        synthetic_array = data["synthetic"]
-        neighbor_pool = np.concatenate((reference_array, synthetic_array), axis=0)
-
-        x_eval_array = data["x_eval"]
-        _, indices = KDTree(neighbor_pool, metric="manhattan").query(
-            x_eval_array,
-            k=self.k,
+        reference_data = data["reference"]
+        neighbor_pool = pd.concat(
+            (reference_data, data["synthetic"]),
+            ignore_index=True,
         )
 
-        reference_counts = np.sum(indices < len(reference_array), axis=1).astype(float)
+        _, indices = (
+            FastGowerNN(
+                categorical_cols=self.discrete_features,
+            )
+            .fit(neighbor_pool)
+            .kneighbors(data["x_eval"], k=self.k)
+        )
+
+        reference_counts = np.sum(indices < len(reference_data), axis=1).astype(float)
         synthetic_counts = self.k - reference_counts
 
         return np.divide(
             synthetic_counts,
             reference_counts,
-            out=np.zeros(len(synthetic_counts), dtype=float),
+            out=np.full(len(synthetic_counts), self.k, dtype=float),
             where=reference_counts > 0,
         )
 
@@ -867,33 +791,33 @@ class ClassifierMIA(MIA):
 
     Args:
         ref_prop (float): Proportion of test set to use as attacker reference
-            non-members. Default: 0.5.
-        model_name (str): Model used for the attack classifier. Default: "randomforest".
+            non-members. Default: 0.75.
+        model_name (str): Model used for the attack classifier. Default: "xgboost".
         model_params (dict): Optional parameters for the attack classifier.
-        discrete_features (list): List of discrete/categorical feature names.
-            Default: [].
         member_prop (float): Proportion of train set to use as members.
             Default: 1.0.
         repeats (int): Number of repeated evaluations when subsampling records.
-            Default: 1.
+            Default: 5.
         subsample (bool): Whether to subsample the synthetic set to the same size
             as the attacker reference set, and the member set to the same size as
             the evaluation non-member set. If False, all synthetic records and all
-            members are used, and the metric is evaluated once. Default: False.
+            members are used, and the metric is evaluated once. Default: True.
         random_state (int): Random seed for reproducibility. Default: 0.
+
+    Outputs:
+        "mia.classifier.auc" and lift-at-k scores.
     """
 
     name = "mia.classifier"
 
     def __init__(
         self,
-        ref_prop: float = 0.5,
-        model_name: str = "randomforest",
+        ref_prop: float = 0.75,
+        model_name: str = "xgboost",
         model_params: dict = None,
-        discrete_features: list = None,
         member_prop: float = 1.0,
-        repeats: int = 1,
-        subsample: bool = False,
+        repeats: int = 5,
+        subsample: bool = True,
         random_state: int = 0,
     ):
         super().__init__(
@@ -902,9 +826,6 @@ class ClassifierMIA(MIA):
             repeats=repeats,
             subsample=subsample,
             random_state=random_state,
-        )
-        self.categorical_features = (
-            [] if discrete_features is None else discrete_features.copy()
         )
         self.model_params = {} if model_params is None else model_params.copy()
         self.model_name = model_name
@@ -922,7 +843,7 @@ class ClassifierMIA(MIA):
             mia_data.x_eval,
             y_train,
             mia_data.y_eval,
-            self.categorical_features,
+            self.discrete_features,
             "binary",
             self.model_name,
             self.model_params,
@@ -946,8 +867,6 @@ class EnsembleMIA(MIA):
             normalizes each component score vector and averages them.
             "rank_avg" averages normalized within-component ranks. Default:
             "rank_avg".
-        discrete_features (list): List of discrete/categorical feature names.
-            Passed to component attacks unless overridden in include_mia.
         ref_prop (float): Proportion of test set to use as attacker reference
             non-members. Default: 0.5.
         member_prop (float): Proportion of train set to use as members.
@@ -957,6 +876,9 @@ class EnsembleMIA(MIA):
         subsample (bool): Whether to subsample synthetic/member sets in the
             shared MIA protocol. Default: False.
         random_state (int): Random seed for reproducibility. Default: 0.
+
+    Outputs:
+        Ensemble AUC/lift scores plus component AUC/lift scores.
     """
 
     name = "mia.ensemble"
@@ -983,7 +905,6 @@ class EnsembleMIA(MIA):
         self,
         include_mia: dict = None,
         ensemble: str = "rank_avg",
-        discrete_features: list = None,
         ref_prop: float = 0.5,
         member_prop: float = 1.0,
         repeats: int = 1,
@@ -996,9 +917,6 @@ class EnsembleMIA(MIA):
             repeats=repeats,
             subsample=subsample,
             random_state=random_state,
-        )
-        self.discrete_features = (
-            discrete_features if discrete_features is not None else []
         )
         self.ensemble = ensemble.strip().lower()
         if self.ensemble not in {"mean", "rank_avg"}:
@@ -1033,7 +951,6 @@ class EnsembleMIA(MIA):
                 )
 
             params = mia_params.copy()
-            params.setdefault("discrete_features", self.discrete_features)
             params.setdefault("random_state", self.random_state)
             mia_cls = self._available_mias[normalized_name]
             mia = mia_cls(**params)
@@ -1078,9 +995,6 @@ class EnsembleMIA(MIA):
             "lift_010": lift_at_k(y_eval, scores, 0.10),
             "lift_005": lift_at_k(y_eval, scores, 0.05),
             "lift_001": lift_at_k(y_eval, scores, 0.01),
-            "tpr_at_fpr_010": tpr_at_fpr(y_eval, scores, 0.10),
-            "tpr_at_fpr_005": tpr_at_fpr(y_eval, scores, 0.05),
-            "tpr_at_fpr_001": tpr_at_fpr(y_eval, scores, 0.01),
         }
 
     def _component_membership_scores(
@@ -1088,6 +1002,7 @@ class EnsembleMIA(MIA):
     ) -> dict[str, np.ndarray]:
         component_scores = {}
         for mia in self.mias.values():
+            mia.discrete_features = self.discrete_features
             scores = np.asarray(mia._membership_scores(mia_data, seed))
             if len(scores) != len(mia_data.y_eval):
                 raise ValueError(
@@ -1109,14 +1024,21 @@ class EnsembleMIA(MIA):
             ]
         return np.average(scores, axis=0)
 
-    def evaluate(
-        self, X_train: pd.DataFrame, X_test: pd.DataFrame, X_syn: pd.DataFrame
+    def _evaluate(
+        self,
+        X: pd.DataFrame,
+        X_syn: pd.DataFrame,
+        X_test: pd.DataFrame = None,
+        discrete_features: list = None,
     ):
+        if X_test is None:
+            raise ValueError("EnsembleMIA requires X_test.")
+        self.discrete_features = discrete_features
         scores = {}
         n_repeats = self.repeats if self.subsample else 1
         for repeat_idx in range(n_repeats):
             seed = self.random_state + repeat_idx
-            mia_data = self._create_mia_data(X_train, X_test, X_syn, seed)
+            mia_data = self._create_mia_data(X, X_test, X_syn, seed)
             component_scores = self._component_membership_scores(mia_data, seed)
             ensemble_scores = self._ensemble_scores(component_scores)
 

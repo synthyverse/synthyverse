@@ -1,11 +1,9 @@
 import inspect
 import json
 import os
-import pickle
 import re
 import signal
 import sys
-import shutil
 import threading
 import ctypes
 from pathlib import Path
@@ -15,15 +13,11 @@ from typing import Any, Dict, Iterable, Optional, Union
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-from synthyverse.generators import DataProcessor, TabularSchema, get_generator
-from synthyverse.utils.reproducibility import set_seed
-from synthyverse.utils.utils import free_up_memory
+from synthyverse.generators import DataProcessor, get_generator
+from synthyverse.utils.utils import memory_guarded
 
-
-from synthyverse.evaluation.ml import HYPERPARAM_SAVE_DIR
 
 RESULT_COLUMNS = ["metric name", "metric value", "train_seed", "set"]
-SCHEMA_FILENAME = "schema.pkl"
 BYTES_PER_MIB = 1024 * 1024
 _PROCESS_MEMORY_READER = None
 
@@ -73,24 +67,20 @@ class TabularSynthesisBenchmark:
             ``"missforest"``. Default: ``"drop"``.
         monitor_memory (bool): Whether to record peak CPU and, when available,
             CUDA memory usage during training and sampling. Default: False.
-        reuse_schema (bool): Whether to reuse a saved dataset schema from
-            ``model_save_dir`` when available. Default: True.
         reuse_processors (bool): Whether to reuse saved preprocessing artifacts
             for each train seed when available. Default: True.
         max_eval_samples (int or None): Default maximum number of rows per real
             and synthetic dataset passed to evaluation metrics. Real train and
             test datasets are subsampled per synthetic set with
-            the same varying seed used for sampling synthetic data. Synthetic
-            train and test datasets are generated directly at the capped size.
-            Default: None.
+            the same varying seed used for sampling synthetic data. Each
+            synthetic set is generated at the (capped) real-train evaluation
+            size. Default: 100_000.
         dataset_save_dir (str or Path or None): Directory for saving sampled
             synthetic datasets as parquet files. When provided, datasets are
             saved under ``dataset_save_dir/train_seed/sampling_seed``.
             Default: None.
         cap_train_time (float or None): Maximum seconds allowed for each
             generator fit. Default: None.
-        hyperparam_save_dir (str or Path): Directory used by evaluation metrics
-            that cache tuned hyperparameters. Default: ``HYPERPARAM_SAVE_DIR``.
 
     Example:
         >>> import pandas as pd
@@ -151,16 +141,14 @@ class TabularSynthesisBenchmark:
         constraints: Optional[Union[list[str], str]] = None,
         missing_imputation_method: str = "drop",
         monitor_memory: bool = False,
-        reuse_schema: bool = True,
         reuse_processors: bool = True,
-        max_eval_samples: Optional[int] = None,
+        max_eval_samples: Optional[int] = 100_000,
         dataset_save_dir: Optional[Union[str, Path]] = None,
         cap_train_time: Optional[float] = None,
-        hyperparam_save_dir: Union[str, Path] = HYPERPARAM_SAVE_DIR,
     ):
         self.X = X.copy()
         self.generator = generator
-        self.generator_lookup_name = re.split(r"[\W_]+", generator, maxsplit=1)[0]
+        self.generator_lookup_name = self._resolve_generator_lookup_name(generator)
         self.generator_params = dict(generator_params or {})
         self.model_save_dir = None if model_save_dir is None else Path(model_save_dir)
         self.random_state = random_state
@@ -169,21 +157,17 @@ class TabularSynthesisBenchmark:
         self.constraints = self._normalize_constraints(constraints)
         self.missing_imputation_method = missing_imputation_method
         self.monitor_memory = monitor_memory
-        self.reuse_schema = reuse_schema
         self.reuse_processors = reuse_processors
         self.max_eval_samples = self._validate_max_eval_samples(max_eval_samples)
         self.dataset_save_dir = (
             None if dataset_save_dir is None else Path(dataset_save_dir)
         )
         self.cap_train_time = self._validate_time_cap(cap_train_time, "cap_train_time")
-        self.hyperparam_save_dir = Path(hyperparam_save_dir)
-        self._schema: Optional[TabularSchema] = None
 
     def train(
         self,
         n_train_seeds: int = 1,
         test_size: float = 0.2,
-        val_size: float = 0.2,
         full_determinism: bool = False,
         results_save_path: Union[str, Path] = "results",
         write_results: bool = True,
@@ -205,10 +189,8 @@ class TabularSynthesisBenchmark:
                 train. Default: 1.
             test_size (float): Fraction of data reserved for testing.
                 Default: 0.2.
-            val_size (float): Fraction of training data passed to generators
-                that split validation data internally. Default: 0.2.
-            full_determinism (bool): Whether to request stricter deterministic
-                behavior from ``set_seed``. Default: False.
+            full_determinism (bool): Whether fitted generators should request
+                stricter deterministic framework behavior. Default: False.
             results_save_path (str or Path): Directory or CSV path for training
                 results. If a directory is provided, results are written to
                 ``<results_save_path>/<generator>.csv``. Default: ``"results"``.
@@ -224,16 +206,17 @@ class TabularSynthesisBenchmark:
         Example:
             >>> train_results = benchmark.train(n_train_seeds=3)
         """
-        self._validate_split_config(test_size, val_size)
+        self._validate_test_size(test_size)
         results_path = self._resolve_results_path(results_save_path)
         result_rows = self._load_result_rows(results_path) if append_results else []
         new_rows = []
 
-        for train_seed in self._train_seeds(self.random_state, n_train_seeds):
+        for train_seed in memory_guarded(
+            self._train_seeds(self.random_state, n_train_seeds)
+        ):
             split = self._make_split(
                 train_seed=train_seed,
                 test_size=test_size,
-                full_determinism=full_determinism,
             )
             processor, processed = self._load_or_fit_processor(train_seed, split)
 
@@ -244,7 +227,6 @@ class TabularSynthesisBenchmark:
                     train_seed=train_seed,
                     processor=processor,
                     X_train=processed["train_model"],
-                    val_size=val_size,
                     full_determinism=full_determinism,
                 )
             except BenchmarkTimeoutError as error:
@@ -253,7 +235,6 @@ class TabularSynthesisBenchmark:
                 new_rows.extend(rows)
                 if write_results:
                     self._save_results(result_rows, results_path)
-                free_up_memory()
                 break
             if self.model_save_dir is not None:
                 generator.save(self._model_dir(train_seed))
@@ -272,8 +253,6 @@ class TabularSynthesisBenchmark:
             if write_results:
                 self._save_results(result_rows, results_path)
 
-            free_up_memory()
-
         return pd.DataFrame(new_rows, columns=RESULT_COLUMNS)
 
     def eval(
@@ -283,16 +262,15 @@ class TabularSynthesisBenchmark:
         n_sets: int = 1,
         test_size: float = 0.2,
         val_size: float = 0.2,
-        full_determinism: bool = False,
         results_save_path: Union[str, Path] = "results",
-        append_results: bool = True,
+        append_results: bool = False,
         max_eval_samples: Optional[int] = None,
     ) -> pd.DataFrame:
         """Evaluate saved generators against real train and test data.
 
         For each train seed, this method recreates the data split, loads the
         saved ``DataProcessor`` and generator, samples one or more synthetic
-        train/test dataset pairs, postprocesses the samples back to the original
+        datasets, postprocesses the samples back to the original
         data representation, and evaluates the requested metrics.
 
         Call ``train()`` before using this method unless compatible saved models
@@ -311,14 +289,12 @@ class TabularSynthesisBenchmark:
                 Default: 0.2.
             val_size (float): Fraction of metric training data reserved for
                 validation internally when metrics need it. Default: 0.2.
-            full_determinism (bool): Whether to request stricter deterministic
-                behavior from ``set_seed``. Default: False.
             results_save_path (str or Path): Directory or CSV path for
                 evaluation results. If a directory is provided, results are
                 written to ``<results_save_path>/<generator>.csv``.
                 Default: ``"results"``.
             append_results (bool): Whether to append evaluation rows to an
-                existing result CSV. Default: True.
+                existing result CSV. Default: False.
             max_eval_samples (int or None): Optional per-call override for the
                 benchmark's default evaluation sample cap. Default: None.
 
@@ -343,11 +319,12 @@ class TabularSynthesisBenchmark:
         new_rows = []
 
         generator_cls = get_generator(self.generator_lookup_name)
-        for train_seed in self._train_seeds(self.random_state, n_train_seeds):
+        for train_seed in memory_guarded(
+            self._train_seeds(self.random_state, n_train_seeds)
+        ):
             split = self._make_split(
                 train_seed=train_seed,
                 test_size=test_size,
-                full_determinism=full_determinism,
             )
             processor, processed = self._load_or_fit_processor(train_seed, split)
             generator = self._load_generator(generator_cls, train_seed)
@@ -359,14 +336,12 @@ class TabularSynthesisBenchmark:
                 metrics=metrics,
                 n_sets=n_sets,
                 train_seed=train_seed,
-                full_determinism=full_determinism,
                 max_eval_samples=max_eval_samples,
                 val_size=val_size,
             )
             result_rows.extend(rows)
             new_rows.extend(rows)
             self._save_results(result_rows, results_path)
-            free_up_memory()
 
         return pd.DataFrame(new_rows, columns=RESULT_COLUMNS)
 
@@ -377,53 +352,62 @@ class TabularSynthesisBenchmark:
         n_sets: int = 1,
         test_size: float = 0.2,
         val_size: float = 0.2,
-        full_determinism: bool = False,
         results_save_path: Union[str, Path] = "results",
-        append_results: bool = True,
+        append_results: bool = False,
+        max_eval_samples: Optional[int] = None,
     ) -> pd.DataFrame:
         """Evaluate synthetic datasets saved by ``eval()`` or ``run()``.
 
         This method recreates the real train/test split and loads synthetic
-        train/test parquet files from ``dataset_save_dir/train_seed/sampling_seed``.
+        train parquet files from ``dataset_save_dir/train_seed/sampling_seed``.
         Use it to add metrics later without loading or sampling generators.
         """
         if self.dataset_save_dir is None:
             raise ValueError("dataset_save_dir must be set to evaluate saved datasets.")
         self._validate_split_config(test_size, val_size)
         self._validate_metrics(metrics)
+        max_eval_samples = self._effective_max_eval_samples(max_eval_samples)
         results_path = self._resolve_results_path(results_save_path)
         result_rows = self._load_result_rows(results_path) if append_results else []
         new_rows = []
 
-        for train_seed in self._train_seeds(self.random_state, n_train_seeds):
+        for train_seed in memory_guarded(
+            self._train_seeds(self.random_state, n_train_seeds)
+        ):
             split = self._make_split(
                 train_seed=train_seed,
                 test_size=test_size,
-                full_determinism=full_determinism,
             )
-            _, processed = self._load_or_fit_processor(train_seed, split)
+            processor, processed = self._load_or_fit_processor(train_seed, split)
 
-            for set_index in range(n_sets):
+            for set_index in memory_guarded(range(n_sets)):
                 sampling_seed = self.random_state + set_index
-                X_syn, X_syn_test = self._load_synthetic_datasets(
+                X_syn = self._load_synthetic_dataset(
                     train_seed,
                     sampling_seed,
+                    processor,
                 )
-                X_train_eval = self._subsample_eval_dataset_to_size(
+                X_train_eval = self._subsample_eval_dataset(
                     processed["train_eval"],
                     sampling_seed,
-                    len(X_syn),
+                    max_eval_samples,
                 )
-                X_test_eval = self._subsample_eval_dataset_to_size(
+                X_test_eval = self._subsample_eval_dataset(
                     processed["test_eval"],
                     sampling_seed,
-                    len(X_syn_test),
+                    max_eval_samples,
+                )
+                if len(X_syn) < len(X_train_eval):
+                    raise ValueError(
+                        "Saved synthetic dataset has fewer rows than required."
+                    )
+                X_syn = self._subsample_eval_dataset(
+                    X_syn, sampling_seed, len(X_train_eval)
                 )
                 rows = self._evaluate_synthetic_datasets(
                     X_train_eval=X_train_eval,
                     X_test_eval=X_test_eval,
                     X_syn=X_syn,
-                    X_syn_test=X_syn_test,
                     metrics=metrics,
                     train_seed=train_seed,
                     set_index=set_index,
@@ -433,9 +417,6 @@ class TabularSynthesisBenchmark:
                 result_rows.extend(rows)
                 new_rows.extend(rows)
                 self._save_results(result_rows, results_path)
-                free_up_memory()
-
-            shutil.rmtree(self.hyperparam_save_dir, ignore_errors=True)
 
         return pd.DataFrame(new_rows, columns=RESULT_COLUMNS)
 
@@ -465,9 +446,10 @@ class TabularSynthesisBenchmark:
             test_size (float): Fraction of data reserved for testing.
                 Default: 0.2.
             val_size (float): Fraction of training data reserved internally by
-                generators or metrics that need validation data. Default: 0.2.
-            full_determinism (bool): Whether to request stricter deterministic
-                behavior from ``set_seed``. Default: False.
+                metrics that need validation data. Generator validation is
+                configured via ``generator_params``. Default: 0.2.
+            full_determinism (bool): Whether fitted generators should request
+                stricter deterministic framework behavior. Default: False.
             results_save_path (str or Path): Directory or CSV path for all
                 benchmark results. If a directory is provided, results are
                 written to ``<results_save_path>/<generator>.csv``.
@@ -489,11 +471,12 @@ class TabularSynthesisBenchmark:
         new_rows = []
 
         generator_cls = get_generator(self.generator_lookup_name)
-        for train_seed in self._train_seeds(self.random_state, n_train_seeds):
+        for train_seed in memory_guarded(
+            self._train_seeds(self.random_state, n_train_seeds)
+        ):
             split = self._make_split(
                 train_seed=train_seed,
                 test_size=test_size,
-                full_determinism=full_determinism,
             )
             processor, processed = self._load_or_fit_processor(
                 train_seed,
@@ -505,7 +488,6 @@ class TabularSynthesisBenchmark:
                     train_seed=train_seed,
                     processor=processor,
                     X_train=processed["train_model"],
-                    val_size=val_size,
                     full_determinism=full_determinism,
                 )
             except BenchmarkTimeoutError as error:
@@ -513,7 +495,6 @@ class TabularSynthesisBenchmark:
                 result_rows.extend(rows)
                 new_rows.extend(rows)
                 self._save_results(result_rows, results_path)
-                free_up_memory()
                 break
             if self.model_save_dir is not None:
                 generator.save(self._model_dir(train_seed))
@@ -538,14 +519,12 @@ class TabularSynthesisBenchmark:
                 metrics=metrics,
                 n_sets=n_sets,
                 train_seed=train_seed,
-                full_determinism=full_determinism,
                 max_eval_samples=max_eval_samples,
                 val_size=val_size,
             )
             result_rows.extend(rows)
             new_rows.extend(rows)
             self._save_results(result_rows, results_path)
-            free_up_memory()
 
         return pd.DataFrame(new_rows, columns=RESULT_COLUMNS)
 
@@ -553,9 +532,7 @@ class TabularSynthesisBenchmark:
         self,
         train_seed: int,
         test_size: float,
-        full_determinism: bool,
     ) -> Dict[str, Optional[pd.DataFrame]]:
-        set_seed(train_seed, full_determinism)
         stratify = self._stratify_values(self.X)
         X_train, X_test = train_test_split(
             self.X,
@@ -573,7 +550,6 @@ class TabularSynthesisBenchmark:
         persist: bool = True,
     ) -> tuple[DataProcessor, Dict[str, Optional[pd.DataFrame]]]:
         persist = persist and self.model_save_dir is not None
-        schema = self._load_or_create_schema(persist=persist)
         processor_dir = self._processor_dir(train_seed) if persist else None
         processor_file = processor_dir / "processor.pkl" if persist else None
 
@@ -592,12 +568,9 @@ class TabularSynthesisBenchmark:
                 X=split["train"],
                 discrete_features=self.categorical_features,
             )
-            self._apply_schema(processor, schema)
             if persist:
                 processor.save(processor_dir)
                 print(f"Saved DataProcessor to {processor_file}")
-
-        self._apply_schema(processor, schema)
 
         X_train_model = processed
         X_test_model = processor.preprocess(X=split["test"])
@@ -615,11 +588,10 @@ class TabularSynthesisBenchmark:
         train_seed: int,
         processor: DataProcessor,
         X_train: pd.DataFrame,
-        val_size: float,
         full_determinism: bool,
     ):
-        set_seed(train_seed, full_determinism)
         params = dict(self.generator_params)
+        full_determinism = params.pop("full_determinism", full_determinism)
         signature = inspect.signature(generator_cls.__init__)
         signature_params = signature.parameters
 
@@ -630,6 +602,11 @@ class TabularSynthesisBenchmark:
             and "random_state" not in params
         ):
             params["random_state"] = train_seed
+        if (
+            self._accepts_kwarg(signature, "full_determinism")
+            and "full_determinism" not in params
+        ):
+            params["full_determinism"] = full_determinism
         generator_handles_train_time_cap = self._accepts_kwarg(
             signature,
             "cap_train_time",
@@ -639,9 +616,6 @@ class TabularSynthesisBenchmark:
 
         generator = generator_cls(**params)
         fit_kwargs = {"X": X_train, "discrete_features": processor.categorical_features}
-        fit_signature = inspect.signature(generator.fit)
-        if self._accepts_kwarg(fit_signature, "val_size"):
-            fit_kwargs["val_size"] = val_size
         time_limit = None if generator_handles_train_time_cap else self.cap_train_time
         train_start_time = perf_counter()
         memory_monitor = None
@@ -678,14 +652,12 @@ class TabularSynthesisBenchmark:
         metrics: Union[dict, list],
         n_sets: int,
         train_seed: int,
-        full_determinism: bool,
         max_eval_samples: Optional[int],
         val_size: float,
     ) -> list[dict[str, Any]]:
         result_rows = []
-        for set_index in range(n_sets):
+        for set_index in memory_guarded(range(n_sets)):
             sampling_seed = self.random_state + set_index
-            set_seed(sampling_seed, full_determinism)
             X_train_eval = self._subsample_eval_dataset(
                 processed["train_eval"], sampling_seed, max_eval_samples
             )
@@ -693,26 +665,29 @@ class TabularSynthesisBenchmark:
                 processed["test_eval"], sampling_seed, max_eval_samples
             )
             n_train_syn = len(X_train_eval)
-            n_test_syn = len(X_test_eval)
 
             memory_monitor = None
             sampling_start_time = perf_counter()
             if self.monitor_memory:
                 with PeakMemoryMonitor() as memory_monitor:
-                    X_syn_all = generator.generate(n_train_syn + n_test_syn)
-                    X_syn_all = processor.postprocess(X_syn_all)
+                    X_syn = generator.generate(
+                        n_train_syn,
+                        random_state=sampling_seed,
+                    )
+                    X_syn = processor.postprocess(X_syn)
             else:
-                X_syn_all = generator.generate(n_train_syn + n_test_syn)
-                X_syn_all = processor.postprocess(X_syn_all)
+                X_syn = generator.generate(
+                    n_train_syn,
+                    random_state=sampling_seed,
+                )
+                X_syn = processor.postprocess(X_syn)
 
-            X_syn = X_syn_all.iloc[:n_train_syn].reset_index(drop=True)
-            X_syn_test = X_syn_all.iloc[n_train_syn:].reset_index(drop=True)
+            X_syn = X_syn.reset_index(drop=True)
             sampling_time = perf_counter() - sampling_start_time
-            self._save_synthetic_datasets(
+            self._save_synthetic_dataset(
                 train_seed,
                 sampling_seed,
                 X_syn,
-                X_syn_test,
             )
 
             result_rows.append(
@@ -731,7 +706,6 @@ class TabularSynthesisBenchmark:
                     X_train_eval=X_train_eval,
                     X_test_eval=X_test_eval,
                     X_syn=X_syn,
-                    X_syn_test=X_syn_test,
                     metrics=metrics,
                     train_seed=train_seed,
                     set_index=set_index,
@@ -740,10 +714,6 @@ class TabularSynthesisBenchmark:
                 )
             )
 
-            free_up_memory()
-        # remove tuned hyperparams before next training seed
-        shutil.rmtree(self.hyperparam_save_dir, ignore_errors=True)
-
         return result_rows
 
     def _evaluate_synthetic_datasets(
@@ -751,7 +721,6 @@ class TabularSynthesisBenchmark:
         X_train_eval: pd.DataFrame,
         X_test_eval: pd.DataFrame,
         X_syn: pd.DataFrame,
-        X_syn_test: pd.DataFrame,
         metrics: Union[dict, list],
         train_seed: int,
         set_index: int,
@@ -765,18 +734,16 @@ class TabularSynthesisBenchmark:
         ]
         evaluator = TabularMetricEvaluator(
             metrics=metrics,
-            discrete_features=eval_categorical_features,
             target_column=self.target_column,
             random_state=sampling_seed,
             val_size=val_size,
-            hyperparam_save_dir=self.hyperparam_save_dir,
         )
         evaluation_start_time = perf_counter()
         metric_results = evaluator.evaluate(
             X_train_eval,
-            X_test_eval,
             X_syn,
-            X_syn_test,
+            X_test=X_test_eval,
+            discrete_features=eval_categorical_features,
         )
         evaluation_time = perf_counter() - evaluation_start_time
 
@@ -798,35 +765,7 @@ class TabularSynthesisBenchmark:
                 }
             )
 
-        print(metric_results)
         return result_rows
-
-    def _load_or_create_schema(self, persist: bool = True) -> TabularSchema:
-        if self._schema is not None:
-            return self._schema
-
-        if persist:
-            schema_path = self._schema_path()
-            if self.reuse_schema and schema_path.exists():
-                with schema_path.open("rb") as f:
-                    self._schema = pickle.load(f)
-                return self._schema
-
-        numerical_features = [
-            col for col in self.X.columns if col not in self.categorical_features
-        ]
-        self._schema = TabularSchema.from_dataframe(self.X, numerical_features)
-        if persist:
-            schema_path.parent.mkdir(parents=True, exist_ok=True)
-            with schema_path.open("wb") as f:
-                pickle.dump(self._schema, f, protocol=pickle.HIGHEST_PROTOCOL)
-        return self._schema
-
-    def _apply_schema(self, processor: DataProcessor, schema: TabularSchema) -> None:
-        processor.schema = schema
-        processor.ori_col_order = schema.column_order
-        processor.ori_dtypes = schema.dtypes
-        processor.ori_precision = schema.precision
 
     def _validate_cached_processor(
         self,
@@ -847,6 +786,54 @@ class TabularSynthesisBenchmark:
             raise ValueError(
                 "Cached DataProcessor random_state does not match the train split seed."
             )
+        cached_categorical = getattr(processor, "input_categorical_features", None)
+        if cached_categorical is None:
+            cached_categorical = getattr(processor, "categorical_features", None)
+        if sorted(cached_categorical or []) != sorted(self.categorical_features):
+            raise ValueError(
+                "Cached DataProcessor has different categorical_features. "
+                "Use a different model_save_dir or remove the cached processor."
+            )
+
+        cached_schema = getattr(processor, "input_schema_fingerprint", None)
+        if cached_schema is None and hasattr(processor, "schema"):
+            cached_schema = self._schema_fingerprint_from_schema(processor.schema)
+        if cached_schema != self._schema_fingerprint_from_dataframe(self.X):
+            raise ValueError(
+                "Cached DataProcessor was fitted on a different input schema. "
+                "Use a different model_save_dir or remove the cached processor."
+            )
+
+    @staticmethod
+    def _resolve_generator_lookup_name(generator: str) -> str:
+        if TabularSynthesisBenchmark._is_registered_generator(generator):
+            return generator
+
+        legacy_name = re.split(r"[\W_]+", generator, maxsplit=1)[0]
+        if legacy_name != generator and TabularSynthesisBenchmark._is_registered_generator(
+            legacy_name
+        ):
+            return legacy_name
+        return generator
+
+    @staticmethod
+    def _is_registered_generator(generator: str) -> bool:
+        try:
+            get_generator(generator)
+            return True
+        except ImportError:
+            # Optional dependency errors should still be raised at train/load time.
+            return True
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _schema_fingerprint_from_dataframe(X: pd.DataFrame) -> list[tuple[Any, str]]:
+        return [(col, str(X[col].dtype)) for col in X.columns]
+
+    @staticmethod
+    def _schema_fingerprint_from_schema(schema) -> list[tuple[Any, str]]:
+        return [(col, str(schema.dtypes[col])) for col in schema.column_order]
 
     @staticmethod
     def _validate_metrics(metrics: Union[dict, list]) -> None:
@@ -869,9 +856,6 @@ class TabularSynthesisBenchmark:
         if path.suffix:
             return path
         return path / f"{self.generator}.csv"
-
-    def _schema_path(self) -> Path:
-        return self.model_save_dir / "processors" / SCHEMA_FILENAME
 
     def _processor_dir(self, train_seed: int) -> Path:
         return self.model_save_dir / "processors" / str(train_seed)
@@ -905,55 +889,45 @@ class TabularSynthesisBenchmark:
             return X
         return X.sample(n=max_eval_samples, random_state=random_state)
 
-    def _subsample_eval_dataset_to_size(
-        self,
-        X: pd.DataFrame,
-        random_state: int,
-        size: int,
-    ) -> pd.DataFrame:
-        if len(X) < size:
-            raise ValueError("Saved synthetic dataset has more rows than real data.")
-        if len(X) == size:
-            return X
-        return X.sample(n=size, random_state=random_state)
-
-    def _save_synthetic_datasets(
+    def _save_synthetic_dataset(
         self,
         train_seed: int,
         sampling_seed: int,
         X_syn: pd.DataFrame,
-        X_syn_test: pd.DataFrame,
     ) -> None:
         if self.dataset_save_dir is None:
             return
         dataset_dir = self._dataset_dir(train_seed, sampling_seed)
         dataset_dir.mkdir(parents=True, exist_ok=True)
         X_syn.to_parquet(dataset_dir / "synthetic_train.parquet", index=False)
-        X_syn_test.to_parquet(dataset_dir / "synthetic_test.parquet", index=False)
 
-    def _load_synthetic_datasets(
+    def _load_synthetic_dataset(
         self,
         train_seed: int,
         sampling_seed: int,
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        processor: DataProcessor,
+    ) -> pd.DataFrame:
         dataset_dir = self._dataset_dir(train_seed, sampling_seed)
         train_path = dataset_dir / "synthetic_train.parquet"
-        test_path = dataset_dir / "synthetic_test.parquet"
-        if not train_path.exists() or not test_path.exists():
+        if not train_path.exists():
             raise FileNotFoundError(
                 f"No saved synthetic datasets found for train_seed={train_seed}, "
                 f"sampling_seed={sampling_seed} at {dataset_dir}."
             )
-        return pd.read_parquet(train_path), pd.read_parquet(test_path)
+        return processor.schema.restore(pd.read_parquet(train_path))
 
     @staticmethod
     def _train_seeds(random_state: int, n_train_seeds: int) -> range:
         return range(random_state, random_state + n_train_seeds)
 
     @staticmethod
-    def _validate_split_config(test_size: float, val_size: float) -> None:
+    def _validate_test_size(test_size: float) -> None:
         if not 0 < test_size < 1:
             raise ValueError("test_size must be between 0 and 1.")
+
+    @staticmethod
+    def _validate_split_config(test_size: float, val_size: float) -> None:
+        TabularSynthesisBenchmark._validate_test_size(test_size)
         if not 0 <= val_size < 1:
             raise ValueError("val_size must be non-negative and less than 1.")
 
@@ -1130,16 +1104,20 @@ def training_timeout_rows(
 class PeakMemoryMonitor:
     """Sample process memory while a benchmark step is running."""
 
-    def __init__(self, interval_seconds: float = 0.05):
+    def __init__(self, interval_seconds: float = 1.0):
         self.interval_seconds = interval_seconds
         self.peak_memory_mb: Optional[float] = None
         self.peak_cuda_memory_mb: Optional[float] = None
+        self._baseline_rss_bytes: Optional[int] = None
+        self._baseline_cuda_bytes: Optional[int] = None
         self._peak_rss_bytes: Optional[int] = None
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
     def __enter__(self) -> "PeakMemoryMonitor":
+        self._baseline_rss_bytes = _current_process_memory_bytes()
         self._sample_once()
+        self._baseline_cuda_bytes = _cuda_memory_bytes()
         _reset_cuda_peak_memory()
         self._thread = threading.Thread(target=self._sample_until_stopped, daemon=True)
         self._thread.start()
@@ -1151,8 +1129,12 @@ class PeakMemoryMonitor:
         if self._thread is not None:
             self._thread.join(timeout=1.0)
         self._sample_once()
-        self.peak_memory_mb = _bytes_to_mib(self._peak_rss_bytes)
-        self.peak_cuda_memory_mb = _bytes_to_mib(_cuda_peak_memory_bytes())
+        self.peak_memory_mb = _bytes_to_mib(
+            _subtract_baseline(self._peak_rss_bytes, self._baseline_rss_bytes)
+        )
+        self.peak_cuda_memory_mb = _bytes_to_mib(
+            _subtract_baseline(_cuda_peak_memory_bytes(), self._baseline_cuda_bytes)
+        )
 
     def _sample_until_stopped(self) -> None:
         while not self._stop_event.wait(self.interval_seconds):
@@ -1170,6 +1152,15 @@ def _bytes_to_mib(value: Optional[int]) -> Optional[float]:
     if value is None:
         return None
     return value / BYTES_PER_MIB
+
+
+def _subtract_baseline(
+    value: Optional[int],
+    baseline: Optional[int],
+) -> Optional[int]:
+    if value is None or baseline is None:
+        return None
+    return max(0, value - baseline)
 
 
 def _current_process_memory_bytes() -> Optional[int]:
@@ -1294,6 +1285,18 @@ def _cuda_peak_memory_bytes() -> Optional[int]:
             return None
         torch.cuda.synchronize()
         return int(torch.cuda.max_memory_allocated())
+    except Exception:
+        return None
+
+
+def _cuda_memory_bytes() -> Optional[int]:
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        torch.cuda.synchronize()
+        return int(torch.cuda.memory_allocated())
     except Exception:
         return None
 

@@ -1,6 +1,98 @@
 import numpy as np
 import pandas as pd
+from pandas.api.types import is_integer_dtype
 from numba import njit, prange
+from scipy.special import kl_div, rel_entr
+from scipy.stats import ks_2samp, wasserstein_distance
+from sklearn.metrics import pairwise_distances
+
+
+def l1(x: np.ndarray, y: np.ndarray, axis: int = -1) -> np.ndarray:
+    return np.sum(np.abs(np.asarray(x) - np.asarray(y)), axis=axis)
+
+
+def l2(x: np.ndarray) -> float:
+    return float(np.linalg.norm(np.asarray(x)))
+
+
+def js_robust(p: np.ndarray, q: np.ndarray, base: float = 2.0) -> float:
+    p = np.asarray(p, dtype=float).copy()
+    q = np.asarray(q, dtype=float).copy()
+    p /= p.sum()
+    q /= q.sum()
+    m = (p + q) / 2
+    js = np.sum(rel_entr(p, m)) + np.sum(rel_entr(q, m))
+    js /= np.log(base)
+    return float(np.sqrt(np.clip(js / 2, 0, None)))
+
+
+def tvd(p: np.ndarray, q: np.ndarray) -> float:
+    return float(
+        0.5 * np.abs(np.asarray(p, dtype=float) - np.asarray(q, dtype=float)).sum()
+    )
+
+
+def kld(p: np.ndarray, q: np.ndarray) -> float:
+    p = np.asarray(p, dtype=float)
+    q = np.asarray(q, dtype=float)
+
+    eps = np.finfo(float).eps
+    p = p + eps
+    q = q + eps
+    p = p / p.sum()
+    q = q / q.sum()
+    return float(np.sum(kl_div(p, q)) / np.log(2))
+
+
+def ksd(x: np.ndarray, y: np.ndarray) -> float:
+    return float(
+        ks_2samp(
+            np.asarray(x),
+            np.asarray(y),
+            alternative="two-sided",
+            mode="auto",
+        ).statistic
+    )
+
+
+def wsd(x: np.ndarray, y: np.ndarray) -> float:
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    min_ = y.min()
+    max_ = y.max()
+    if max_ == min_:
+        scale = max_ if max_ != 0 else 1
+        return float(wasserstein_distance(x / scale, y / scale))
+
+    x_z = (x - min_) / (max_ - min_)
+    y_z = (y - min_) / (max_ - min_)
+    return float(wasserstein_distance(x_z, y_z))
+
+
+def pairwise_l1(
+    x: np.ndarray,
+    y: np.ndarray = None,
+    n_jobs: int = -1,
+) -> np.ndarray:
+    if y is None:
+        y = x
+    return pairwise_distances(x, y, metric="cityblock", n_jobs=n_jobs)
+
+
+def kth_smallest(values: np.ndarray, k: int, axis: int = -1) -> np.ndarray:
+    kth_index = k - 1
+    if kth_index < 0 or kth_index >= values.shape[axis]:
+        raise ValueError("k is outside the selected axis.")
+    return np.take(np.partition(values, kth_index, axis=axis), kth_index, axis=axis)
+
+
+def knn_distances(
+    x: np.ndarray,
+    k: int,
+    n_jobs: int = -1,
+) -> np.ndarray:
+    distances = pairwise_l1(x, n_jobs=n_jobs)
+    return kth_smallest(distances, k + 1, axis=-1)
 
 
 @njit(cache=True, fastmath=True)
@@ -44,8 +136,9 @@ def _gower_topk_numba(
 
     Numeric features are assumed pre-scaled to [0, 1].
     Categorical features are integer-coded.
-    Missing values are ignored featurewise. If normalize is true, the distance
-    is renormalized by the number of jointly observed features.
+    Values marked in the missing-value masks are ignored featurewise. If
+    normalize is true, the distance is renormalized by the number of jointly
+    observed features.
     """
     nq = Q_num.shape[0]
     nr = R_num.shape[0]
@@ -141,7 +234,8 @@ class FastGowerNN:
     Distance:
         numeric: abs(x - y)
         categorical: 0 if equal else 1
-        missing: feature ignored
+        missing numeric: feature ignored
+        missing categorical: encoded as a separate category
 
     Parameters:
         normalize:
@@ -163,7 +257,7 @@ class FastGowerNN:
         numeric_cols=None,
         categorical_cols=None,
         ref_chunk_size=50_000,
-        normalize=True,
+        normalize=False,
     ):
         """
         Configure a Gower nearest-neighbour index.
@@ -252,12 +346,25 @@ class FastGowerNN:
                 np.empty((len(X), 0), dtype=np.bool_),
             )
 
-        arr = X[self.categorical_cols].to_numpy(dtype=np.float32, copy=True)
-        nan = np.isnan(arr)
-        arr[nan] = -1
+        invalid_cols = [
+            col for col in self.categorical_cols if not is_integer_dtype(X[col])
+        ]
+        if invalid_cols:
+            raise ValueError(
+                "FastGowerNN categorical columns must be ordinally encoded as "
+                "integer dtype before fitting or querying. Non-encoded columns: "
+                f"{invalid_cols}. Use fast_gower_transform(..., "
+                "categorical_fit_data=[...]) to create consistent category codes "
+                "across datasets, or pass pre-encoded categorical columns."
+            )
+
+        arr = X[self.categorical_cols].to_numpy(
+            dtype=np.float32, na_value=np.nan, copy=True
+        )
+        arr[np.isnan(arr)] = -1
         return (
             np.ascontiguousarray(arr.astype(np.int32)),
-            np.ascontiguousarray(nan),
+            np.zeros(arr.shape, dtype=np.bool_),
         )
 
     def kneighbors(
@@ -265,7 +372,7 @@ class FastGowerNN:
         X=None,
         k=1,
         exclude_self=None,
-        query_chunk_size=10_000,
+        query_chunk_size=None,
     ):
         """
         Return nearest-neighbour distances and fitted-reference indices.
@@ -304,6 +411,7 @@ class FastGowerNN:
 
         if exclude_self is None:
             exclude_self = same_data
+        exclude_self = bool(exclude_self and same_data)
 
         k = int(k)
         if k <= 0:
@@ -313,6 +421,8 @@ class FastGowerNN:
             raise ValueError("When exclude_self=True, k must be < n_samples.")
 
         nq = Q_num.shape[0]
+        if query_chunk_size is None:
+            query_chunk_size = min(self.ref_chunk_size, nq)
         distances = np.full((nq, k), np.inf, dtype=np.float32)
         indices = np.full((nq, k), -1, dtype=np.int64)
 
@@ -335,7 +445,7 @@ class FastGowerNN:
                     self.X_cat_[rs:re],
                     self.X_cat_nan_[rs:re],
                     k,
-                    bool(exclude_self and same_data),
+                    exclude_self,
                     qs,
                     rs,
                     self.normalize,

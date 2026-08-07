@@ -16,13 +16,6 @@ def load_generator_state(path, filename="generator.pkl"):
         return pickle.load(f)
 
 
-def load_generator_state_or_default(path, default=None, filename="generator.pkl"):
-    try:
-        return load_generator_state(path, filename)
-    except FileNotFoundError:
-        return {} if default is None else default
-
-
 def restore_generator(cls, state):
     generator = cls.__new__(cls)
     generator.__dict__.update(state)

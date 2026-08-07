@@ -4,7 +4,7 @@ import inspect
 
 import pandas as pd
 from . import get_metric
-from .ml import HYPERPARAM_SAVE_DIR
+from synthyverse.utils.utils import memory_guarded
 
 
 def _split_metric_config(metric_key: str):
@@ -51,13 +51,10 @@ class TabularMetricEvaluator:
 
     Args:
         metrics (Union[dict, list]): Dictionary mapping metric names to their parameters, or list of metric names (will use default parameters). Dictionaries can be used to specify metric hyperparameters, and compute different configurations of the same metric (see the example below).
-        discrete_features (list): List of column names that are discrete/categorical. Default: [].
         target_column (str): Name of the target column for supervised metrics. Default: "target".
         random_state (int): Random seed for reproducibility. Default: 0.
         val_size (float): Fraction of training data metrics may reserve for
             validation internally. Default: 0.2.
-        hyperparam_save_dir (str): Directory passed to metrics that cache tuned
-            hyperparameters. Default: ``HYPERPARAM_SAVE_DIR``.
 
     Example:
         >>> import pandas as pd
@@ -74,27 +71,29 @@ class TabularMetricEvaluator:
         >>> metrics = ["mle"]
         >>>
         >>> # Compute different configurations of the same metric by adding a dash to the metric name
-        >>> metrics = {"mle-trts": {"train_set":"real"}, "mle-tstr": {"train_set":"synthetic", "tune":True}}
+        >>> metrics = {"mle-trts": {"train_set":"real"}, "mle-tstr": {"train_set":"synthetic"}}
         >>>
         >>> # Create evaluator
         >>> evaluator = TabularMetricEvaluator(
         ...     metrics=metrics,
-        ...     discrete_features=discrete_features,
         ...     target_column=target_column
         ... )
         >>>
         >>> # Evaluate synthetic data
-        >>> results = evaluator.evaluate(X_train, X_test, X_syn)
+        >>> results = evaluator.evaluate(
+        ...     X_train,
+        ...     X_syn,
+        ...     X_test=X_test,
+        ...     discrete_features=discrete_features,
+        ... )
     """
 
     def __init__(
         self,
         metrics: Union[dict, list],
-        discrete_features: list = None,
         target_column: str = "target",
         random_state: int = 0,
         val_size: float = 0.2,
-        hyperparam_save_dir: str = HYPERPARAM_SAVE_DIR,
     ):
 
         if isinstance(metrics, list):
@@ -103,48 +102,48 @@ class TabularMetricEvaluator:
             self.metrics = metrics
         else:
             raise ValueError("metrics must be a list or a dictionary")
-        self.discrete_features = (
-            list(discrete_features) if discrete_features is not None else []
-        )
         self.target_column = target_column
         self.random_state = random_state
         if not 0 <= val_size < 1:
             raise ValueError("val_size must be non-negative and less than 1.")
         self.val_size = val_size
-        self.hyperparam_save_dir = hyperparam_save_dir
 
     def evaluate(
         self,
-        X_train: pd.DataFrame,
-        X_test: pd.DataFrame,
+        X: pd.DataFrame,
         X_syn: pd.DataFrame,
-        X_syn_test: pd.DataFrame = None,
+        X_test: pd.DataFrame = None,
+        discrete_features: list = None,
     ):
         """Evaluate synthetic data quality using specified metrics.
 
         Args:
-            X_train: Training data as a pandas DataFrame.
-            X_test: Test data as a pandas DataFrame.
+            X: Real data as a pandas DataFrame.
             X_syn: Synthetic data as a pandas DataFrame.
-            X_syn_test: Optional synthetic test data as a pandas DataFrame.
+            X_test: Optional test data as a pandas DataFrame.
+            discrete_features (list): Column names that are discrete/categorical.
+                Default: None.
 
         Returns:
-            dict: Dictionary mapping metric names to their evaluation results.
+            dict: Flat mapping of result keys to scores. When a metric key
+            includes a ``-config`` suffix, that slug is inserted between the
+            registry metric name and the score name (for example
+            ``mle.tstr.auc``).
         """
-        x_train, x_test, x_syn = X_train.copy(), X_test.copy(), X_syn.copy()
-        x_syn_test = X_syn_test.copy() if X_syn_test is not None else None
+        x, x_syn = X.copy(), X_syn.copy()
+        x_test = None if X_test is None else X_test.copy()
 
         # reset indices for proper indexing/slicing
-        x_train, x_test, x_syn = (
-            x_train.reset_index(drop=True),
-            x_test.reset_index(drop=True),
+        x, x_syn = (
+            x.reset_index(drop=True),
             x_syn.reset_index(drop=True),
         )
-        if x_syn_test is not None:
-            x_syn_test = x_syn_test.reset_index(drop=True)
+        if x_test is not None:
+            x_test = x_test.reset_index(drop=True)
+        eval_discrete_features = list(discrete_features or [])
 
         dict_ = {}
-        for metric__ in self.metrics.keys():
+        for metric__ in memory_guarded(self.metrics.keys()):
             print(f"Evaluating metric: {metric__}")
             metric_, config_slug = _split_metric_config(metric__)
             metric_cls = get_metric(metric_)
@@ -152,29 +151,19 @@ class TabularMetricEvaluator:
             # add necessary fixed parameters to the metrics:
             metric_params = dict(self.metrics[metric__])
             params = dict(metric_params)
+            params["random_state"] = self.random_state
             required_params = inspect.signature(metric_cls.__init__).parameters.keys()
-            if "discrete_features" in required_params:
-                params["discrete_features"] = self.discrete_features
             if "target_column" in required_params:
                 params["target_column"] = self.target_column
-            if "random_state" in required_params:
-                params["random_state"] = self.random_state
             if "val_size" in required_params and "val_size" not in params:
                 params["val_size"] = self.val_size
-            if "hyperparam_save_dir" in required_params:
-                params["hyperparam_save_dir"] = self.hyperparam_save_dir
-            data = {
-                "X_train": x_train,
-                "X_syn": x_syn,
-            }
-            required_data = inspect.signature(metric_cls.evaluate).parameters.keys()
-            if "X_test" in required_data:
-                data["X_test"] = x_test
-            if "X_syn_test" in required_data:
-                data["X_syn_test"] = x_syn_test
-
             metric = metric_cls(**params)
-            metric_result = metric.evaluate(**data)
+            metric_result = metric.evaluate(
+                x,
+                x_syn,
+                X_test=x_test,
+                discrete_features=eval_discrete_features,
+            )
 
             if isinstance(metric_result, dict):
                 for key, value in metric_result.items():

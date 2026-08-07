@@ -1,24 +1,15 @@
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import QuantileTransformer
 
 from ..base import BaseGenerator
-from ..persistence import load_generator_state, restore_generator, save_generator_state
 
 
 class UnivariateGenerator(BaseGenerator):
     """Univariate baseline generator for tabular synthetic data.
 
-    Generates each feature independently. Categorical features are sampled from
-    their empirical category frequencies. Numerical features are fitted with
-    :class:`sklearn.preprocessing.QuantileTransformer` and sampled by drawing
-    uniform values followed by inverse transformation.
-
-    Args:
-        random_state (int): Random seed for reproducibility. Default: 0.
-        n_quantiles (int): Maximum number of quantiles used by each numerical
-            ``QuantileTransformer``. The effective value is capped at the number
-            of non-missing observations per feature. Default: 1000.
+    Generates each feature independently. Categorical features are
+    sampled from the observed empirical distribution. Numerical features are sampled
+    uniformly from the range of the real data.
 
     Example:
         >>> import pandas as pd
@@ -29,7 +20,7 @@ class UnivariateGenerator(BaseGenerator):
         >>> discrete_features = ["category_col"]
         >>>
         >>> # Create generator
-        >>> generator = UnivariateGenerator(random_state=42)
+        >>> generator = UnivariateGenerator()
         >>>
         >>> # Fit and generate
         >>> generator.fit(X, discrete_features)
@@ -38,11 +29,12 @@ class UnivariateGenerator(BaseGenerator):
 
     name = "univariate"
 
-    def __init__(self, random_state: int = 0, n_quantiles: int = 1000):
-        if n_quantiles < 1:
-            raise ValueError("n_quantiles must be at least 1.")
-        self.random_state = random_state
-        self.n_quantiles = n_quantiles
+    def __init__(
+        self,
+        random_state: int = 0,
+        full_determinism: bool = False,
+    ):
+        super().__init__(random_state=random_state, full_determinism=full_determinism)
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
         self.columns = X.columns.tolist()
@@ -54,8 +46,7 @@ class UnivariateGenerator(BaseGenerator):
         ]
         self.category_values = {}
         self.category_probabilities = {}
-        self.quantile_transformers = {}
-        self.numeric_missing_rates = {}
+        self.numeric_ranges = {}
 
         for col in self.categorical_features:
             frequencies = X[col].value_counts(normalize=True, dropna=False)
@@ -63,20 +54,7 @@ class UnivariateGenerator(BaseGenerator):
             self.category_probabilities[col] = frequencies.to_numpy()
 
         for col in self.numerical_features:
-            values = X[col].dropna().to_numpy().reshape(-1, 1)
-            if len(values) == 0:
-                raise ValueError(
-                    f"Column {col} has only missing values and cannot be fitted."
-                )
-            n_quantiles = min(self.n_quantiles, len(values))
-            transformer = QuantileTransformer(
-                n_quantiles=n_quantiles,
-                output_distribution="uniform",
-                random_state=self.random_state,
-            )
-            transformer.fit(values)
-            self.quantile_transformers[col] = transformer
-            self.numeric_missing_rates[col] = float(X[col].isna().mean())
+            self.numeric_ranges[col] = (X[col].min(), X[col].max())
 
         return self
 
@@ -95,35 +73,17 @@ class UnivariateGenerator(BaseGenerator):
                 syn[col] = self.category_values[col][sampled_indices]
                 continue
 
-            uniform_samples = rng.random((n, 1))
-            sampled_values = (
-                self.quantile_transformers[col]
-                .inverse_transform(uniform_samples)
-                .ravel()
-            )
-            missing_rate = self.numeric_missing_rates[col]
-            if missing_rate > 0:
-                missing_mask = rng.random(n) < missing_rate
-                sampled_values = sampled_values.astype(float, copy=False)
-                sampled_values[missing_mask] = np.nan
-            syn[col] = sampled_values
+            low, high = self.numeric_ranges[col]
+            syn[col] = rng.uniform(low, high, size=n)
 
         return syn[self.columns]
 
-    def save(self, path):
-        state = {
-            "random_state": self.random_state,
-            "n_quantiles": self.n_quantiles,
+    def _state(self):
+        return {
             "columns": self.columns,
             "categorical_features": self.categorical_features,
             "numerical_features": self.numerical_features,
             "category_values": self.category_values,
             "category_probabilities": self.category_probabilities,
-            "quantile_transformers": self.quantile_transformers,
-            "numeric_missing_rates": self.numeric_missing_rates,
+            "numeric_ranges": self.numeric_ranges,
         }
-        return save_generator_state(path, state)
-
-    @classmethod
-    def load(cls, path):
-        return restore_generator(cls, load_generator_state(path))

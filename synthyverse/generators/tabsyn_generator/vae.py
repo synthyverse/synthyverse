@@ -270,6 +270,7 @@ class VAE(nn.Module):
         self,
         d_numerical,
         categories,
+        embedding_categories,
         num_layers,
         hid_dim,
         n_head=1,
@@ -284,7 +285,9 @@ class VAE(nn.Module):
         d_token = hid_dim
         self.n_head = n_head
 
-        self.Tokenizer = Tokenizer(d_numerical, categories, d_token, bias=bias)
+        self.Tokenizer = Tokenizer(
+            d_numerical, embedding_categories, d_token, bias=bias
+        )
 
         self.encoder_mu = Transformer(num_layers, hid_dim, n_head, hid_dim, factor)
         self.encoder_logvar = Transformer(num_layers, hid_dim, n_head, hid_dim, factor)
@@ -350,6 +353,7 @@ class Model_VAE(nn.Module):
         num_layers,
         d_numerical,
         categories,
+        embedding_categories,
         d_token,
         n_head=1,
         factor=4,
@@ -360,6 +364,7 @@ class Model_VAE(nn.Module):
         self.VAE = VAE(
             d_numerical,
             categories,
+            embedding_categories,
             num_layers,
             d_token,
             n_head=n_head,
@@ -384,10 +389,17 @@ class Model_VAE(nn.Module):
 
 class Encoder_model(nn.Module):
     def __init__(
-        self, num_layers, d_numerical, categories, d_token, n_head, factor, bias=True
+        self,
+        num_layers,
+        d_numerical,
+        embedding_categories,
+        d_token,
+        n_head,
+        factor,
+        bias=True,
     ):
         super(Encoder_model, self).__init__()
-        self.Tokenizer = Tokenizer(d_numerical, categories, d_token, bias)
+        self.Tokenizer = Tokenizer(d_numerical, embedding_categories, d_token, bias)
         self.VAE_Encoder = Transformer(num_layers, d_token, n_head, d_token, factor)
 
     def load_weights(self, Pretrained_VAE):

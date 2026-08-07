@@ -4,19 +4,24 @@ from pathlib import Path
 
 import pandas as pd
 import torch
-from sklearn.preprocessing import OrdinalEncoder, QuantileTransformer, StandardScaler
+from sklearn.preprocessing import OrdinalEncoder
 from torch_ema import ExponentialMovingAverage
 from tqdm import tqdm
 from typing import Optional
 import time
 
 from ..base import BaseGenerator
-from ..dgm_utils import FastTensorDataLoader
-from ..persistence import load_generator_state, restore_generator, save_generator_state
+from ..dgm_utils import (
+    FastTensorDataLoader,
+    QuantileStandardScaler,
+    clone_state_dict,
+    split_validation,
+    validate_c2st,
+)
 from ...utils.utils import get_total_trainable_params
 from .encoder import Discretizer
 from .highres import HighResFlowModel
-from .lowres import CatCDTD, LowResMLP, cycle, set_seeds
+from .lowres import CatCDTD, LowResMLP, cycle
 
 
 class Config(dict):
@@ -107,7 +112,9 @@ class TabCascadeGenerator(BaseGenerator):
             Default: False.
         log_steps (int): Steps between progress logging. Default: 100.
         cap_train_time (float): Time limit in seconds for training. Default: None.
-        random_state (int): Random seed for reproducibility. Default: 0.
+        val_size (float): Fraction of training rows reserved for validation set early stopping. Default: 0.0.
+        val_steps (int): Epochs between validation, or training steps when ``training_steps`` is provided. Default: 5000.
+        target_column (str): Name of the target column, potentially used for stratified validation splitting. Default: None.
 
     Example:
         >>> import pandas as pd
@@ -119,13 +126,13 @@ class TabCascadeGenerator(BaseGenerator):
         >>> generator = TabCascadeGenerator(
         ...     training_steps=30000,
         ...     batch_size=4096,
-        ...     random_state=42,
         ... )
         >>> generator.fit(X, discrete_features)
         >>> X_syn = generator.generate(1000)
     """
 
     name = "tabcascade"
+    supports_purely_categorical = False
 
     def __init__(
         self,
@@ -162,12 +169,16 @@ class TabCascadeGenerator(BaseGenerator):
         clip_grad: bool = False,
         log_steps: int = 100,
         random_state: int = 0,
+        full_determinism: bool = False,
         cap_train_time: Optional[float] = None,
+        val_size: float = 0.0,
+        val_steps: int = 5000,
+        target_column: Optional[str] = None,
     ):
+        super().__init__(random_state=random_state, full_determinism=full_determinism)
         self.__dict__.update(locals())
         self.betas = tuple(betas)
         del self.__dict__["self"]
-        self.seed = self.random_state
         self.config = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.cap_train_time = cap_train_time
@@ -176,7 +187,7 @@ class TabCascadeGenerator(BaseGenerator):
         self.z_encoder = Discretizer(
             x_num,
             variant=self.config.data.encoder,
-            seed=self.seed,
+            seed=self.random_state,
             k_max=self.config.data.k_max,
             max_depth=self.config.data.max_depth,
         )
@@ -184,8 +195,17 @@ class TabCascadeGenerator(BaseGenerator):
 
         if self.config.data.encoder == "gmm":
             for i in range(groups.shape[1]):
-                vals = groups[:, i].unique()
-                self.z_encoder.means[i] = self.z_encoder.means[i][vals]
+                raw_groups = self.z_encoder.gmm_ord_enc.categories_[i]
+                raw_groups = torch.tensor(
+                    raw_groups[~pd.isna(raw_groups)], dtype=torch.long
+                )
+                idx = raw_groups + 1 if has_miss[i] else raw_groups
+                if has_miss[i]:
+                    idx = torch.cat((torch.zeros(1, dtype=torch.long), idx))
+                self.z_encoder.means[i] = self.z_encoder.means[i][idx]
+                self.z_encoder.stds[i] = self.z_encoder.stds[i][idx]
+                infl_groups_i = torch.tensor(infl_groups[i], dtype=torch.long)
+                self.z_encoder.stds[i][infl_groups_i + int(has_miss[i])] = 0
             self.gmm_ord_enc = OrdinalEncoder()
             groups = self.gmm_ord_enc.fit_transform(groups.numpy())
             groups = torch.from_numpy(groups).long()
@@ -215,16 +235,18 @@ class TabCascadeGenerator(BaseGenerator):
         n_classes_cat = []
         proportions_cat = []
         n_sample = x_cat.shape[0]
+        cat_cardinalities = self._categorical_cardinalities(self.discrete_features)
         for i in range(x_cat.shape[1]):
-            val, counts = x_cat[:, i].unique(return_counts=True)
-            n_classes_cat.append(len(val))
+            n_classes_cat.append(cat_cardinalities[i])
+            counts = torch.bincount(x_cat[:, i], minlength=cat_cardinalities[i])
             proportions_cat.append(counts / n_sample)
 
         n_classes_num = []
         proportions_num = []
         for i in range(groups.shape[1]):
-            val, counts = groups[:, i].unique(return_counts=True)
-            n_classes_num.append(len(val))
+            n_classes = int(groups[:, i].max()) + 1
+            counts = torch.bincount(groups[:, i], minlength=n_classes)
+            n_classes_num.append(n_classes)
             proportions_num.append(counts / n_sample)
 
         return n_classes_cat + n_classes_num, proportions_cat + proportions_num
@@ -282,7 +304,7 @@ class TabCascadeGenerator(BaseGenerator):
             cfg.cat_emb_dim,
         )
 
-    def train(self, x_cat, x_num):
+    def _train_tabcascade(self, x_cat, x_num, X_val=None):
         self.n_cat_cols = x_cat.shape[1]
         z_groups, z_mask, self.z_infl_groups, self.z_has_miss = self.encode_into_z(
             x_num
@@ -333,6 +355,9 @@ class TabCascadeGenerator(BaseGenerator):
         pbar = tqdm(total=self.config.lowres.training.num_steps_train)
 
         start_time = time.monotonic()
+        best_val_score = float("inf")
+        best_val_model = None
+        stop_training = False
         while step < self.config.lowres.training.num_steps_train:
             if step < self.config.lowres.training.num_steps_warmup:
                 lr = (
@@ -416,32 +441,62 @@ class TabCascadeGenerator(BaseGenerator):
                         "loss (highres)": f"{highres_loss_trn:.4f}",
                     },
                 )
-                lowres_loss_trn = highres_loss_trn = n_inputs = 0
+
                 scheduler_highres.step(highres_loss_trn)
+                lowres_loss_trn = highres_loss_trn = n_inputs = 0
 
             step += 1
             pbar.update(1)
 
-            # check if training timed out
-            if (self.cap_train_time is not None) and (
-                step % self.config.lowres.training.log_steps == 0
-            ):
-                if (time.monotonic() - start_time) > self.cap_train_time:
-                    print(f"Training timed out after {self.cap_train_time} seconds.")
+            if X_val is not None and step > 0 and step % self._val_steps_train == 0:
+                self.lowres.eval()
+                self.highres.eval()
+                ema_lowres.store()
+                ema_highres.store()
+                ema_lowres.copy_to()
+                ema_highres.copy_to()
+                score = validate_c2st(self, X_val, random_state=self.random_state)
+                if score < best_val_score:
+                    best_val_score = score
+                    best_val_model = {
+                        "lowres": clone_state_dict(self.lowres),
+                        "highres": clone_state_dict(self.highres),
+                    }
+                else:
+                    stop_training = True
+                ema_lowres.restore()
+                ema_highres.restore()
+                self.lowres.train()
+                self.highres.train()
+                if stop_training:
                     break
+
+            if (
+                self.cap_train_time is not None
+                and (time.monotonic() - start_time) > self.cap_train_time
+            ):
+                print(f"Training timed out after {self.cap_train_time} seconds.")
+                break
         pbar.close()
 
-        ema_lowres.copy_to()
+        if best_val_model is None:
+            ema_lowres.copy_to()
+            ema_highres.copy_to()
+        else:
+            self.lowres.load_state_dict(
+                {k: v.to(self.device) for k, v in best_val_model["lowres"].items()}
+            )
+            self.highres.load_state_dict(
+                {k: v.to(self.device) for k, v in best_val_model["highres"].items()}
+            )
         self.lowres.eval()
-        ema_highres.copy_to()
         self.highres.eval()
 
-    def sample(self, num_samples):
+    def _sample_tabcascade(self, num_samples):
         x_low_gen = self.lowres.sample_data(
             num_samples,
             num_steps=self.config.lowres.model.generation_steps,
             batch_size=self.config.lowres.model.generation_batch_size,
-            seed=self.seed,
             verbose=False,
         )
         x_cat_gen = x_low_gen[:, : self.n_cat_cols]
@@ -451,7 +506,6 @@ class TabCascadeGenerator(BaseGenerator):
             z_num_gen,
             num_steps=self.config.highres.model.generation_steps,
             batch_size=self.config.highres.model.generation_batch_size,
-            seed=self.seed,
             verbose=False,
         )
 
@@ -474,7 +528,13 @@ class TabCascadeGenerator(BaseGenerator):
         return x_cat_gen.numpy(), x_num_gen.numpy()
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
-        set_seeds(self.random_state, cuda_deterministic=True)
+        X, X_val = split_validation(
+            X,
+            self.val_size,
+            self.target_column,
+            discrete_features,
+            self.random_state,
+        )
         self.col_order = X.columns
         self.discrete_features = list(discrete_features)
         self.numerical_features = [
@@ -484,49 +544,39 @@ class TabCascadeGenerator(BaseGenerator):
             raise ValueError("TabCascade requires at least one numerical feature.")
 
         if self.discrete_features:
-            self.ordinal_encoder = OrdinalEncoder(
-                handle_unknown="use_encoded_value",
-                unknown_value=-1,
-                encoded_missing_value=-2,
-            )
-            x_cat = torch.tensor(
-                self.ordinal_encoder.fit_transform(X[self.discrete_features])
-            ).long()
+            x_cat = torch.tensor(X[self.discrete_features].to_numpy()).long()
         else:
-            self.ordinal_encoder = None
             x_cat = torch.empty((len(X), 0), dtype=torch.long)
 
         if self.numerical_features:
-            self.quantile_encoder = QuantileTransformer(
-                output_distribution="normal",
-                n_quantiles=max(min(len(X) // 30, 1000), 10),
-                subsample=int(1e9),
-                random_state=self.random_state,
+            self.quantile_encoder = QuantileStandardScaler(
+                len(X), self.random_state
             )
-            self.st_scaler = StandardScaler()
 
         x_num = X[self.numerical_features].to_numpy().astype(float)
         x_num = self.quantile_encoder.fit_transform(x_num)
-        x_num = self.st_scaler.fit_transform(x_num)
         x_num = torch.tensor(x_num).float()
 
         steps_per_epoch = max(len(X) // min(self.batch_size, len(X)), 1)
         num_steps_train = self.training_steps or self.epochs * steps_per_epoch
+        self._val_steps_train = (
+            self.val_steps
+            if self.training_steps is not None
+            else self.val_steps * steps_per_epoch
+        )
         self.config = self._make_config(num_steps_train)
-        self.seed = self.random_state
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.train(x_cat, x_num)
+        self._train_tabcascade(x_cat, x_num, X_val)
         return self
 
     def _generate(self, n: int):
-        x_cat, x_num = self.sample(n)
-        x_num = self.st_scaler.inverse_transform(x_num)
+        x_cat, x_num = self._sample_tabcascade(n)
         x_num = self.quantile_encoder.inverse_transform(x_num)
         frames = []
         if self.discrete_features:
             frames.append(
                 pd.DataFrame(
-                    self.ordinal_encoder.inverse_transform(x_cat.astype(int)),
+                    x_cat.astype(int),
                     columns=self.discrete_features,
                 )
             )
@@ -592,28 +642,21 @@ class TabCascadeGenerator(BaseGenerator):
             },
         )
 
-    def save(self, path):
-        path = Path(path)
-        state = self.__dict__.copy()
-        for key in [
-            "config",
-            "device",
-            "seed",
-            "z_encoder",
-            "train_loader",
-            "n_cat_cols",
-            "n_classes",
-            "proportions",
-            "z_means",
-            "z_stds",
-            "z_infl_groups",
-            "z_has_miss",
-            "lowres",
-            "highres",
-            "gmm_ord_enc",
-        ]:
-            state.pop(key, None)
-        save_generator_state(path, state)
+    def _state(self):
+        return {
+            "config": config(
+                data={"encoder": self.config.data.encoder},
+                lowres={"model": self.config.lowres.model},
+                highres={"model": self.config.highres.model},
+            ),
+            "col_order": self.col_order,
+            "discrete_features": self.discrete_features,
+            "numerical_features": self.numerical_features,
+            "ordinal_encoder": self.ordinal_encoder,
+            "quantile_encoder": self.quantile_encoder,
+        }
+
+    def _save_extra(self, path: Path) -> None:
         torch.save(
             {
                 "n_cat_cols": self.n_cat_cols,
@@ -629,31 +672,24 @@ class TabCascadeGenerator(BaseGenerator):
             },
             path / "tabcascade.pt",
         )
-        return path
 
-    @classmethod
-    def load(cls, path):
-        path = Path(path)
-        generator = restore_generator(cls, load_generator_state(path))
-        generator.seed = generator.random_state
-        generator.config = generator._make_config(generator.training_steps)
-        generator.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    def _load_extra(self, path: Path) -> None:
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         state = torch.load(
-            path / "tabcascade.pt", map_location=generator.device, weights_only=False
+            path / "tabcascade.pt", map_location=self.device, weights_only=False
         )
-        generator.n_cat_cols = state["n_cat_cols"]
-        generator.n_classes = state["n_classes"]
-        generator.proportions = state["proportions"]
-        generator.z_means = state["z_means"]
-        generator.z_stds = state["z_stds"]
-        generator.z_infl_groups = state["z_infl_groups"]
-        generator.z_has_miss = state["z_has_miss"]
+        self.n_cat_cols = state["n_cat_cols"]
+        self.n_classes = state["n_classes"]
+        self.proportions = state["proportions"]
+        self.z_means = state["z_means"]
+        self.z_stds = state["z_stds"]
+        self.z_infl_groups = state["z_infl_groups"]
+        self.z_has_miss = state["z_has_miss"]
         if state["gmm_ord_enc"] is not None:
-            generator.gmm_ord_enc = state["gmm_ord_enc"]
-        generator.lowres = generator.get_lowres_model().to(generator.device)
-        generator.highres = generator.get_highres_model().to(generator.device)
-        generator.lowres.load_state_dict(state["lowres"])
-        generator.highres.load_state_dict(state["highres"])
-        generator.lowres.eval()
-        generator.highres.eval()
-        return generator
+            self.gmm_ord_enc = state["gmm_ord_enc"]
+        self.lowres = self.get_lowres_model().to(self.device)
+        self.highres = self.get_highres_model().to(self.device)
+        self.lowres.load_state_dict(state["lowres"])
+        self.highres.load_state_dict(state["highres"])
+        self.lowres.eval()
+        self.highres.eval()

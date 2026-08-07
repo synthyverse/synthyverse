@@ -3,7 +3,12 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler, OneHotEncoder, OrdinalEncoder
+from sklearn.preprocessing import (
+    KBinsDiscretizer,
+    MinMaxScaler,
+    OneHotEncoder,
+    OrdinalEncoder,
+)
 
 
 class GowerLikePreprocessor:
@@ -90,6 +95,50 @@ class GowerLikePreprocessor:
             raise ValueError("GowerLikePreprocessor must be fitted before transform.")
 
 
+def bin_numerical_columns(
+    real: pd.DataFrame,
+    syn: pd.DataFrame,
+    columns: list,
+    n_bins: int,
+    skip_constant: bool = False,
+    fit_data: pd.DataFrame = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    real_binned = real.copy()
+    syn_binned = syn.copy()
+    fit_data = real if fit_data is None else fit_data
+
+    if not columns or n_bins < 2:
+        return real_binned, syn_binned
+
+    if skip_constant:
+        columns = [
+            col for col in columns if fit_data[col].min() != fit_data[col].max()
+        ]
+        if not columns:
+            return real_binned, syn_binned
+
+    discretizer = KBinsDiscretizer(n_bins=n_bins, encode="ordinal", strategy="uniform")
+    discretizer.fit(fit_data[columns])
+    real_binned[columns] = discretizer.transform(real[columns])
+    syn_binned[columns] = discretizer.transform(syn[columns])
+    return real_binned, syn_binned
+
+
+def empirical_discrete_distribution(
+    x: np.ndarray,
+    y: np.ndarray,
+    dropna: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    s1 = pd.Series(np.asarray(x))
+    s2 = pd.Series(np.asarray(y))
+    p = s1.value_counts(normalize=True, dropna=dropna)
+    q = s2.value_counts(normalize=True, dropna=dropna)
+    support = p.index.union(q.index)
+    p = p.reindex(support, fill_value=0.0).to_numpy(dtype=float)
+    q = q.reindex(support, fill_value=0.0).to_numpy(dtype=float)
+    return p, q
+
+
 def gower_like_transform(
     data: Mapping[str, pd.DataFrame],
     reference_data: pd.DataFrame,
@@ -123,7 +172,11 @@ def fast_gower_transform(
     encoder = None
     if discrete_features:
         fit_frames = list(categorical_fit_data or [reference_data])
-        encoder = OrdinalEncoder().fit(
+        encoder = OrdinalEncoder(
+            handle_unknown="use_encoded_value",
+            unknown_value=-2,
+            encoded_missing_value=-1,
+        ).fit(
             pd.concat([df[discrete_features] for df in fit_frames], axis=0)
         )
 
@@ -133,8 +186,8 @@ def fast_gower_transform(
         if numerical_features:
             out[numerical_features] = scaler.transform(df[numerical_features])
         if discrete_features:
-            categorical = encoder.transform(df[discrete_features]).astype(np.float32)
-            categorical[df[discrete_features].isna().to_numpy()] = np.nan
+            categorical = encoder.transform(df[discrete_features]).astype(np.int32)
+            categorical[df[discrete_features].isna().to_numpy()] = -1
             out[discrete_features] = categorical
         transformed[name] = out[columns]
     return transformed

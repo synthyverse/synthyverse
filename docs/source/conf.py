@@ -70,7 +70,6 @@ autodoc_mock_imports = [
     "joblib",
     "numba",
     "xgboost",
-    "optuna",
     "ctgan",
     "arfpy",
     "einops",

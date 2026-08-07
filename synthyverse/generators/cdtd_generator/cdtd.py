@@ -4,15 +4,19 @@ from pathlib import Path
 
 import pandas as pd
 import torch
-from sklearn.preprocessing import QuantileTransformer, StandardScaler, OrdinalEncoder
 from torch_ema import ExponentialMovingAverage
 from tqdm import tqdm
 
 from ..base import BaseGenerator
-from ..dgm_utils import FastTensorDataLoader
+from ..dgm_utils import (
+    FastTensorDataLoader,
+    QuantileStandardScaler,
+    clone_state_dict,
+    split_validation,
+    validate_c2st,
+)
 from .layers import MLP, MixedTypeDiffusion
-from .utils import LinearScheduler, cycle, set_seeds
-from ..persistence import load_generator_state, restore_generator, save_generator_state
+from .utils import LinearScheduler, cycle
 from ...utils.utils import get_total_trainable_params
 
 from typing import Optional
@@ -50,7 +54,9 @@ class CDTDGenerator(BaseGenerator):
         ema_decay (float): Exponential moving average decay. Default: 0.999.
         log_steps (int): Steps between logging. Default: 100.
         cap_train_time (float): Time limit in seconds for training. Default: None.
-        random_state (int): Random seed for reproducibility. Default: 0.
+        val_size (float): Fraction of training rows reserved for validation set early stopping. Default: 0.0.
+        val_steps (int): Steps between validation. Default: 5000.
+        target_column (str): Name of the target column, potentially used for stratified validation splitting. Default: None.
 
     Example:
         >>> import pandas as pd
@@ -63,8 +69,7 @@ class CDTDGenerator(BaseGenerator):
         >>> # Create generator
         >>> generator = CDTDGenerator(
         ...     timewarp_type="bytype",
-        ...     training_steps=30000,
-        ...     random_state=42
+        ...     training_steps=30000
         ... )
         >>>
         >>> # Fit and generate
@@ -73,6 +78,8 @@ class CDTDGenerator(BaseGenerator):
     """
 
     name = "cdtd"
+    supports_purely_numerical = False
+    supports_purely_categorical = False
 
     def __init__(
         self,
@@ -97,9 +104,13 @@ class CDTDGenerator(BaseGenerator):
         ema_decay: float = 0.999,
         log_steps: int = 100,
         random_state: int = 0,
+        full_determinism: bool = False,
         cap_train_time: Optional[float] = None,
+        val_size: float = 0.0,
+        val_steps: int = 5000,
+        target_column: Optional[str] = None,
     ):
-        self.random_state = random_state
+        super().__init__(random_state=random_state, full_determinism=full_determinism)
         self.cat_emb_dim = cat_emb_dim
         self.embedding_dim = embedding_dim
         self.mlp_n_layers = mlp_n_layers
@@ -121,9 +132,9 @@ class CDTDGenerator(BaseGenerator):
         self.ema_decay = ema_decay
         self.log_steps = log_steps
         self.cap_train_time = cap_train_time
-
-        if torch.cuda.is_available():
-            torch.set_float32_matmul_precision("high")
+        self.val_size = val_size
+        self.val_steps = val_steps
+        self.target_column = target_column
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
         self.discrete_features = discrete_features
@@ -132,42 +143,36 @@ class CDTDGenerator(BaseGenerator):
         ]
         self.col_order = X.columns
 
-        X_discrete = X[self.discrete_features].to_numpy()
-        self.ordinal_encoder = OrdinalEncoder(
-            handle_unknown="use_encoded_value",
-            unknown_value=-1,
-            encoded_missing_value=-2,
-        )
-        X_discrete = self.ordinal_encoder.fit_transform(X_discrete)
+        X = X.copy()
 
-        X_numerical = X[self.numerical_features].to_numpy().astype(float)
-        self.quant_encoder = QuantileTransformer(
-            output_distribution="normal",
-            n_quantiles=max(min(X_numerical.shape[0] // 30, 1000), 10),
-            subsample=int(1e9),
-            random_state=self.random_state,
+        X, X_val = split_validation(
+            X,
+            self.val_size,
+            self.target_column,
+            self.discrete_features,
+            self.random_state,
         )
-        X_numerical = self.quant_encoder.fit_transform(X_numerical)
-        self.scaler = StandardScaler()
-        X_numerical = self.scaler.fit_transform(X_numerical)
 
-        X_discrete = torch.tensor(X_discrete).long()
-        X_numerical = torch.tensor(X_numerical).float()
+        self.quant_encoder = QuantileStandardScaler(X.shape[0], self.random_state)
+        X[self.numerical_features] = self.quant_encoder.fit_transform(
+            X[self.numerical_features].astype(float)
+        )
+
+        X_discrete = torch.tensor(X[self.discrete_features].to_numpy()).long()
+        X_numerical = torch.tensor(X[self.numerical_features].to_numpy()).float()
 
         # --- build diffusion model ---
         self.num_cat_features = X_discrete.shape[1]
         self.num_cont_features = X_numerical.shape[1]
         num_features = self.num_cat_features + self.num_cont_features
 
-        categories = []
-        for i in range(self.num_cat_features):
-            categories.append(int(X_discrete[:, i].unique().numel()))
+        categories = self._categorical_cardinalities(self.discrete_features)
         self.categories = categories
 
         proportions = []
         n_sample = X_discrete.shape[0]
         for i in range(len(categories)):
-            _, counts = X_discrete[:, i].unique(return_counts=True)
+            counts = torch.bincount(X_discrete[:, i], minlength=categories[i])
             proportions.append(counts / n_sample)
         self.proportions = proportions
 
@@ -215,7 +220,6 @@ class CDTDGenerator(BaseGenerator):
         )
         train_iter = cycle(train_loader)
 
-        set_seeds(self.random_state, cuda_deterministic=True)
         self.diff_model = self.diff_model.to(self.device)
         self.diff_model.train()
 
@@ -237,6 +241,9 @@ class CDTDGenerator(BaseGenerator):
 
         current_step = 0
         n_obs = sum_loss = 0
+
+        best_val_score = float("inf")
+        best_val_model = None
 
         start_time = time.monotonic()
         with tqdm(initial=current_step, total=self.training_steps) as pbar:
@@ -270,22 +277,49 @@ class CDTDGenerator(BaseGenerator):
                 for param_group in optimizer.param_groups:
                     param_group["lr"] = scheduler(current_step)
 
-                # check if training timed out
-                if (self.cap_train_time is not None) and (
-                    current_step % self.log_steps == 0
+                if (
+                    X_val is not None
+                    and current_step % self.val_steps == 0
+                    and current_step > 0
                 ):
-                    if (time.monotonic() - start_time) > self.cap_train_time:
-                        print(
-                            f"Training timed out after {self.cap_train_time} seconds."
-                        )
+                    # validate using c2st
+                    self.diff_model.eval()
+                    ema_diff_model.store()
+                    ema_diff_model.copy_to()
+                    score = validate_c2st(self, X_val, random_state=self.random_state)
+
+                    if score < best_val_score:
+                        best_val_score = score
+                        best_val_model = clone_state_dict(self.diff_model)
+                        stop_training = False
+                    else:
+                        stop_training = True
+
+                    ema_diff_model.restore()
+                    self.diff_model.train()
+
+                    if stop_training:
                         break
 
-        ema_diff_model.copy_to()
-        self.diff_model.eval()
+                if (
+                    self.cap_train_time is not None
+                    and (time.monotonic() - start_time) > self.cap_train_time
+                ):
+                    print(f"Training timed out after {self.cap_train_time} seconds.")
+                    break
 
+        if best_val_model is None:
+            ema_diff_model.copy_to()
+        else:
+            self.diff_model.load_state_dict(
+                {k: v.to(self.device) for k, v in best_val_model.items()}
+            )
+        self.diff_model.eval()
         return self
 
     def _generate(self, n: int):
+        self.diff_model.eval()
+
         n_batches, remainder = divmod(n, self.batch_size)
         sample_sizes = (
             n_batches * [self.batch_size] + [remainder]
@@ -316,9 +350,7 @@ class CDTDGenerator(BaseGenerator):
         syn_X_discrete = x_cat.long().numpy()
         syn_X_numerical = x_cont.numpy()
 
-        syn_X_numerical = self.scaler.inverse_transform(syn_X_numerical)
         syn_X_numerical = self.quant_encoder.inverse_transform(syn_X_numerical)
-        syn_X_discrete = self.ordinal_encoder.inverse_transform(syn_X_discrete)
 
         syn_X = pd.concat(
             (pd.DataFrame(syn_X_discrete), pd.DataFrame(syn_X_numerical)), axis=1
@@ -328,10 +360,8 @@ class CDTDGenerator(BaseGenerator):
 
         return syn_X
 
-    def save(self, path):
-        path = Path(path)
-        state = {
-            "random_state": self.random_state,
+    def _state(self):
+        return {
             "cat_emb_dim": self.cat_emb_dim,
             "embedding_dim": self.embedding_dim,
             "mlp_n_layers": self.mlp_n_layers,
@@ -345,7 +375,6 @@ class CDTDGenerator(BaseGenerator):
             "cat_emb_init_sigma": self.cat_emb_init_sigma,
             "timewarp_type": self.timewarp_type,
             "timewarp_weight_low_noise": self.timewarp_weight_low_noise,
-            "training_steps": self.training_steps,
             "num_timesteps": self.num_timesteps,
             "batch_size": self.batch_size,
             "discrete_features": self.discrete_features,
@@ -353,49 +382,44 @@ class CDTDGenerator(BaseGenerator):
             "col_order": self.col_order,
             "ordinal_encoder": self.ordinal_encoder,
             "quant_encoder": self.quant_encoder,
-            "scaler": self.scaler,
             "num_cat_features": self.num_cat_features,
             "num_cont_features": self.num_cont_features,
             "categories": self.categories,
             "proportions": self.proportions,
         }
-        save_generator_state(path, state)
-        torch.save(self.diff_model.state_dict(), path / "diff_model.pt")
-        return path
 
-    @classmethod
-    def load(cls, path):
-        path = Path(path)
-        generator = restore_generator(cls, load_generator_state(path))
-        generator.num_timesteps = getattr(generator, "num_timesteps", 200)
-        generator.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    def _save_extra(self, path: Path) -> None:
+        torch.save(self.diff_model.state_dict(), path / "diff_model.pt")
+
+    def _load_extra(self, path: Path) -> None:
+        self.num_timesteps = getattr(self, "num_timesteps", 200)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         score_model = MLP(
-            generator.num_cont_features,
-            generator.cat_emb_dim,
-            generator.categories,
-            generator.proportions,
-            generator.embedding_dim,
-            generator.mlp_n_layers,
-            generator.mlp_n_units,
+            self.num_cont_features,
+            self.cat_emb_dim,
+            self.categories,
+            self.proportions,
+            self.embedding_dim,
+            self.mlp_n_layers,
+            self.mlp_n_units,
         )
-        generator.diff_model = MixedTypeDiffusion(
+        self.diff_model = MixedTypeDiffusion(
             model=score_model,
-            dim=generator.cat_emb_dim,
-            categories=generator.categories,
-            num_features=generator.num_cat_features + generator.num_cont_features,
-            sigma_data_cat=generator.sigma_data_cat,
-            sigma_data_cont=generator.sigma_data_cont,
-            sigma_min_cat=generator.sigma_min_cat,
-            sigma_max_cat=generator.sigma_max_cat,
-            sigma_min_cont=generator.sigma_min_cont,
-            sigma_max_cont=generator.sigma_max_cont,
-            proportions=generator.proportions,
-            cat_emb_init_sigma=generator.cat_emb_init_sigma,
-            timewarp_type=generator.timewarp_type,
-            timewarp_weight_low_noise=generator.timewarp_weight_low_noise,
-        ).to(generator.device)
-        state_dict = torch.load(path / "diff_model.pt", map_location=generator.device)
-        generator.diff_model.load_state_dict(state_dict)
-        generator.diff_model.eval()
-        return generator
+            dim=self.cat_emb_dim,
+            categories=self.categories,
+            num_features=self.num_cat_features + self.num_cont_features,
+            sigma_data_cat=self.sigma_data_cat,
+            sigma_data_cont=self.sigma_data_cont,
+            sigma_min_cat=self.sigma_min_cat,
+            sigma_max_cat=self.sigma_max_cat,
+            sigma_min_cont=self.sigma_min_cont,
+            sigma_max_cont=self.sigma_max_cont,
+            proportions=self.proportions,
+            cat_emb_init_sigma=self.cat_emb_init_sigma,
+            timewarp_type=self.timewarp_type,
+            timewarp_weight_low_noise=self.timewarp_weight_low_noise,
+        ).to(self.device)
+        state_dict = torch.load(path / "diff_model.pt", map_location=self.device)
+        self.diff_model.load_state_dict(state_dict)
+        self.diff_model.eval()

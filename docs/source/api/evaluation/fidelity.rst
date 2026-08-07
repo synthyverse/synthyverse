@@ -5,7 +5,7 @@ Fidelity Metrics
    :maxdepth: 1
    :titlesonly:
 
-   fidelity/classifier_test
+   fidelity/c2st
    fidelity/alpha_precision_beta_recall
    fidelity/prdc
    fidelity/shape_trend

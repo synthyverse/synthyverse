@@ -683,8 +683,8 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
         model_out_num = model_out[:, : self.num_numerics]
         model_out_cat = model_out[:, self.num_numerics :]
 
-        loss_multi = torch.zeros((1,)).float()
-        loss_gauss = torch.zeros((1,)).float()
+        loss_multi = torch.zeros((1,), device=device, dtype=x.dtype)
+        loss_gauss = torch.zeros((1,), device=device, dtype=x.dtype)
 
         if x_cat.shape[1] > 0:
             loss_multi = self._multinomial_loss(
@@ -695,95 +695,6 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
             loss_gauss = self._gaussian_loss(model_out_num, x_num, x_num_t, t, noise)
 
         return loss_multi.mean(), loss_gauss.mean()
-
-    @torch.no_grad()
-    def mixed_elbo(self, x0: Tensor, cond: Optional[Tensor] = None) -> dict:
-        b = x0.size(0)
-        device = x0.device
-
-        x_num = x0[:, : self.num_numerics]
-        x_cat = x0[:, self.num_numerics :]
-        has_cat = x_cat.shape[1] > 0
-        if has_cat:
-            log_x_cat = index_to_log_onehot(x_cat.long(), self.num_classes).to(device)
-
-        gaussian_loss = []
-        xstart_mse = []
-        mse = []
-        mu_mse = []
-        out_mean = []
-        true_mean = []
-        multinomial_loss = []
-        for t in range(self.num_timesteps):
-            t_array = (torch.ones(b, device=device) * t).long()
-            noise = torch.randn_like(x_num)
-
-            x_num_t = self.gaussian_q_sample(x_start=x_num, t=t_array, noise=noise)
-            if has_cat:
-                log_x_cat_t = self.q_sample(log_x_start=log_x_cat, t=t_array)
-            else:
-                log_x_cat_t = x_cat
-
-            model_out = self.denoise_fn(
-                torch.cat([x_num_t, log_x_cat_t], dim=1), t_array, y=cond
-            )
-
-            model_out_num = model_out[:, : self.num_numerics]
-            model_out_cat = model_out[:, self.num_numerics :]
-
-            kl = torch.tensor([0.0])
-            if has_cat:
-                kl = self.compute_Lt(
-                    model_out=model_out_cat,
-                    log_x_start=log_x_cat,
-                    log_x_t=log_x_cat_t,
-                    t=t_array,
-                )
-
-            out = self._vb_terms_bpd(
-                model_out_num,
-                x_start=x_num,
-                x_t=x_num_t,
-                t=t_array,
-            )
-
-            multinomial_loss.append(kl)
-            gaussian_loss.append(out["output"])
-            xstart_mse.append(mean_flat((out["pred_xstart"] - x_num) ** 2))
-            mu_mse.append(mean_flat(out["mean_mse"]))
-            out_mean.append(mean_flat(out["out_mean"]))
-            true_mean.append(mean_flat(out["true_mean"]))
-
-            eps = self._predict_eps_from_xstart(x_num_t, t_array, out["pred_xstart"])
-            mse.append(mean_flat((eps - noise) ** 2))
-
-        gaussian_loss = torch.stack(gaussian_loss, dim=1)
-        multinomial_loss = torch.stack(multinomial_loss, dim=1)
-        xstart_mse = torch.stack(xstart_mse, dim=1)
-        mse = torch.stack(mse, dim=1)
-        mu_mse = torch.stack(mu_mse, dim=1)
-        out_mean = torch.stack(out_mean, dim=1)
-        true_mean = torch.stack(true_mean, dim=1)
-
-        prior_gauss = self._prior_gaussian(x_num)
-
-        prior_multin = torch.tensor([0.0])
-        if has_cat:
-            prior_multin = self.kl_prior(log_x_cat)
-
-        total_gauss = torch.sum(gaussian_loss, dim=1) + prior_gauss
-        total_multin = torch.sum(multinomial_loss, dim=1) + prior_multin
-        return {
-            "total_gaussian": total_gauss,
-            "total_multinomial": total_multin,
-            "losses_gaussian": gaussian_loss,
-            "losses_multinimial": multinomial_loss,
-            "xstart_mse": xstart_mse,
-            "mse": mse,
-            "mu_mse": mu_mse,
-            "out_mean": out_mean,
-            "true_mean": true_mean,
-        }
 
     @torch.no_grad()
     def gaussian_ddim_step(

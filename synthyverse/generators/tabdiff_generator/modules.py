@@ -34,7 +34,7 @@ class UniModMLP(nn.Module):
         embedding_dim=512,
         mlp_dim=2048,
         mlp_layers=2,
-        **kwargs
+        **kwargs,
     ):
         super().__init__()
         self.d_numerical = d_numerical
@@ -124,7 +124,7 @@ class Model(nn.Module):
         sigma_data=0.5,
         precond=False,
         net_conditioning="sigma",
-        **kwargs
+        **kwargs,
     ):
         super().__init__()
         self.precond = precond

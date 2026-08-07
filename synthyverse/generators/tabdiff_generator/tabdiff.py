@@ -8,23 +8,26 @@ from typing import Literal, Optional
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.preprocessing import OrdinalEncoder, QuantileTransformer
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
 
 from ..base import BaseGenerator
-from ..persistence import load_generator_state, restore_generator, save_generator_state
 from ...utils.utils import (
     get_total_trainable_params,
     resolve_epochs_from_training_steps,
 )
-from ..dgm_utils import FastTensorDataLoader
+from ..dgm_utils import (
+    FastTensorDataLoader,
+    QuantileStandardScaler,
+    clone_state_dict,
+    split_validation,
+    validate_c2st,
+)
 from .diffusion import UnifiedCtimeDiffusion
 from .modules import Model, UniModMLP
 
 LRScheduler = Literal["reduce_lr_on_plateau", "anneal", "fixed"]
 CLossWeightSchedule = Literal["anneal", "fixed"]
-NoiseDistribution = Literal["uniform", "normal"]
 NetConditioning = Literal["sigma", "t"]
 
 
@@ -76,10 +79,6 @@ class TabDiffGenerator(BaseGenerator):
         num_timesteps (int): Number of sampling timesteps. Default: 50.
         learnable_noise_schedules (bool): Whether to learn feature-wise
             numerical and categorical noise schedules. Default: True.
-        noise_dist (str): Training noise distribution. Options: "uniform"
-            samples diffusion time uniformly from [0, 1]; "normal" samples
-            numerical sigma from a log-normal distribution using ``P_mean`` and
-            ``P_std`` and maps it back to diffusion time. Default: "uniform".
         stochastic_sampler (bool): Whether to use stochastic sampling. Default: True.
         second_order_correction (bool): Whether to use second-order sampler correction.
             Default: True.
@@ -89,8 +88,6 @@ class TabDiffGenerator(BaseGenerator):
             network when ``precond=True``. Options: "sigma" passes the EDM
             log-sigma conditioning value; "t" passes the raw diffusion time.
             Default: "sigma".
-        P_mean (float): Mean for log-normal noise sampling. Default: -1.2.
-        P_std (float): Standard deviation for log-normal noise sampling. Default: 1.2.
         sigma_min (float): Minimum sigma for numerical noise schedules. Default: 0.002.
         sigma_max (float): Maximum sigma for numerical noise schedules. Default: 80.
         rho (float): Rho parameter for numerical noise schedules. Default: 7.
@@ -101,8 +98,9 @@ class TabDiffGenerator(BaseGenerator):
         k_init (float): Initial k for learned categorical schedules. Default: -6.0.
         k_offset (float): K offset for learned categorical schedules. Default: 1.0.
         cap_train_time (float): Time limit in seconds for training. Default: None.
-        log_steps (int): Steps between timeout checks. Default: 100.
-        random_state (int): Random seed for reproducibility. Default: 0.
+        val_size (float): Fraction of training rows reserved for validation set early stopping. Default: 0.0.
+        val_steps (int): Epochs between validation, or training steps when ``training_steps`` is provided. Default: 5000.
+        target_column (str): Name of the target column, potentially used for stratified validation splitting. Default: None.
 
     Example:
         >>> import pandas as pd
@@ -115,8 +113,7 @@ class TabDiffGenerator(BaseGenerator):
         >>> # Create generator
         >>> generator = TabDiffGenerator(
         ...     epochs=8000,
-        ...     batch_size=4096,
-        ...     random_state=42
+        ...     batch_size=4096
         ... )
         >>>
         >>> # Fit and generate
@@ -150,14 +147,11 @@ class TabDiffGenerator(BaseGenerator):
         mlp_layers: int = 2,
         num_timesteps: int = 50,
         learnable_noise_schedules: bool = True,
-        noise_dist: NoiseDistribution = "uniform",
         stochastic_sampler: bool = True,
         second_order_correction: bool = True,
         precond: bool = True,
         sigma_data: float = 1.0,
         net_conditioning: NetConditioning = "sigma",
-        P_mean: float = -1.2,
-        P_std: float = 1.2,
         sigma_min: float = 0.002,
         sigma_max: float = 80,
         rho: float = 7,
@@ -168,9 +162,13 @@ class TabDiffGenerator(BaseGenerator):
         k_init: float = -6.0,
         k_offset: float = 1.0,
         cap_train_time: Optional[float] = None,
-        log_steps: int = 100,
+        val_size: float = 0.0,
+        val_steps: int = 5000,
+        target_column: Optional[str] = None,
         random_state: int = 0,
+        full_determinism: bool = False,
     ):
+        super().__init__(random_state=random_state, full_determinism=full_determinism)
         self.epochs = epochs
         self.training_steps = training_steps
         self.lr = lr
@@ -193,14 +191,11 @@ class TabDiffGenerator(BaseGenerator):
         self.mlp_layers = mlp_layers
         self.num_timesteps = num_timesteps
         self.learnable_noise_schedules = learnable_noise_schedules
-        self.noise_dist = noise_dist
         self.stochastic_sampler = stochastic_sampler
         self.second_order_correction = second_order_correction
         self.precond = precond
         self.sigma_data = sigma_data
         self.net_conditioning = net_conditioning
-        self.P_mean = P_mean
-        self.P_std = P_std
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
         self.rho = rho
@@ -211,11 +206,19 @@ class TabDiffGenerator(BaseGenerator):
         self.k_init = k_init
         self.k_offset = k_offset
         self.cap_train_time = cap_train_time
-        self.log_steps = log_steps
-        self.random_state = random_state
+        self.val_size = val_size
+        self.val_steps = val_steps
+        self.target_column = target_column
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
+        X, X_val = split_validation(
+            X,
+            self.val_size,
+            self.target_column,
+            discrete_features,
+            self.random_state,
+        )
         epochs = resolve_epochs_from_training_steps(
             self.epochs,
             self.training_steps,
@@ -232,7 +235,10 @@ class TabDiffGenerator(BaseGenerator):
 
         self.d_numerical = x_num.shape[1]
         self.categories = (
-            np.array([len(c) for c in self.ordinal_encoder.categories_], dtype=np.int64)
+            np.array(
+                self._categorical_cardinalities(self.discrete_features),
+                dtype=np.int64,
+            )
             if self.discrete_features
             else np.array([], dtype=np.int64)
         )
@@ -260,8 +266,12 @@ class TabDiffGenerator(BaseGenerator):
             for param in model.parameters():
                 param.detach_()
 
+        best_val_score = float("inf")
+        best_val_model = None
+
         start_time = time.monotonic()
         timed_out = False
+        stop_training = False
         step = 0
         for epoch in tqdm(range(epochs)):
             closs_weight = self.c_lambda
@@ -284,17 +294,36 @@ class TabDiffGenerator(BaseGenerator):
                 n_obs += len(batch)
                 step += 1
                 if (
+                    X_val is not None
+                    and self.training_steps is not None
+                    and step > 0
+                    and step % self.val_steps == 0
+                ):
+                    self.diffusion.eval()
+                    score = validate_c2st(self, X_val, random_state=self.random_state)
+                    if score < best_val_score:
+                        best_val_score = score
+                        best_val_model = clone_state_dict(self.diffusion)
+                    else:
+                        stop_training = True
+                        break
+                    self.diffusion.train()
+
+                if (
                     self.cap_train_time is not None
-                    and step % self.log_steps == 0
                     and time.monotonic() - start_time > self.cap_train_time
                 ):
                     print(f"Training timed out after {self.cap_train_time} seconds.")
                     timed_out = True
                     break
 
+            if n_obs == 0:
+                raise ValueError("TabDiff training produced no observations in an epoch.")
             total_loss = dloss_sum / n_obs + closs_sum / n_obs
-            if np.isnan(total_loss):
-                break
+            if not np.isfinite(total_loss):
+                raise ValueError(
+                    "TabDiff training produced a non-finite loss; aborting fit."
+                )
             if self.lr_scheduler == "reduce_lr_on_plateau":
                 scheduler.step(total_loss)
             elif self.lr_scheduler == "anneal":
@@ -319,12 +348,29 @@ class TabDiffGenerator(BaseGenerator):
                 self.diffusion.cat_schedule.parameters(),
                 self.ema_decay,
             )
-            if timed_out:
+            if (
+                X_val is not None
+                and self.training_steps is None
+                and (epoch + 1) % self.val_steps == 0
+            ):
+                self.diffusion.eval()
+                score = validate_c2st(self, X_val, random_state=self.random_state)
+                if score < best_val_score:
+                    best_val_score = score
+                    best_val_model = clone_state_dict(self.diffusion)
+                else:
+                    stop_training = True
+            if timed_out or stop_training:
                 break
 
-        self.diffusion._denoise_fn = ema_model
-        self.diffusion.num_schedule = ema_num_schedule
-        self.diffusion.cat_schedule = ema_cat_schedule
+        if best_val_model is None:
+            self.diffusion._denoise_fn = ema_model
+            self.diffusion.num_schedule = ema_num_schedule
+            self.diffusion.cat_schedule = ema_cat_schedule
+        else:
+            self.diffusion.load_state_dict(
+                {k: v.to(self.device) for k, v in best_val_model.items()}
+            )
         self.diffusion.eval()
         return self
 
@@ -346,7 +392,7 @@ class TabDiffGenerator(BaseGenerator):
         if self.discrete_features:
             frames.append(
                 pd.DataFrame(
-                    self.ordinal_encoder.inverse_transform(syn_cat),
+                    syn_cat,
                     columns=self.discrete_features,
                 )
             )
@@ -354,11 +400,8 @@ class TabDiffGenerator(BaseGenerator):
 
     def _fit_transform(self, X):
         if self.numerical_features:
-            self.quantile_transformer = QuantileTransformer(
-                output_distribution="normal",
-                n_quantiles=max(min(len(X) // 30, 1000), 10),
-                subsample=int(1e9),
-                random_state=self.random_state,
+            self.quantile_transformer = QuantileStandardScaler(
+                len(X), self.random_state
             )
             x_num = self.quantile_transformer.fit_transform(
                 X[self.numerical_features].to_numpy().astype(float)
@@ -368,14 +411,8 @@ class TabDiffGenerator(BaseGenerator):
             x_num = np.empty((len(X), 0), dtype=np.float32)
 
         if self.discrete_features:
-            self.ordinal_encoder = OrdinalEncoder(
-                handle_unknown="use_encoded_value",
-                unknown_value=np.iinfo("int64").max - 3,
-                dtype=np.int64,
-            )
-            x_cat = self.ordinal_encoder.fit_transform(X[self.discrete_features])
+            x_cat = X[self.discrete_features].to_numpy(dtype=np.int64)
         else:
-            self.ordinal_encoder = None
             x_cat = np.empty((len(X), 0), dtype=np.int64)
         return x_num.astype(np.float32), x_cat.astype(np.float32)
 
@@ -412,9 +449,8 @@ class TabDiffGenerator(BaseGenerator):
             num_timesteps=self.num_timesteps,
             scheduler=scheduler,
             cat_scheduler=cat_scheduler,
-            noise_dist=self.noise_dist,
+            noise_dist="uniform",
             edm_params={"sigma_data": self.sigma_data},
-            noise_dist_params={"P_mean": self.P_mean, "P_std": self.P_std},
             noise_schedule_params={
                 "sigma_min": self.sigma_min,
                 "sigma_max": self.sigma_max,
@@ -433,30 +469,57 @@ class TabDiffGenerator(BaseGenerator):
             device=self.device,
         )
 
-    def save(self, path):
-        path = Path(path)
-        state = self.__dict__.copy()
-        diffusion = state.pop("diffusion")
-        save_generator_state(path, state)
+    def _state(self):
+        return {
+            "batch_size": self.batch_size,
+            "num_layers": self.num_layers,
+            "d_token": self.d_token,
+            "n_head": self.n_head,
+            "mlp_factor": self.mlp_factor,
+            "bias": self.bias,
+            "embedding_dim": self.embedding_dim,
+            "mlp_dim": self.mlp_dim,
+            "mlp_layers": self.mlp_layers,
+            "num_timesteps": self.num_timesteps,
+            "learnable_noise_schedules": self.learnable_noise_schedules,
+            "stochastic_sampler": self.stochastic_sampler,
+            "second_order_correction": self.second_order_correction,
+            "precond": self.precond,
+            "sigma_data": self.sigma_data,
+            "net_conditioning": self.net_conditioning,
+            "sigma_min": self.sigma_min,
+            "sigma_max": self.sigma_max,
+            "rho": self.rho,
+            "eps_max": self.eps_max,
+            "eps_min": self.eps_min,
+            "rho_init": self.rho_init,
+            "rho_offset": self.rho_offset,
+            "k_init": self.k_init,
+            "k_offset": self.k_offset,
+            "col_order": self.col_order,
+            "discrete_features": self.discrete_features,
+            "numerical_features": self.numerical_features,
+            "d_numerical": self.d_numerical,
+            "categories": self.categories,
+            "quantile_transformer": self.quantile_transformer,
+            "ordinal_encoder": self.ordinal_encoder,
+        }
+
+    def _save_extra(self, path: Path) -> None:
         torch.save(
             {
-                "denoise_fn": diffusion._denoise_fn.state_dict(),
-                "num_schedule": diffusion.num_schedule.state_dict(),
-                "cat_schedule": diffusion.cat_schedule.state_dict(),
+                "denoise_fn": self.diffusion._denoise_fn.state_dict(),
+                "num_schedule": self.diffusion.num_schedule.state_dict(),
+                "cat_schedule": self.diffusion.cat_schedule.state_dict(),
             },
             path / "diffusion.pt",
         )
-        return path
 
-    @classmethod
-    def load(cls, path):
-        path = Path(path)
-        generator = restore_generator(cls, load_generator_state(path))
-        generator.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        generator.diffusion = generator._make_diffusion().to(generator.device)
-        state = torch.load(path / "diffusion.pt", map_location=generator.device)
-        generator.diffusion._denoise_fn.load_state_dict(state["denoise_fn"])
-        generator.diffusion.num_schedule.load_state_dict(state["num_schedule"])
-        generator.diffusion.cat_schedule.load_state_dict(state["cat_schedule"])
-        generator.diffusion.eval()
-        return generator
+    def _load_extra(self, path: Path) -> None:
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.diffusion = self._make_diffusion().to(self.device)
+        state = torch.load(path / "diffusion.pt", map_location=self.device)
+        self.diffusion._denoise_fn.load_state_dict(state["denoise_fn"])
+        self.diffusion.num_schedule.load_state_dict(state["num_schedule"])
+        self.diffusion.cat_schedule.load_state_dict(state["cat_schedule"])
+        self.diffusion.eval()

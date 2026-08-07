@@ -123,7 +123,6 @@ class TVAE(BaseSynthesizer):
         verbose=False,
         cuda=None,
         cap_train_time=None,
-        log_steps=100,
     ):
         self.embedding_dim = embedding_dim
         self.compress_dims = compress_dims
@@ -136,12 +135,11 @@ class TVAE(BaseSynthesizer):
         self.loss_values = pd.DataFrame(columns=["Epoch", "Batch", "Loss"])
         self.verbose = verbose
         self.cap_train_time = cap_train_time
-        self.log_steps = log_steps
         self._device = validate_and_set_device(enable_gpu, cuda)
         self._enable_gpu = cuda if cuda is not None else enable_gpu
 
     @random_state
-    def fit(self, train_data, discrete_columns=()):
+    def fit(self, train_data, discrete_columns=(), validate_callback=None):
         """Fit the TVAE Synthesizer models to the training data.
 
         Args:
@@ -184,6 +182,7 @@ class TVAE(BaseSynthesizer):
         start_time = time.monotonic()
         step = 0
         timed_out = False
+        stop_training = False
         for i in iterator:
             loss_values = []
             batch = []
@@ -212,8 +211,13 @@ class TVAE(BaseSynthesizer):
                 loss_values.append(loss.detach().cpu().item())
                 step += 1
                 if (
+                    validate_callback is not None
+                    and validate_callback(step, i + 1, False)
+                ):
+                    stop_training = True
+                    break
+                if (
                     self.cap_train_time is not None
-                    and step % self.log_steps == 0
                     and time.monotonic() - start_time > self.cap_train_time
                 ):
                     print(f"Training timed out after {self.cap_train_time} seconds.")
@@ -238,7 +242,13 @@ class TVAE(BaseSynthesizer):
                 iterator.set_description(
                     iterator_description.format(loss=loss.detach().cpu().item())
                 )
-            if timed_out:
+            if (
+                not stop_training
+                and validate_callback is not None
+                and validate_callback(step, i + 1, True)
+            ):
+                stop_training = True
+            if timed_out or stop_training:
                 break
 
     @random_state

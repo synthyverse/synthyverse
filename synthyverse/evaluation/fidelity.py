@@ -2,9 +2,9 @@
 # See THIRD_PARTY_NOTICES.md for attribution, NOTICE, and modification details.
 import numpy as np
 import pandas as pd
-import json
 import os
 import re
+import warnings
 from collections import Counter
 from itertools import combinations
 from math import ceil
@@ -16,28 +16,34 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import mutual_info_score, pairwise_distances, roc_auc_score
-from sklearn.preprocessing import KBinsDiscretizer
+from sklearn.metrics import mutual_info_score
 
 from scipy.stats import (
     spearmanr,
     pearsonr,
     chi2_contingency,
-    wasserstein_distance,
-    ks_2samp,
 )
-from scipy.spatial.distance import jensenshannon
-from scipy.special import kl_div
 
-from .ml import (
-    HYPERPARAM_SAVE_DIR,
-    ml_task,
-    resolve_model_name,
-    split_validation,
-    tune_ml_model,
+from .base import BaseMetric
+from .ml import cv_ml_task, resolve_model_name
+from .distances import (
+    FastGowerNN,
+    js_robust,
+    kld,
+    knn_distances,
+    ksd,
+    l1,
+    l2 as l2_distance,
+    pairwise_l1,
+    tvd,
+    wsd,
 )
-from .preprocessing import fast_gower_transform, gower_like_transform
-from .gower import FastGowerNN
+from .preprocessing import (
+    bin_numerical_columns,
+    empirical_discrete_distribution,
+    fast_gower_transform,
+    gower_like_transform,
+)
 
 
 def _metric_key_part(value) -> str:
@@ -47,187 +53,122 @@ def _metric_key_part(value) -> str:
     return text or "none"
 
 
-class ClassifierTest:
+class ClassifierTwoSampleTest(BaseMetric):
     """ROCAUC score of a classifier that distinguishes synthetic from real data.
 
     Lower scores indicate better quality synthetic data (harder to distinguish from real).
 
     Args:
-        discrete_features (list): List of discrete/categorical feature names. Default: [].
         random_state (int): Random seed for reproducibility. Default: 0.
         model_name (str): Classifier family. Supported values include "xgboost",
             "randomforest", "decisiontree", "linearregression", and "svm",
             including some common aliases. Every model except for XGBoost is a scikit-learn classifier. Default: "xgboost".
         model_params (dict): Classifier parameters passed to the selected estimator.
-            For XGBoost, passing ``early_stopping_rounds`` enables early stopping
-            and requires ``val_size > 0``.
-        tune (bool): Whether to tune hyperparameters using an internal
-            validation split.
-            Hyperparameter tuning is skipped when XGBoost early stopping is enabled.
-            Default: False.
-        val_size (float): Fraction of discriminator training rows reserved for
-            validation when tuning or early stopping needs it. Default: 0.2.
-        tuning_trials (int): Number of Optuna trials for hyperparameter tuning. Default: 32.
-        hyperparam_save_dir (str): Directory used to cache tuned hyperparameters.
-            Default: ``HYPERPARAM_SAVE_DIR``.
+            If None, XGBoost uses {"n_estimators": 500, "early_stopping_rounds": 30}
+            and other models use no extra parameters.
+        nfold (int): Number of cross-validation folds. Default: 3.
+
+    Outputs:
+        "c2st.auc"; lower scores indicate better fidelity.
 
     Example:
         >>> import pandas as pd
-        >>> from synthyverse.evaluation import ClassifierTest
+        >>> from synthyverse.evaluation import ClassifierTwoSampleTest
         >>>
         >>> # Prepare data
         >>> X_train = pd.DataFrame(...)
         >>> X_test = pd.DataFrame(...)
         >>> X_syn = pd.DataFrame(...)
-        >>> X_syn_test = pd.DataFrame(...)
         >>> discrete_features = ["category_col"]
         >>>
         >>> # Create metric
-        >>> metric = ClassifierTest(
-        ...     discrete_features=discrete_features,
-        ...     tune=True,
+        >>> metric = ClassifierTwoSampleTest(
         ...     random_state=42
         ... )
         >>>
         >>> # Evaluate
-        >>> results = metric.evaluate(X_train, X_test, X_syn, X_syn_test)
+        >>> results = metric.evaluate(X_train, X_syn, discrete_features=discrete_features)
     """
 
-    name = "classifier_test"
+    name = "c2st"
 
     def __init__(
         self,
-        discrete_features: list = None,
         model_name: str = "xgboost",
         model_params: dict = None,
-        tune: bool = False,
-        tuning_trials: int = 32,
-        val_size: float = 0.2,
+        nfold: int = 3,
         random_state: int = 0,
-        hyperparam_save_dir: str = HYPERPARAM_SAVE_DIR,
     ):
-        super().__init__()
-        self.random_state = random_state
-        self.discrete_features = (
-            discrete_features if discrete_features is not None else []
-        )
-        self.tune = tune
-        self.tuning_trials = tuning_trials
-        self.val_size = val_size
+        super().__init__(random_state=random_state)
+        self.nfold = int(nfold)
+        if self.nfold < 2:
+            raise ValueError("nfold must be >= 2.")
         self.model_name = model_name
-        self.model_params = model_params if model_params is not None else {}
-        self.hyperparam_save_dir = os.fspath(hyperparam_save_dir)
-
-    def evaluate(
-        self,
-        X_train: pd.DataFrame,
-        X_test: pd.DataFrame,
-        X_syn: pd.DataFrame,
-        X_syn_test: pd.DataFrame,
-    ):
-        """Evaluate synthetic data using classifier test.
-
-        Args:
-            X_train: Real training data as a pandas DataFrame.
-            X_test: Real test data as a pandas DataFrame.
-            X_syn: Synthetic training data as a pandas DataFrame.
-            X_syn_test: Synthetic test data as a pandas DataFrame.
-
-        Returns:
-            dict: Dictionary with "classifier_test.auc" key and AUC score value.
-        """
-
-        x_train = pd.concat([X_train, X_syn], ignore_index=True).copy()
-        y_train = pd.concat(
-            [pd.Series([0] * len(X_train)), pd.Series([1] * len(X_syn))],
-            ignore_index=True,
-        )
-
-        model_name = resolve_model_name(self.model_name)
-        uses_xgboost_early_stopping = (
-            model_name == "xgboost"
-            and self.model_params.get("early_stopping_rounds") is not None
-        )
-        needs_val = uses_xgboost_early_stopping
-
-        if self.tune and not uses_xgboost_early_stopping:
-            # load tuned params from file if it exists
-            model_slug = self.model_name.replace(" ", "_")
-            param_file = os.path.join(
-                self.hyperparam_save_dir, f"classifiertest_{model_slug}.json"
+        if model_params is None:
+            self.model_params = (
+                {"n_estimators": 500, "early_stopping_rounds": 30}
+                if resolve_model_name(model_name) == "xgboost"
+                else {}
             )
-            if os.path.exists(param_file):
-                with open(param_file, "r") as f:
-                    params = json.load(f)
-            else:
-                needs_val = True
-
-        if needs_val:
-            x_train, x_val, y_train, y_val = split_validation(
-                x_train,
-                y_train,
-                self.val_size,
-                self.random_state,
-            )
-
-        if self.tune and not uses_xgboost_early_stopping:
-            if not os.path.exists(param_file):
-                params = tune_ml_model(
-                    x_train,
-                    x_val,
-                    y_train,
-                    y_val,
-                    self.discrete_features,
-                    "binary",
-                    self.model_name,
-                    self.tuning_trials,
-                    self.random_state,
-                )
-                os.makedirs(os.path.dirname(param_file), exist_ok=True)
-                with open(param_file, "w") as f:
-                    json.dump(params, f)
         else:
-            params = self.model_params
+            self.model_params = model_params.copy()
 
-        x_test = pd.concat([X_test, X_syn_test], ignore_index=True).copy()
-        y_test = pd.concat(
-            [pd.Series([0] * len(X_test)), pd.Series([1] * len(X_syn_test))],
+    def _evaluate(
+        self,
+        X: pd.DataFrame,
+        X_syn: pd.DataFrame,
+        X_test: pd.DataFrame = None,
+        discrete_features: list = None,
+    ):
+        x_train = pd.concat([X, X_syn], ignore_index=True).copy()
+        y_train = pd.concat(
+            [pd.Series([0] * len(X)), pd.Series([1] * len(X_syn))],
             ignore_index=True,
         )
+        minority_class_size = min(len(X), len(X_syn))
+        if minority_class_size < 2:
+            raise ValueError(
+                "ClassifierTwoSampleTest requires at least two real and two "
+                "synthetic rows for stratified cross-validation."
+            )
+        nfold = min(self.nfold, minority_class_size)
 
-        if not needs_val:
-            x_val = None
-            y_val = None
-
-        scores = ml_task(
+        score = cv_ml_task(
             x_train,
-            x_test,
             y_train,
-            y_test,
-            self.discrete_features,
-            "binary",
-            self.model_name,
-            params,
+            discrete_features,
+            task="binary",
+            model_name=self.model_name,
+            model_params=self.model_params,
             random_state=self.random_state,
-            score_fns=[roc_auc_score],
-            X_val=x_val,
-            y_val=y_val,
-        )
+            score_fn="auc",
+            nfold=nfold,
+        )["auc"]
+
         return {
-            f"{self.name}.auc": scores["auc"],
+            f"{self.name}.auc": score,
         }
 
 
-class AlphaPrecisionBetaRecall:
-    """Alpha-Precision, Beta-Recall score.
+class AlphaPrecisionBetaRecall(BaseMetric):
+    """Integrated alpha-precision / beta-coverage scores.
+
+    Computes alpha-precision and beta-coverage curves over a grid of alpha
+    values, then returns the integrated Delta-precision-alpha and
+    Delta-coverage-beta scores from Alaa et al. (2022).
 
     Paper: "How faithful is your synthetic data? sample-level metrics for evaluating and auditing generative models" by Alaa et al. (2022).
 
     Based on the implementation from the synthcity Python library: https://github.com/vanderschaarlab/synthcity/.
 
     Args:
-        discrete_features (list): List of discrete/categorical feature names. Default: [].
-        k (int): Number of nearest neighbors to use in Beta-Recall. Default: 2.
+        k (int): Number of nearest neighbors to use in Beta-Recall. Default: 5.
+        random_state (int): Random seed for reproducibility. Default: 0.
+
+    Outputs:
+        Integrated scores under
+        ``"alphaprecisionbetarecall.precision"`` and
+        ``"alphaprecisionbetarecall.recall"``.
 
     Example:
         >>> import pandas as pd
@@ -240,51 +181,47 @@ class AlphaPrecisionBetaRecall:
         >>>
         >>> # Create metric
         >>> metric = AlphaPrecisionBetaRecall(
-        ...     discrete_features=discrete_features,
-        ...     k=2
+        ...     k=5
         ... )
         >>>
         >>> # Evaluate
-        >>> results = metric.evaluate(X_real, X_syn)
+        >>> results = metric.evaluate(X_real, X_syn, discrete_features=discrete_features)
     """
 
     name = "alphaprecisionbetarecall"
 
-    def __init__(self, discrete_features: list = [], k: int = 2):
-        super().__init__()
-        self.discrete_features = discrete_features
-        self.k = k
+    def __init__(self, k: int = 5, random_state: int = 0):
+        super().__init__(random_state=random_state)
+        self.k = int(k)
+        if self.k < 1:
+            raise ValueError("AlphaPrecisionBetaRecall requires k >= 1.")
 
-    def evaluate(
+    def _evaluate(
         self,
-        X_train: pd.DataFrame,
+        X: pd.DataFrame,
         X_syn: pd.DataFrame,
+        X_test: pd.DataFrame = None,
+        discrete_features: list = None,
     ):
-        """Evaluate synthetic data using alpha-precision and beta-recall.
-
-        Args:
-            X_train: Real training data as a pandas DataFrame.
-            X_syn: Synthetic data as a pandas DataFrame.
-
-        Returns:
-            dict: Dictionary with keys:
-                - "alphaprecisionbetarecall.alpha_precision": Alpha-precision score
-                - "alphaprecisionbetarecall.beta_coverage": Beta-coverage score
-        """
+        if self.k >= len(X):
+            raise ValueError(
+                "AlphaPrecisionBetaRecall requires k to be smaller than the "
+                f"number of real rows ({self.k} >= {len(X)})."
+            )
         data = gower_like_transform(
-            {"rd": X_train, "sd": X_syn},
-            reference_data=X_train,
-            discrete_features=self.discrete_features,
-            categorical_fit_data=[X_train, X_syn],
+            {"rd": X, "sd": X_syn},
+            reference_data=X,
+            discrete_features=discrete_features,
+            categorical_fit_data=[X, X_syn],
         )
 
         x_rd = data["rd"]
         x_sd = data["sd"]
         nn_data = fast_gower_transform(
-            {"rd": X_train, "sd": X_syn},
-            reference_data=X_train,
-            discrete_features=self.discrete_features,
-            categorical_fit_data=[X_train, X_syn],
+            {"rd": X, "sd": X_syn},
+            reference_data=X,
+            discrete_features=discrete_features,
+            categorical_fit_data=[X, X_syn],
         )
         rd_metric = nn_data["rd"]
         sd_metric = nn_data["sd"]
@@ -295,7 +232,7 @@ class AlphaPrecisionBetaRecall:
 
         # Radii = np.quantile(np.sqrt(np.sum((x_rd - emb_center) ** 2, axis=1)), alphas)
         # Use L1 distance in the mixed-type feature space.
-        Radii = np.quantile(np.sum(np.abs(x_rd - emb_center), axis=1), alphas)
+        Radii = np.quantile(l1(x_rd, emb_center), alphas)
 
         synth_center = np.mean(x_sd, axis=0)
 
@@ -304,16 +241,12 @@ class AlphaPrecisionBetaRecall:
 
         # synth_to_center = np.sqrt(np.sum((x_sd - emb_center) ** 2, axis=1))
         # Use L1 distance in the mixed-type feature space.
-        synth_to_center = np.sum(np.abs(x_sd - emb_center), axis=1)
+        synth_to_center = l1(x_sd, emb_center)
 
-        nn_kwargs = {
-            "categorical_cols": self.discrete_features,
-            "normalize": False,
-        }
-        nbrs_real = FastGowerNN(**nn_kwargs).fit(rd_metric)
-        real_to_real, _ = nbrs_real.kneighbors(X=None, k=self.k, exclude_self=False)
+        nbrs_real = FastGowerNN(categorical_cols=discrete_features).fit(rd_metric)
+        real_to_real, _ = nbrs_real.kneighbors(X=None, k=self.k)
 
-        nbrs_synth = FastGowerNN(**nn_kwargs).fit(sd_metric)
+        nbrs_synth = FastGowerNN(categorical_cols=discrete_features).fit(sd_metric)
         real_to_synth, real_to_synth_args = nbrs_synth.kneighbors(rd_metric, k=1)
 
         real_to_real = real_to_real[:, self.k - 1].reshape(-1)
@@ -326,7 +259,7 @@ class AlphaPrecisionBetaRecall:
         #     np.sum((real_synth_closest - synth_center) ** 2, axis=1)
         # )
         # Use L1 distance in the mixed-type feature space.
-        real_synth_closest_d = np.sum(np.abs(real_synth_closest - synth_center), axis=1)
+        real_synth_closest_d = l1(real_synth_closest, synth_center)
 
         closest_synth_Radii = np.quantile(real_synth_closest_d, alphas)
 
@@ -358,69 +291,63 @@ class AlphaPrecisionBetaRecall:
         }
 
 
-class PRDC:
+class PRDC(BaseMetric):
     """Precision, Recall, Density, and Coverage for tabular synthetic data.
 
     Paper: "Reliable fidelity and diversity metrics for generative models" by Naeem et al. (2020).
 
     Args:
-        discrete_features (list): List of discrete/categorical feature names. Default: [].
         k (int): Number of nearest neighbours used to estimate each
             sample's manifold radius. Default: 5.
         n_jobs (int): Number of parallel jobs for sklearn pairwise distances.
             Default: -1.
+        random_state (int): Random seed for reproducibility. Default: 0.
+
+    Outputs:
+        "prdc.precision", "prdc.recall", "prdc.density", and
+        "prdc.coverage".
 
     Example:
         >>> import pandas as pd
         >>> from synthyverse.evaluation import PRDC
         >>>
-        >>> metric = PRDC(discrete_features=["category_col"], k=5)
-        >>> results = metric.evaluate(X_train, X_syn)
+        >>> metric = PRDC(k=5)
+        >>> results = metric.evaluate(X_train, X_syn, discrete_features=["category_col"])
     """
 
     name = "prdc"
 
     def __init__(
         self,
-        discrete_features: list = None,
         k: int = 5,
         n_jobs: int = -1,
+        random_state: int = 0,
     ):
-        super().__init__()
-        self.discrete_features = (
-            list(discrete_features) if discrete_features is not None else []
-        )
+        super().__init__(random_state=random_state)
         self.nearest_k = int(k)
         self.n_jobs = int(n_jobs)
 
         if self.nearest_k < 1:
             raise ValueError("k must be >= 1.")
 
-    def evaluate(self, X_train: pd.DataFrame, X_syn: pd.DataFrame):
-        """Evaluate synthetic data using PRDC.
-
-        Args:
-            X_train: Real training data as a pandas DataFrame.
-            X_syn: Synthetic data as a pandas DataFrame.
-
-        Returns:
-            dict: Dictionary with keys:
-                - "prdc.precision": Fraction of synthetic samples in the real manifold
-                - "prdc.recall": Fraction of real samples in the synthetic manifold
-                - "prdc.density": Average number of real manifolds containing a synthetic sample
-                - "prdc.coverage": Fraction of real samples whose nearest synthetic sample is in range
-        """
-        if len(X_train) <= self.nearest_k or len(X_syn) <= self.nearest_k:
+    def _evaluate(
+        self,
+        X: pd.DataFrame,
+        X_syn: pd.DataFrame,
+        X_test: pd.DataFrame = None,
+        discrete_features: list = None,
+    ):
+        if len(X) <= self.nearest_k or len(X_syn) <= self.nearest_k:
             raise ValueError(
                 "PRDC requires k to be smaller than both the real and "
                 "synthetic sample sizes."
             )
 
         data = gower_like_transform(
-            {"real": X_train, "syn": X_syn},
-            reference_data=X_train,
-            discrete_features=self.discrete_features,
-            categorical_fit_data=[X_train, X_syn],
+            {"real": X, "syn": X_syn},
+            reference_data=X,
+            discrete_features=discrete_features,
+            categorical_fit_data=[X, X_syn],
         )
 
         real_features = data["real"]
@@ -428,9 +355,9 @@ class PRDC:
         if not np.isfinite(real_features).all() or not np.isfinite(syn_features).all():
             raise ValueError("PRDC requires finite metric features.")
 
-        real_radii = self._nearest_neighbour_distances(real_features)
-        syn_radii = self._nearest_neighbour_distances(syn_features)
-        distance_real_syn = self._pairwise_l1_distances(real_features, syn_features)
+        real_radii = knn_distances(real_features, self.nearest_k, n_jobs=self.n_jobs)
+        syn_radii = knn_distances(syn_features, self.nearest_k, n_jobs=self.n_jobs)
+        distance_real_syn = pairwise_l1(real_features, syn_features, n_jobs=self.n_jobs)
 
         real_manifold_membership = distance_real_syn < np.expand_dims(real_radii, 1)
         syn_manifold_membership = distance_real_syn < np.expand_dims(syn_radii, 0)
@@ -446,35 +373,6 @@ class PRDC:
             f"{self.name}.density": float(density),
             f"{self.name}.coverage": float(coverage),
         }
-
-    def _nearest_neighbour_distances(self, features: np.ndarray) -> np.ndarray:
-        distances = self._pairwise_l1_distances(features)
-        return self._kth_smallest(distances, self.nearest_k + 1, axis=-1)
-
-    def _pairwise_l1_distances(
-        self,
-        data_x: np.ndarray,
-        data_y: np.ndarray = None,
-    ) -> np.ndarray:
-        if data_y is None:
-            data_y = data_x
-        return pairwise_distances(
-            data_x,
-            data_y,
-            metric="cityblock",
-            n_jobs=self.n_jobs,
-        )
-
-    @staticmethod
-    def _kth_smallest(values: np.ndarray, k: int, axis: int = -1) -> np.ndarray:
-        kth_index = k - 1
-        if kth_index < 0 or kth_index >= values.shape[axis]:
-            raise ValueError("k is outside the selected axis.")
-        return np.take(
-            np.partition(values, kth_index, axis=axis),
-            kth_index,
-            axis=axis,
-        )
 
 
 # class Wasserstein:
@@ -591,17 +489,20 @@ class PRDC:
 #         return "Sum(Abs(X-Y))"
 
 
-class ShapeTrend:
+class ShapeTrend(BaseMetric):
     """Low-level implementation of the Column Shape and Column Pair Trend scores
     from the SDMetrics library (https://docs.sdv.dev/sdmetrics/).
 
 
     Args:
-        discrete_features (list): List of discrete/categorical feature names. Default: [].
         numerical_correlation (str): Correlation method for numerical-numerical pairs.
             One of "spearman" or "pearson". Default: "pearson".
         n_bins_numerical (int): Number of bins used to discretize numerical
             features for mixed-pair trends. Must be >= 2. Default: 20.
+        random_state (int): Random seed for reproducibility. Default: 0.
+
+    Outputs:
+        "shapetrend.<split>.shape" and "shapetrend.<split>.trend".
 
     Example:
         >>> import pandas as pd
@@ -614,24 +515,24 @@ class ShapeTrend:
         >>> discrete_features = ["category_col"]
         >>>
         >>> # Create metric
-        >>> metric = ShapeTrend(discrete_features=discrete_features)
+        >>> metric = ShapeTrend()
         >>>
         >>> # Evaluate
-        >>> results = metric.evaluate(X_train, X_test, X_syn)
+        >>> results = metric.evaluate(X=X_train, X_syn=X_syn, discrete_features=discrete_features)
+        >>> results_with_test = metric.evaluate(
+        ...     X=X_train, X_syn=X_syn, X_test=X_test, discrete_features=discrete_features
+        ... )
     """
 
     name = "shapetrend"
 
     def __init__(
         self,
-        discrete_features: list = [],
         numerical_correlation: str = "pearson",
         n_bins_numerical: int = 20,
+        random_state: int = 0,
     ):
-        super().__init__()
-        self.discrete_features = (
-            list(discrete_features) if discrete_features is not None else []
-        )
+        super().__init__(random_state=random_state)
         self.numerical_correlation = numerical_correlation.lower()
         self.n_bins_numerical = int(n_bins_numerical)
 
@@ -640,32 +541,20 @@ class ShapeTrend:
         if self.n_bins_numerical < 2:
             raise ValueError("n_bins_numerical must be >= 2")
 
-    def evaluate(
+    def _evaluate(
         self,
-        X_train: pd.DataFrame,
-        X_test: pd.DataFrame,
+        X: pd.DataFrame,
         X_syn: pd.DataFrame,
+        X_test: pd.DataFrame = None,
+        discrete_features: list = None,
     ):
-        """Evaluate synthetic data using SDMetrics shape and trend scores.
-
-        Args:
-            X_train: Real training data as a pandas DataFrame.
-            X_test: Real test data as a pandas DataFrame.
-            X_syn: Synthetic data as a pandas DataFrame.
-
-        Returns:
-            dict: Dictionary with keys:
-                - "shapetrend.train.shape": Training column shapes score
-                - "shapetrend.train.trend": Training column pair trends score
-                - "shapetrend.test.shape": Test column shapes score
-                - "shapetrend.test.trend": Test column pair trends score
-        """
-
+        self.discrete_features = discrete_features
         result = {}
-        for split, real, syn in (
-            ("train", X_train, X_syn),
-            ("test", X_test, X_syn),
-        ):
+        splits = [("train", X, X_syn)]
+        if X_test is not None:
+            splits.append(("test", X_test, X_syn))
+
+        for split, real, syn in splits:
             scores = self._evaluate_split(real, syn)
             result.update({f"{self.name}.{split}.{k}": v for k, v in scores.items()})
         return result
@@ -674,26 +563,44 @@ class ShapeTrend:
         rd = real.copy()
         sd = syn[real.columns].copy()
         cols = rd.columns.tolist()
+        numerical_features = [c for c in cols if c not in self.discrete_features]
+        categorical_features = [c for c in cols if c in self.discrete_features]
 
         shape_scores = []
         for col in cols:
             if col in self.discrete_features:
-                shape_scores.append(1.0 - self._tvd(rd[col], sd[col]))
-            else:
-                ks = ks_2samp(
+                rd_dist, sd_dist = empirical_discrete_distribution(
                     rd[col].to_numpy(),
                     sd[col].to_numpy(),
-                    alternative="two-sided",
-                    mode="auto",
-                ).statistic
-                shape_scores.append(1.0 - ks)
-        shape = float(np.mean(shape_scores))
+                    dropna=True,
+                )
+                shape_scores.append(1.0 - tvd(rd_dist, sd_dist))
+            else:
+                shape_scores.append(1.0 - ksd(rd[col].to_numpy(), sd[col].to_numpy()))
+        shape = float(np.mean(shape_scores)) if shape_scores else np.nan
+
+        rd_binned, sd_binned = rd, sd
+        if numerical_features and categorical_features:
+            rd_binned, sd_binned = bin_numerical_columns(
+                rd,
+                sd,
+                numerical_features,
+                self.n_bins_numerical,
+            )
 
         trend_scores = []
         for ci, cj in combinations(cols, 2):
-            trend_scores.append(self._trend_score(rd, sd, ci, cj))
+            trend_scores.append(self._trend_score(rd, sd, rd_binned, sd_binned, ci, cj))
 
-        trend = float(np.mean(trend_scores))
+        if trend_scores:
+            trend = float(np.mean(trend_scores))
+        else:
+            warnings.warn(
+                "ShapeTrend trend is undefined for fewer than two columns.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            trend = np.nan
         return {
             "shape": float(shape),
             "trend": float(trend),
@@ -703,6 +610,8 @@ class ShapeTrend:
         self,
         rd: pd.DataFrame,
         sd: pd.DataFrame,
+        rd_binned: pd.DataFrame,
+        sd_binned: pd.DataFrame,
         c1: str,
         c2: str,
     ) -> float:
@@ -714,12 +623,10 @@ class ShapeTrend:
             corr_sd = self._num_corr(sd[c1], sd[c2])
             return 1.0 - abs(corr_sd - corr_rd) / 2.0
 
-        real_x, syn_x = rd[c1], sd[c1]
-        real_y, syn_y = rd[c2], sd[c2]
-        if not c1_cat:
-            real_x, syn_x = self._bin_numerical(real_x, syn_x)
-        if not c2_cat:
-            real_y, syn_y = self._bin_numerical(real_y, syn_y)
+        real_x = rd[c1] if c1_cat else rd_binned[c1]
+        syn_x = sd[c1] if c1_cat else sd_binned[c1]
+        real_y = rd[c2] if c2_cat else rd_binned[c2]
+        syn_y = sd[c2] if c2_cat else sd_binned[c2]
 
         return 1.0 - self._contingency_tvd(real_x, real_y, syn_x, syn_y)
 
@@ -733,14 +640,6 @@ class ShapeTrend:
             corr = pearsonr(s1, s2).statistic
 
         return float(corr)
-
-    def _tvd(self, s1: pd.Series, s2: pd.Series) -> float:
-        p = s1.value_counts(normalize=True)
-        q = s2.value_counts(normalize=True)
-        support = pd.Index(pd.concat([s1, s2], ignore_index=True).unique())
-        p = p.reindex(support, fill_value=0.0).to_numpy(dtype=float)
-        q = q.reindex(support, fill_value=0.0).to_numpy(dtype=float)
-        return float(0.5 * np.abs(p - q).sum())
 
     def _contingency_tvd(
         self,
@@ -760,35 +659,21 @@ class ShapeTrend:
         syn_table = syn_table.reindex(
             index=row_order, columns=col_order, fill_value=0.0
         )
-        return float(0.5 * np.abs(real_table - syn_table).to_numpy().sum())
-
-    def _bin_numerical(
-        self,
-        real: pd.Series,
-        syn: pd.Series,
-    ) -> tuple[pd.Series, pd.Series]:
-        discretizer = KBinsDiscretizer(
-            n_bins=self.n_bins_numerical,
-            encode="ordinal",
-            strategy="uniform",
-        )
-        discretizer.fit(pd.concat([real, syn], ignore_index=True).to_frame())
-
-        return (
-            pd.Series(discretizer.transform(real.to_frame()).ravel(), index=real.index),
-            pd.Series(discretizer.transform(syn.to_frame()).ravel(), index=syn.index),
+        return tvd(
+            real_table.to_numpy().ravel(),
+            syn_table.to_numpy().ravel(),
         )
 
 
-class Marginals:
+class Marginals(BaseMetric):
     """Per-column distributional distance between real and synthetic marginals.
 
     Computes distance metrics for each column independently and returns
     the average distances over numerical and categorical features separately.
-    Numerical distance functions: Wasserstein (wsd), Jensen-Shannon divergence
+    Numerical distance functions: Wasserstein (wsd), Jensen-Shannon distance
     (jsd), Kolmogorov-Smirnov statistic (ks), Total Variation distance (tvd),
     and Kullback-Leibler divergence (kld).
-    Categorical distance functions: Jensen-Shannon divergence (jsd), Total
+    Categorical distance functions: Jensen-Shannon distance (jsd), Total
     Variation distance (tvd), and Kullback-Leibler divergence (kld).
     For histogram-based metrics (jsd, tvd, kld) on numerical features, values are
     discretized into equal-width bins before comparison.
@@ -796,9 +681,13 @@ class Marginals:
     Lower scores indicate better fidelity to the real marginals.
 
     Args:
-        discrete_features (list): List of discrete/categorical feature names. Default: [].
         n_bins_numerical (int): Number of equal-width bins used when discretizing
             numerical features for jsd/tvd/kld. Must be >= 2. Default: 20.
+        random_state (int): Random seed for reproducibility. Default: 0.
+
+    Outputs:
+        "marginals.<split>.num.<distance>" and
+        "marginals.<split>.cat.<distance>".
 
     Example:
         >>> import pandas as pd
@@ -811,12 +700,10 @@ class Marginals:
         >>> discrete_features = ["category_col"]
         >>>
         >>> # Create metric
-        >>> metric = Marginals(
-        ...     discrete_features=discrete_features,
-        ... )
+        >>> metric = Marginals()
         >>>
         >>> # Evaluate
-        >>> results = metric.evaluate(X_train, X_test, X_syn)
+        >>> results = metric.evaluate(X=X_train, X_syn=X_syn, X_test=X_test, discrete_features=discrete_features)
     """
 
     name = "marginals"
@@ -825,41 +712,29 @@ class Marginals:
 
     def __init__(
         self,
-        discrete_features: list = [],
         n_bins_numerical: int = 20,
+        random_state: int = 0,
     ):
-        super().__init__()
-        self.discrete_features = discrete_features
-
+        super().__init__(random_state=random_state)
         self.n_bins_numerical = int(n_bins_numerical)
         if self.n_bins_numerical < 2:
             raise ValueError("n_bins_numerical must be >= 2")
 
-    def evaluate(
+    def _evaluate(
         self,
-        X_train: pd.DataFrame,
-        X_test: pd.DataFrame,
+        X: pd.DataFrame,
         X_syn: pd.DataFrame,
+        X_test: pd.DataFrame = None,
+        discrete_features: list = None,
     ):
-        """Evaluate synthetic data by comparing marginal distributions.
-
-        Args:
-            X_train: Real training data as a pandas DataFrame.
-            X_test: Real test data as a pandas DataFrame.
-            X_syn: Synthetic data as a pandas DataFrame.
-
-        Returns:
-            dict: Dictionary with keys:
-                - "marginals.train.num_<distance>": Training numerical distance
-                - "marginals.train.cat_<distance>": Training categorical distance
-                - "marginals.test.num_<distance>": Test numerical distance
-                - "marginals.test.cat_<distance>": Test categorical distance
-        """
+        self.discrete_features = discrete_features
+        self._bin_reference = X
         result = {}
-        for split, real, syn in (
-            ("train", X_train, X_syn),
-            ("test", X_test, X_syn),
-        ):
+        splits = [("train", X, X_syn)]
+        if X_test is not None:
+            splits.append(("test", X_test, X_syn))
+
+        for split, real, syn in splits:
             scores = self._evaluate_split(real, syn)
             result.update({f"{self.name}.{split}.{k}": v for k, v in scores.items()})
         return result
@@ -871,140 +746,55 @@ class Marginals:
         numerical_features = [c for c in rd.columns if c not in self.discrete_features]
 
         dist_func = {
-            "wsd": self._wsd,
-            "jsd": self._jsd,
-            "kld": self._kld,
-            "ks": self._ks,
-            "tvd": self._tvd,
+            "wsd": wsd,
+            "jsd": js_robust,
+            "kld": kld,
+            "ks": ksd,
+            "tvd": tvd,
         }
 
-        rd_binned, sd_binned = self._bin_numerical_features(rd, sd, numerical_features)
+        rd_binned, sd_binned = bin_numerical_columns(
+            rd,
+            sd,
+            numerical_features,
+            min(len(self._bin_reference), self.n_bins_numerical),
+            skip_constant=True,
+            fit_data=self._bin_reference,
+        )
 
         result = {}
         for distance in self.numerical_distances:
             num = []
             for col in numerical_features:
                 if distance in ["jsd", "tvd", "kld"]:
-                    num.append(dist_func[distance](rd_binned[col], sd_binned[col]))
+                    rd_dist, sd_dist = empirical_discrete_distribution(
+                        rd_binned[col].to_numpy(),
+                        sd_binned[col].to_numpy(),
+                    )
+                    num.append(dist_func[distance](sd_dist, rd_dist))
                 else:
-                    num.append(dist_func[distance](rd[col], sd[col]))
-            result[f"num_{distance}"] = float(np.mean(num)) if len(num) else np.nan
+                    num.append(
+                        dist_func[distance](
+                            sd[col].to_numpy(),
+                            rd[col].to_numpy(),
+                        )
+                    )
+            result[f"num.{distance}"] = float(np.mean(num)) if len(num) else np.nan
 
         for distance in self.categorical_distances:
             cat = []
             for col in self.discrete_features:
-                cat.append(dist_func[distance](rd[col], sd[col]))
-            result[f"cat_{distance}"] = float(np.mean(cat)) if len(cat) else np.nan
+                rd_dist, sd_dist = empirical_discrete_distribution(
+                    rd[col].to_numpy(),
+                    sd[col].to_numpy(),
+                )
+                cat.append(dist_func[distance](sd_dist, rd_dist))
+            result[f"cat.{distance}"] = float(np.mean(cat)) if len(cat) else np.nan
 
         return result
 
-    def _bin_numerical_features(
-        self,
-        rd: pd.DataFrame,
-        sd: pd.DataFrame,
-        numerical_features: list,
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        rd_binned = rd.copy()
-        sd_binned = sd.copy()
 
-        if len(numerical_features) == 0:
-            return rd_binned, sd_binned
-
-        n_bins = min(len(rd), len(sd), self.n_bins_numerical)
-        if n_bins < 2:
-            return rd_binned, sd_binned
-
-        discretizer = KBinsDiscretizer(
-            n_bins=n_bins, encode="ordinal", strategy="uniform"
-        )
-        discretizer.fit(pd.concat([rd[numerical_features], sd[numerical_features]]))
-        rd_binned[numerical_features] = discretizer.transform(rd[numerical_features])
-        sd_binned[numerical_features] = discretizer.transform(sd[numerical_features])
-        return rd_binned, sd_binned
-
-    def _jsd(self, s1: pd.Series, s2: pd.Series) -> float:
-        p = s1.value_counts(normalize=True, dropna=False)
-        q = s2.value_counts(normalize=True, dropna=False)
-        support = p.index.union(q.index)
-        p = p.reindex(support, fill_value=0.0).to_numpy(dtype=float)
-        q = q.reindex(support, fill_value=0.0).to_numpy(dtype=float)
-        return float(jensenshannon(p, q, base=2))
-
-    def _tvd(self, s1: pd.Series, s2: pd.Series) -> float:
-        p = s1.value_counts(normalize=True, dropna=False)
-        q = s2.value_counts(normalize=True, dropna=False)
-        support = p.index.union(q.index)
-        p = p.reindex(support, fill_value=0.0).to_numpy(dtype=float)
-        q = q.reindex(support, fill_value=0.0).to_numpy(dtype=float)
-        return float(0.5 * np.abs(p - q).sum())
-
-    def _kld(self, s1: pd.Series, s2: pd.Series) -> float:
-        p = s1.value_counts(normalize=True, dropna=False)
-        q = s2.value_counts(normalize=True, dropna=False)
-        support = p.index.union(q.index)
-        p = p.reindex(support, fill_value=0.0).to_numpy(dtype=float)
-        q = q.reindex(support, fill_value=0.0).to_numpy(dtype=float)
-
-        eps = np.finfo(float).eps
-        p = p + eps
-        q = q + eps
-        p = p / p.sum()
-        q = q / q.sum()
-        return float(np.sum(kl_div(p, q)) / np.log(2))
-
-    def _ks(self, s1: pd.Series, s2: pd.Series) -> float:
-        x = s1.to_numpy()
-        y = s2.to_numpy()
-        # ks_2samp handles ties; returns statistic in [0, 1]
-        return float(ks_2samp(x, y, alternative="two-sided", mode="auto").statistic)
-
-    def _wsd(self, s1: pd.Series, s2: pd.Series) -> float:
-        # min max scale the data
-        min_ = min(s1.min(), s2.min())
-        max_ = max(s1.max(), s2.max())
-        if max_ == min_:
-            return 0.0
-
-        s1z = (s1 - min_) / (max_ - min_)
-        s2z = (s2 - min_) / (max_ - min_)
-
-        return float(wasserstein_distance(s1z, s2z))
-
-    def _check_distance(self, distance: str) -> str:
-        distance = distance.lower()
-        if distance in ["wsd", "wasserstein", "ws"]:
-            return "wsd"
-        elif distance in ["jsd", "jensenshannon", "js"]:
-            return "jsd"
-        elif distance in [
-            "kl",
-            "kld",
-            "kullbackleibler",
-            "kullback_leibler",
-            "kullback-leibler",
-        ]:
-            return "kld"
-        elif distance in [
-            "ks",
-            "kstest",
-            "kolmogorov",
-            "kolmogorovsmirnov",
-            "kolmogorov-smirnov",
-        ]:
-            return "ks"
-        elif distance in [
-            "tv",
-            "tvd",
-            "totalvariation",
-            "total_variation",
-            "total-variation",
-        ]:
-            return "tvd"
-        else:
-            raise ValueError(f"Invalid distance: {distance}")
-
-
-class Correlations:
+class Correlations(BaseMetric):
     """Pairwise correlation matrix difference between real and synthetic data.
 
     Builds a full correlation matrix for both real and synthetic data and
@@ -1016,13 +806,17 @@ class Correlations:
     Lower scores indicate better preservation of feature dependencies.
 
     Args:
-        discrete_features (list): List of discrete/categorical feature names. Default: [].
         numerical_correlation (str): Correlation method for numerical-numerical pairs.
             One of "spearman" or "pearson". Default: "pearson".
         img_save_path (str, optional): Directory where correlation matrix plots
             will be saved. If a file path is provided, its basename is used as a
             prefix. Default: None.
         file_format (str): Image file format passed to matplotlib. Default: "png".
+        random_state (int): Random seed for reproducibility. Default: 0.
+
+    Outputs:
+        "correlations.<split>.l2" and optional
+        "correlations.<split>.img_paths".
 
     Example:
         >>> import pandas as pd
@@ -1036,54 +830,47 @@ class Correlations:
         >>>
         >>> # Create metric
         >>> metric = Correlations(
-        ...     discrete_features=discrete_features,
         ...     numerical_correlation="spearman",
         ...     img_save_path="results/correlations",
         ... )
         >>>
         >>> # Evaluate
-        >>> results = metric.evaluate(X_train, X_test, X_syn)
+        >>> results = metric.evaluate(X=X_train, X_syn=X_syn, discrete_features=discrete_features)
+        >>> results_with_test = metric.evaluate(
+        ...     X=X_train, X_syn=X_syn, X_test=X_test, discrete_features=discrete_features
+        ... )
     """
 
     name = "correlations"
 
     def __init__(
         self,
-        discrete_features: list = [],
         numerical_correlation: str = "pearson",
         img_save_path: str = None,
         file_format: str = "png",
+        random_state: int = 0,
     ):
-        super().__init__()
-        self.discrete_features = discrete_features
-        self.numerical_correlation = numerical_correlation
+        super().__init__(random_state=random_state)
+        self.numerical_correlation = numerical_correlation.lower()
+        if self.numerical_correlation not in {"pearson", "spearman"}:
+            raise ValueError('numerical_correlation must be "pearson" or "spearman"')
         self.img_save_path = img_save_path
         self.file_format = file_format.lower().lstrip(".")
 
-    def evaluate(
+    def _evaluate(
         self,
-        X_train: pd.DataFrame,
-        X_test: pd.DataFrame,
+        X: pd.DataFrame,
         X_syn: pd.DataFrame,
+        X_test: pd.DataFrame = None,
+        discrete_features: list = None,
     ):
-        """Evaluate synthetic data by comparing pairwise correlation matrices.
-
-        Args:
-            X_train: Real training data as a pandas DataFrame.
-            X_test: Real test data as a pandas DataFrame.
-            X_syn: Synthetic data as a pandas DataFrame.
-
-        Returns:
-            dict: Dictionary with key:
-                - "correlations.train.l2": Training correlation matrix L2 distance
-                - "correlations.test.l2": Test correlation matrix L2 distance
-                - "correlations.<split>.img_paths": Saved plot path when img_save_path is set
-        """
+        self.discrete_features = discrete_features
         result = {}
-        for split, real, syn in (
-            ("train", X_train, X_syn),
-            ("test", X_test, X_syn),
-        ):
+        splits = [("train", X, X_syn)]
+        if X_test is not None:
+            splits.append(("test", X_test, X_syn))
+
+        for split, real, syn in splits:
             scores = self._evaluate_split(real, syn, split)
             result.update({f"{self.name}.{split}.{k}": v for k, v in scores.items()})
         return result
@@ -1109,6 +896,10 @@ class Correlations:
                     C_rd[i, j] = C_rd[j, i]
                     C_sd[i, j] = C_sd[j, i]
                     continue
+                if i == j:
+                    C_rd[i, j] = 1.0
+                    C_sd[i, j] = 1.0
+                    continue
 
                 corr_type = self._get_corr_type(ci, cj)
 
@@ -1116,10 +907,10 @@ class Correlations:
                 C_sd[i, j] = self._get_corr(sd[ci], sd[cj], corr_type)
 
         diff = np.abs(C_rd - C_sd)
-        l2 = np.linalg.norm(diff)
+        score = l2_distance(diff)
 
         result = {
-            "l2": float(l2),
+            "l2": score,
         }
 
         if self.img_save_path:
@@ -1153,14 +944,23 @@ class Correlations:
             raise ValueError(f"Invalid corr_type: {corr_type}")
 
     def _num_corr(self, s1: pd.Series, s2: pd.Series) -> float:
+        data = pd.concat([s1, s2], axis=1).dropna()
+        if (
+            len(data) < 2
+            or data.iloc[:, 0].nunique() <= 1
+            or data.iloc[:, 1].nunique() <= 1
+        ):
+            return 0.0
+
         if self.numerical_correlation == "spearman":
-            return float(spearmanr(s1, s2).statistic)
+            corr = spearmanr(data.iloc[:, 0], data.iloc[:, 1]).statistic
         elif self.numerical_correlation == "pearson":
-            return float(pearsonr(s1, s2).statistic)
+            corr = pearsonr(data.iloc[:, 0], data.iloc[:, 1]).statistic
         else:
             raise ValueError(
                 f"Invalid numerical correlation: {self.numerical_correlation}"
             )
+        return float(corr) if np.isfinite(corr) else 0.0
 
     def _cat_corr(self, s1: pd.Series, s2: pd.Series) -> float:
         ct = pd.crosstab(s1, s2)
@@ -1291,7 +1091,7 @@ class Correlations:
             label.set_horizontalalignment("right")
 
 
-class ARM:
+class ARM(BaseMetric):
     """Association Rule Mining preservation using Apriori.
 
     Mines association rules in the real training data and synthetic data, then
@@ -1304,7 +1104,6 @@ class ARM:
     rules found in the real data.
 
     Args:
-        discrete_features (list): List of discrete/categorical feature names. Default: [].
         min_support (float or int): Minimum itemset support for Apriori. Floats
             in (0, 1] are interpreted as a fraction of rows; integers are
             interpreted as absolute row counts. Default: 0.1.
@@ -1317,6 +1116,11 @@ class ARM:
             rules after evaluation. Default: True.
         max_rules_to_print (int or None): Maximum number of missed and
             hallucinated rules to print per category. None prints all. Default: 25.
+        random_state (int): Random seed for reproducibility. Default: 0.
+
+    Outputs:
+        "arm.precision", "arm.recall", "arm.n_rules_real", and
+        "arm.n_rules_syn".
 
     Example:
         >>> import pandas as pd
@@ -1327,30 +1131,26 @@ class ARM:
         >>> discrete_features = ["category_col"]
         >>>
         >>> metric = ARM(
-        ...     discrete_features=discrete_features,
         ...     min_support=0.05,
         ...     min_confidence=0.7,
         ... )
         >>>
-        >>> results = metric.evaluate(X_real, X_syn)
+        >>> results = metric.evaluate(X_real, X_syn, discrete_features=discrete_features)
     """
 
     name = "arm"
 
     def __init__(
         self,
-        discrete_features: list = None,
         min_support=0.1,
         min_confidence: float = 0.8,
         n_bins_numerical: int = 5,
         max_itemset_size: int = 2,
         print_rule_differences: bool = True,
         max_rules_to_print: int = 25,
+        random_state: int = 0,
     ):
-        super().__init__()
-        self.discrete_features = (
-            list(discrete_features) if discrete_features is not None else []
-        )
+        super().__init__(random_state=random_state)
         self.min_support = min_support
         self.min_confidence = float(min_confidence)
         self.n_bins_numerical = int(n_bins_numerical)
@@ -1371,22 +1171,15 @@ class ARM:
         if self.max_rules_to_print is not None and self.max_rules_to_print < 1:
             raise ValueError("max_rules_to_print must be >= 1 or None")
 
-    def evaluate(self, X_train: pd.DataFrame, X_syn: pd.DataFrame):
-        """Evaluate synthetic data by comparing mined association rules.
-
-        Args:
-            X_train: Real training data as a pandas DataFrame.
-            X_syn: Synthetic data as a pandas DataFrame.
-
-        Returns:
-            dict: Dictionary with keys:
-                - "arm.precision": Fraction of synthetic rules also found in real data
-                - "arm.recall": Fraction of real rules also found in synthetic data
-                - "arm.n_rules_real": Number of rules mined in real data
-                - "arm.n_rules_syn": Number of rules mined in synthetic data
-        """
-
-        rd, sd = self._prepare_data(X_train, X_syn)
+    def _evaluate(
+        self,
+        X: pd.DataFrame,
+        X_syn: pd.DataFrame,
+        X_test: pd.DataFrame = None,
+        discrete_features: list = None,
+    ):
+        self.discrete_features = discrete_features
+        rd, sd = self._prepare_data(X, X_syn)
         real_rules = self._mine_rules(rd)
         syn_rules = self._mine_rules(sd)
 
@@ -1416,12 +1209,12 @@ class ARM:
         if numerical_features:
             n_bins = min(len(rd), self.n_bins_numerical)
             if n_bins >= 2:
-                discretizer = KBinsDiscretizer(
-                    n_bins=n_bins, encode="ordinal", strategy="uniform"
+                rd, sd = bin_numerical_columns(
+                    rd,
+                    sd,
+                    numerical_features,
+                    n_bins,
                 )
-                discretizer.fit(rd[numerical_features])
-                rd[numerical_features] = discretizer.transform(rd[numerical_features])
-                sd[numerical_features] = discretizer.transform(sd[numerical_features])
             else:
                 rd[numerical_features] = 0
                 sd[numerical_features] = 0
@@ -1563,7 +1356,7 @@ class ARM:
         return int(self.min_support)
 
 
-class NMI:
+class NMI(BaseMetric):
     """Pairwise normalized mutual information preservation.
 
     Paper: "A Sobering Look at Tabular Data Generation via Probabilistic Circuits" by Scassola et al. (2026).
@@ -1578,9 +1371,12 @@ class NMI:
     NMI. Higher scores indicate better preservation of feature dependencies.
 
     Args:
-        discrete_features (list): List of discrete/categorical feature names. Default: [].
         n_bins_numerical (int): Number of equal-width bins used when discretizing
             numerical features. Must be >= 2. Default: 20.
+        random_state (int): Random seed for reproducibility. Default: 0.
+
+    Outputs:
+        "nmi.<split>.score".
 
     Example:
         >>> import pandas as pd
@@ -1593,50 +1389,42 @@ class NMI:
         >>> discrete_features = ["category_col"]
         >>>
         >>> # Create metric
-        >>> metric = NMI(discrete_features=discrete_features)
+        >>> metric = NMI()
         >>>
         >>> # Evaluate
-        >>> results = metric.evaluate(X_train, X_test, X_syn)
+        >>> results = metric.evaluate(X=X_train, X_syn=X_syn, discrete_features=discrete_features)
+        >>> results_with_test = metric.evaluate(
+        ...     X=X_train, X_syn=X_syn, X_test=X_test, discrete_features=discrete_features
+        ... )
     """
 
     name = "nmi"
 
     def __init__(
         self,
-        discrete_features: list = None,
         n_bins_numerical: int = 20,
+        random_state: int = 0,
     ):
-        super().__init__()
-        self.discrete_features = (
-            list(discrete_features) if discrete_features is not None else []
-        )
+        super().__init__(random_state=random_state)
         self.n_bins_numerical = int(n_bins_numerical)
         if self.n_bins_numerical < 2:
             raise ValueError("n_bins_numerical must be >= 2")
 
-    def evaluate(
+    def _evaluate(
         self,
-        X_train: pd.DataFrame,
-        X_test: pd.DataFrame,
+        X: pd.DataFrame,
         X_syn: pd.DataFrame,
+        X_test: pd.DataFrame = None,
+        discrete_features: list = None,
     ):
-        """Evaluate synthetic data by comparing pairwise NMI values.
-
-        Args:
-            X_train: Real training data as a pandas DataFrame.
-            X_test: Real test data as a pandas DataFrame.
-            X_syn: Synthetic data as a pandas DataFrame.
-
-        Returns:
-            dict: Dictionary with key:
-                - "nmi.train.score": Training weighted pairwise NMI preservation score
-                - "nmi.test.score": Test weighted pairwise NMI preservation score
-        """
+        self.discrete_features = discrete_features
+        self._bin_reference = X
         result = {}
-        for split, real, syn in (
-            ("train", X_train, X_syn),
-            ("test", X_test, X_syn),
-        ):
+        splits = [("train", X, X_syn)]
+        if X_test is not None:
+            splits.append(("test", X_test, X_syn))
+
+        for split, real, syn in splits:
             scores = self._evaluate_split(real, syn)
             result.update({f"{self.name}.{split}.{k}": v for k, v in scores.items()})
         return result
@@ -1652,14 +1440,13 @@ class NMI:
         numerical_features = [c for c in cols if c not in self.discrete_features]
 
         if numerical_features:
-            n_bins = min(len(rd), self.n_bins_numerical)
-            if n_bins >= 2:
-                discretizer = KBinsDiscretizer(
-                    n_bins=n_bins, encode="ordinal", strategy="uniform"
-                )
-                discretizer.fit(rd[numerical_features])
-                rd[numerical_features] = discretizer.transform(rd[numerical_features])
-                sd[numerical_features] = discretizer.transform(sd[numerical_features])
+            rd, sd = bin_numerical_columns(
+                rd,
+                sd,
+                numerical_features,
+                min(len(self._bin_reference), self.n_bins_numerical),
+                fit_data=self._bin_reference,
+            )
 
         scores = []
         weights = []
@@ -1705,11 +1492,15 @@ class NMI:
         return float(-(p * np.log(p)).sum())
 
 
-class DomainConstraint:
+class DomainConstraint(BaseMetric):
     """Evaluate boolean pandas expressions on real and synthetic data.
 
     Args:
         constraint_list (list): List of expressions accepted by DataFrame.eval.
+        random_state (int): Random seed for reproducibility. Default: 0.
+
+    Outputs:
+        Per-constraint real/synthetic truth rates and synthetic violation counts.
 
     Example:
         >>> import pandas as pd
@@ -1735,25 +1526,20 @@ class DomainConstraint:
 
     name = "domainconstraint"
 
-    def __init__(self, constraint_list: list):
-        super().__init__()
+    def __init__(self, constraint_list: list, random_state: int = 0):
+        super().__init__(random_state=random_state)
         self.constraint_list = constraint_list
 
-    def evaluate(self, X_train: pd.DataFrame, X_syn: pd.DataFrame):
-        """Evaluate each domain constraint on real and synthetic data.
-
-        Args:
-            X_train: Real training data as a pandas DataFrame.
-            X_syn: Synthetic data as a pandas DataFrame.
-
-        Returns:
-            dict: Mean truth value for each constraint on real and synthetic data,
-                plus the number of synthetic samples where each constraint does
-                not hold.
-        """
+    def _evaluate(
+        self,
+        X: pd.DataFrame,
+        X_syn: pd.DataFrame,
+        X_test: pd.DataFrame = None,
+        discrete_features: list = None,
+    ):
         result = {}
-        for constraint in self.constraint_list:
-            constraint_key = _metric_key_part(
+        for index, constraint in enumerate(self.constraint_list):
+            sanitized_constraint = _metric_key_part(
                 str(constraint)
                 .replace(">=", "_gte_")
                 .replace("<=", "_lte_")
@@ -1763,10 +1549,9 @@ class DomainConstraint:
                 .replace(">", "_gt_")
                 .replace("<", "_lt_")
             )
+            constraint_key = f"{index}_{sanitized_constraint}"
             syn_constraint = X_syn.eval(constraint)
-            result[f"{self.name}.{constraint_key}_real"] = X_train.eval(
-                constraint
-            ).mean()
+            result[f"{self.name}.{constraint_key}_real"] = X.eval(constraint).mean()
             result[f"{self.name}.{constraint_key}_syn"] = syn_constraint.mean()
             result[f"{self.name}.{constraint_key}_syn_n_violations"] = int(
                 (~syn_constraint).sum()
@@ -1774,7 +1559,7 @@ class DomainConstraint:
         return result
 
 
-class FeatureWisePlots:
+class FeatureWisePlots(BaseMetric):
     """Save one multi-panel plot comparing real training and synthetic data.
 
     Numerical features are plotted as overlaid density histograms. Discrete
@@ -1782,12 +1567,16 @@ class FeatureWisePlots:
 
     Args:
         img_save_path (str): Directory where the feature plot file will be saved.
-        discrete_features (list): List of discrete/categorical feature names. Default: [].
         bins (int): Number of bins for numerical histograms. Default: 20.
         max_categories (int): Maximum number of categorical levels to show
             before grouping the remainder into "__other__". Default: 20.
         file_format (str): Image file format passed to matplotlib. Default: "png".
         dpi (int): Saved figure resolution. Default: 150.
+        random_state (int): Random seed for reproducibility. Default: 0.
+
+    Outputs:
+        Absolute path of the saved plot file under
+        ``"featurewiseplots.save_dir"``.
 
     Example:
         >>> import pandas as pd
@@ -1795,9 +1584,8 @@ class FeatureWisePlots:
         >>>
         >>> metric = FeatureWisePlots(
         ...     img_save_path="results/featurewise_plots",
-        ...     discrete_features=["category_col"],
         ... )
-        >>> results = metric.evaluate(X_train, X_syn)
+        >>> results = metric.evaluate(X_train, X_syn, discrete_features=["category_col"])
     """
 
     name = "featurewiseplots"
@@ -1805,17 +1593,14 @@ class FeatureWisePlots:
     def __init__(
         self,
         img_save_path: str,
-        discrete_features: list = None,
         bins: int = 20,
         max_categories: int = 20,
         file_format: str = "png",
         dpi: int = 150,
+        random_state: int = 0,
     ):
-        super().__init__()
+        super().__init__(random_state=random_state)
         self.img_save_path = img_save_path
-        self.discrete_features = (
-            list(discrete_features) if discrete_features is not None else []
-        )
         self.bins = int(bins)
         self.max_categories = int(max_categories)
         self.file_format = file_format.lower().lstrip(".")
@@ -1828,23 +1613,20 @@ class FeatureWisePlots:
         if self.max_categories < 1:
             raise ValueError("max_categories must be >= 1")
 
-    def evaluate(self, X_train: pd.DataFrame, X_syn: pd.DataFrame):
-        """Save one feature-wise real-vs-synthetic comparison plot.
-
-        Args:
-            X_train: Real training data as a pandas DataFrame.
-            X_syn: Synthetic data as a pandas DataFrame.
-
-        Returns:
-            dict: Dictionary with keys "featurewiseplots.n_plots",
-                "featurewiseplots.save_dir", and "featurewiseplots.files".
-        """
-        missing = [col for col in X_train.columns if col not in X_syn.columns]
+    def _evaluate(
+        self,
+        X: pd.DataFrame,
+        X_syn: pd.DataFrame,
+        X_test: pd.DataFrame = None,
+        discrete_features: list = None,
+    ):
+        self.discrete_features = discrete_features
+        missing = [col for col in X.columns if col not in X_syn.columns]
         if missing:
             raise ValueError(f"X_syn is missing columns: {missing}")
 
         os.makedirs(self.img_save_path, exist_ok=True)
-        cols = X_train.columns.tolist()
+        cols = X.columns.tolist()
 
         if not cols:
             fig, ax = plt.subplots(figsize=(7, 4.5))
@@ -1867,7 +1649,7 @@ class FeatureWisePlots:
             legend_labels = []
 
             for ax, col in zip(axes, cols):
-                self._plot_feature(ax, X_train, X_syn, col)
+                self._plot_feature(ax, X, X_syn, col)
                 handles, labels = self._pop_axis_legend(ax)
                 for handle, label in zip(handles, labels):
                     if label not in legend_labels:
@@ -1888,7 +1670,7 @@ class FeatureWisePlots:
 
         path = self._save_figure(fig)
 
-        return {f"{self.name}.save_dir": os.path.abspath(self.img_save_path)}
+        return {f"{self.name}.save_dir": path}
 
     def _plot_feature(
         self,
@@ -1937,7 +1719,10 @@ class FeatureWisePlots:
                 stat="density",
                 common_norm=False,
                 bins=self.bins,
-                kde=True,
+                kde=all(
+                    values["value"].nunique() > 1
+                    for _, values in plot_df.groupby("dataset")
+                ),
                 element="step",
                 ax=ax,
             )

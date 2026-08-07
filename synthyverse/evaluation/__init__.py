@@ -1,7 +1,7 @@
 from importlib import import_module
 
 _METRICS = {
-    "ClassifierTest": (".fidelity", "classifier_test"),
+    "ClassifierTwoSampleTest": (".fidelity", "c2st"),
     "AlphaPrecisionBetaRecall": (".fidelity", "alphaprecisionbetarecall"),
     "PRDC": (".fidelity", "prdc"),
     # "Wasserstein": (".fidelity", "wasserstein"),
@@ -24,6 +24,10 @@ _METRIC_BY_NAME = {name: cls for cls, (_, name) in _METRICS.items()}
 
 
 def __getattr__(name: str):
+    if name == "BaseMetric":
+        base = import_module(".base", __name__).BaseMetric
+        globals()[name] = base
+        return base
     if name == "TabularMetricEvaluator":
         evaluator = import_module(".eval", __name__).TabularMetricEvaluator
         globals()[name] = evaluator
@@ -51,6 +55,7 @@ def get_metric(metric_name: str):
 __all__ = [
     *list(_METRICS),
     "TabularMetricEvaluator",
+    "BaseMetric",
     "all_metrics",
     "get_metric",
 ]

@@ -1,6 +1,10 @@
 Processing and Wrappers
 =======================
 
+.. autoclass:: synthyverse.generators.base.BaseGenerator
+   :members:
+   :show-inheritance:
+
 .. autoclass:: synthyverse.generators.base.DataProcessor
    :members:
    :inherited-members:

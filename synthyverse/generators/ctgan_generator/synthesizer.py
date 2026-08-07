@@ -178,9 +178,15 @@ class CTGAN(BaseSynthesizer):
         enable_gpu=True,
         cuda=None,
         cap_train_time=None,
-        log_steps=100,
     ):
-        assert batch_size % 2 == 0
+        if pac < 1:
+            raise ValueError("pac must be >= 1.")
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1.")
+        if batch_size % 2 != 0:
+            raise ValueError("batch_size must be even.")
+        if batch_size % pac != 0:
+            raise ValueError("batch_size must be divisible by pac.")
 
         self._embedding_dim = embedding_dim
         self._generator_dim = generator_dim
@@ -198,7 +204,6 @@ class CTGAN(BaseSynthesizer):
         self._epochs = epochs
         self.pac = pac
         self.cap_train_time = cap_train_time
-        self.log_steps = log_steps
         self._device = validate_and_set_device(enable_gpu, cuda)
         self._enable_gpu = cuda if cuda is not None else enable_gpu
         self._transformer = None
@@ -337,7 +342,7 @@ class CTGAN(BaseSynthesizer):
             )
 
     @random_state
-    def fit(self, train_data, discrete_columns=(), epochs=None):
+    def fit(self, train_data, discrete_columns=(), epochs=None, validate_callback=None):
         """Fit the CTGAN Synthesizer models to the training data.
 
         Args:
@@ -416,6 +421,7 @@ class CTGAN(BaseSynthesizer):
         start_time = time.monotonic()
         step = 0
         timed_out = False
+        stop_training = False
         for i in epoch_iterator:
             for id_ in range(steps_per_epoch):
                 for n in range(self._discriminator_steps):
@@ -496,8 +502,13 @@ class CTGAN(BaseSynthesizer):
                 optimizerG.step()
                 step += 1
                 if (
+                    validate_callback is not None
+                    and validate_callback(step, i + 1, False)
+                ):
+                    stop_training = True
+                    break
+                if (
                     self.cap_train_time is not None
-                    and step % self.log_steps == 0
                     and time.monotonic() - start_time > self.cap_train_time
                 ):
                     print(f"Training timed out after {self.cap_train_time} seconds.")
@@ -525,7 +536,13 @@ class CTGAN(BaseSynthesizer):
                 epoch_iterator.set_description(
                     description.format(gen=generator_loss, dis=discriminator_loss)
                 )
-            if timed_out:
+            if (
+                not stop_training
+                and validate_callback is not None
+                and validate_callback(step, i + 1, True)
+            ):
+                stop_training = True
+            if timed_out or stop_training:
                 break
 
     @random_state

@@ -6,8 +6,6 @@ from pathlib import Path
 from typing import Optional
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import QuantileTransformer, OrdinalEncoder
 from torch import nn
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -15,8 +13,14 @@ from tqdm import tqdm
 from .vae import Model_VAE, Encoder_model, Decoder_model
 from .diffusion import Model, sample
 from ..base import BaseGenerator
-from ..dgm_utils import FastTensorDataLoader, MLPDiffusion
-from ..persistence import load_generator_state, restore_generator, save_generator_state
+from ..dgm_utils import (
+    FastTensorDataLoader,
+    MLPDiffusion,
+    QuantileStandardScaler,
+    clone_state_dict,
+    split_validation,
+    validate_c2st,
+)
 from ...utils.utils import resolve_epochs_from_training_steps
 
 
@@ -33,9 +37,12 @@ class TabSynGenerator(BaseGenerator):
     Paper: "Mixed-type tabular data synthesis with score-based diffusion in latent space" by Zhang et al. (2023).
 
     Args:
-        target_column (str): Name of the target column used for stratified validation splitting.
-        val_size (float): Fraction of training rows reserved for validation.
-            Default: 0.1.
+        target_column (str): Name of the target column, potentially used for stratified validation splitting. Default: None.
+        val_size_vae (float): Fraction of training rows reserved for VAE
+            learning-rate / beta scheduling. Default: 0.15.
+        val_size_diffusion (float): Fraction of training rows reserved for
+            diffusion C2ST early stopping. Default: 0.0.
+        val_steps (int): Epochs between diffusion validation, or training steps when ``training_steps`` is provided. Default: 5000.
         batch_size (int): Batch size applied to both VAE and diffusion training. Default: 4096.
         epochs (int): Maximum number of diffusion training epochs. Default: 10001.
         training_steps (int, optional): Total diffusion training steps. When
@@ -62,10 +69,9 @@ class TabSynGenerator(BaseGenerator):
         vae_lambda (float): Multiplicative decay factor applied to beta when validation plateaus.
             Default: 0.7.
         diffusion_wd (float): Weight decay used by the diffusion optimizer. Default: 0.
-        cap_train_time (float): Time limit in seconds for VAE training and again
-            for diffusion training. Default: None.
-        log_steps (int): Steps between timeout checks. Default: 100.
-        random_state (int): Random seed for reproducibility. Default: 0.
+        cap_train_time (float): Total time limit in seconds for VAE and
+            diffusion training, split proportionally by their epoch or training
+            step budgets. Default: None.
 
     Example:
         >>> import pandas as pd
@@ -75,12 +81,11 @@ class TabSynGenerator(BaseGenerator):
         >>> X = pd.read_csv("data.csv")
         >>> discrete_features = ["target", "category_col"]
         >>>
-        >>> # Create generator (requires target column)
+        >>> # Create generator
         >>> generator = TabSynGenerator(
         ...     target_column="target",
         ...     vae_num_epochs=100,
-        ...     epochs=500,
-        ...     random_state=42
+        ...     epochs=500
         ... )
         >>>
         >>> # Fit and generate
@@ -90,11 +95,15 @@ class TabSynGenerator(BaseGenerator):
 
     name = "tabsyn"
     needs_validation_set = True
+    supports_purely_numerical = False
+    supports_purely_categorical = False
 
     def __init__(
         self,
-        target_column: str,
-        val_size: float = 0.1,
+        target_column: Optional[str] = None,
+        val_size_vae: float = 0.15,
+        val_size_diffusion: float = 0.0,
+        val_steps: int = 5000,
         vae_lr: float = 1e-3,
         vae_wd: float = 0,
         vae_d_token: int = 4,
@@ -108,6 +117,7 @@ class TabSynGenerator(BaseGenerator):
         vae_lambda: float = 0.7,
         diffusion_wd: float = 0,
         random_state: int = 0,
+        full_determinism: bool = False,
         batch_size: int = 4096,
         epochs: int = 10_000 + 1,
         training_steps: int = None,
@@ -117,11 +127,12 @@ class TabSynGenerator(BaseGenerator):
         mlp_layers: int = 2,
         num_timesteps: int = 50,
         cap_train_time: Optional[float] = None,
-        log_steps: int = 100,
     ):
-        self.random_state = random_state
+        super().__init__(random_state=random_state, full_determinism=full_determinism)
         self.target_column = target_column
-        self.val_size = val_size
+        self.val_size_vae = val_size_vae
+        self.val_size_diffusion = val_size_diffusion
+        self.val_steps = val_steps
         self.batch_size = batch_size
         self.epochs = epochs
         self.training_steps = training_steps
@@ -131,7 +142,6 @@ class TabSynGenerator(BaseGenerator):
         self.mlp_layers = mlp_layers
         self.num_timesteps = num_timesteps
         self.cap_train_time = cap_train_time
-        self.log_steps = log_steps
         self.vae_lr = vae_lr
         self.vae_wd = vae_wd
         self.vae_d_token = vae_d_token
@@ -150,67 +160,89 @@ class TabSynGenerator(BaseGenerator):
     def _fit(self, X: pd.DataFrame, discrete_features: list):
         x = X.copy()
         self.ori_columns = X.columns
-        self.discrete_features = discrete_features
-        if not 0 < self.val_size < 1:
-            raise ValueError("TabSyn requires val_size to be between 0 and 1.")
+        self.discrete_features = list(discrete_features)
+        if self.val_size_vae >= 1:
+            raise ValueError("TabSyn requires val_size_vae to be less than 1.")
+        if self.val_size_diffusion >= 1:
+            raise ValueError("TabSyn requires val_size_diffusion to be less than 1.")
 
-        stratify = (
-            x[self.target_column] if self.target_column in discrete_features else None
-        )
-        x, x_val = train_test_split(
+        x, x_val_vae_raw = split_validation(
             x,
-            test_size=self.val_size,
-            random_state=self.random_state,
-            stratify=stratify,
+            self.val_size_vae,
+            self.target_column,
+            self.discrete_features,
+            self.random_state,
+        )
+        x_diffusion, x_val_diffusion_raw = split_validation(
+            x,
+            self.val_size_diffusion,
+            self.target_column,
+            self.discrete_features,
+            self.random_state,
+        )
+        x_val_vae = x_val_vae_raw.copy() if x_val_vae_raw is not None else None
+
+        self.category_unknown_indices = np.array(
+            self._categorical_cardinalities(self.discrete_features)
         )
 
-        self.ordinal_encoder = OrdinalEncoder(
-            handle_unknown="use_encoded_value",
-            unknown_value=-1,
-            encoded_missing_value=-2,
-        )
-        x[self.discrete_features] = self.ordinal_encoder.fit_transform(
-            x[self.discrete_features]
-        )
-        x_val[self.discrete_features] = self.ordinal_encoder.transform(
-            x_val[self.discrete_features]
-        )
-
-        self.scaler = QuantileTransformer(
-            output_distribution="normal",
-            n_quantiles=max(min(len(x) // 30, 1000), 10),
-            subsample=int(1e9),
-            random_state=self.random_state,
-        )
+        self.scaler = QuantileStandardScaler(len(x), self.random_state)
         self.numerical_features = [
             col for col in x.columns if col not in self.discrete_features
         ]
         self.scaler.fit(x[self.numerical_features])
         x[self.numerical_features] = self.scaler.transform(x[self.numerical_features])
-        x_val[self.numerical_features] = self.scaler.transform(
-            x_val[self.numerical_features]
-        )
+        if x_val_diffusion_raw is not None:
+            x_diffusion[self.numerical_features] = self.scaler.transform(
+                x_diffusion[self.numerical_features]
+            )
+        if x_val_vae is not None:
+            x_val_vae[self.numerical_features] = self.scaler.transform(
+                x_val_vae[self.numerical_features]
+            )
 
-        # filter out validation obs with categories not embeddable from training data
-        x_val_cat = x_val[discrete_features].values
-        max_cat = x[discrete_features].max().values
-        drop_mask = ((x_val_cat < 0) | (x_val_cat > max_cat)).any(axis=1)
-        x_val = x_val[~drop_mask]
-        print(
-            f"Number of observations dropped in validation set due to unseen categories: {sum(drop_mask)}"
+        vae_batch_size = min(self.batch_size, len(x))
+        vae_epochs = resolve_epochs_from_training_steps(
+            self.vae_num_epochs,
+            self.vae_training_steps,
+            len(x),
+            vae_batch_size,
+        )
+        diffusion_epochs = resolve_epochs_from_training_steps(
+            self.epochs,
+            self.training_steps,
+            len(x_diffusion),
+            self.batch_size,
+        )
+        vae_time_cap, diffusion_time_cap = self._split_time_cap(
+            vae_epochs, diffusion_epochs
         )
 
         # train the VAE on train data and use validation only for model selection
-        vae = self._train_vae(x, x_val)
-        train_z = self._encode_vae(vae, pd.concat([x, x_val], ignore_index=True))
+        vae, vae_elapsed = self._train_vae(x, x_val_vae, vae_epochs, vae_time_cap)
+        train_z = self._encode_vae(vae, x_diffusion)
 
         # no longer need original data
-        del x, x_val, vae
+        del x, x_val_vae, x_diffusion, vae
 
         # train the diffusion model
-        self.model = self._train_diffusion(train_z)
+        if diffusion_time_cap is not None:
+            diffusion_time_cap += max(vae_time_cap - vae_elapsed, 0)
+        self.model = self._train_diffusion(
+            train_z, diffusion_epochs, diffusion_time_cap, x_val_diffusion_raw
+        )
 
         return self
+
+    def _split_time_cap(self, vae_epochs, diffusion_epochs):
+        if self.cap_train_time is None:
+            return None, None
+
+        vae_budget = self.vae_training_steps or vae_epochs
+        diffusion_budget = self.training_steps or diffusion_epochs
+        total_budget = vae_budget + diffusion_budget
+        vae_time_cap = self.cap_train_time * vae_budget / total_budget
+        return vae_time_cap, self.cap_train_time - vae_time_cap
 
     def _generate(self, n: int):
         self.model.eval()
@@ -245,24 +277,22 @@ class TabSynGenerator(BaseGenerator):
         syn[self.numerical_features] = self.scaler.inverse_transform(
             syn[self.numerical_features]
         )
-        syn[self.discrete_features] = self.ordinal_encoder.inverse_transform(
-            syn[self.discrete_features]
-        )
+        syn[self.discrete_features] = syn[self.discrete_features].astype(int)
 
         return syn
 
-    def _train_vae(self, x, x_val):
+    def _train_vae(self, x, x_val, epochs, time_cap):
         d_numerical = len(x.columns.tolist()) - len(self.discrete_features)
-        categories = []
-        for col in self.discrete_features:
-            categories.append(x[col].nunique())
+        categories = self.category_unknown_indices.tolist()
         self.d_numerical = d_numerical
         self.categories = categories
+        self.embedding_categories = categories
 
         vae = Model_VAE(
             self.vae_num_layers,
             d_numerical,
             categories,
+            self.embedding_categories,
             self.vae_d_token,
             n_head=self.vae_n_head,
             factor=self.vae_factor,
@@ -295,25 +325,17 @@ class TabSynGenerator(BaseGenerator):
             shuffle=True,
         )
 
-        x_val_num = x_val[
-            [col for col in x.columns if col not in self.discrete_features]
-        ].values
-        x_val_num = torch.from_numpy(x_val_num).float()
-        x_val_cat = x_val[self.discrete_features].values
-        x_val_cat = torch.from_numpy(x_val_cat).long()
+        use_validation = x_val is not None
+        if use_validation:
+            x_val_num = x_val[
+                [col for col in x.columns if col not in self.discrete_features]
+            ].values
+            x_val_num = torch.from_numpy(x_val_num).float().to(self.device)
+            x_val_cat = x_val[self.discrete_features].values
+            x_val_cat = torch.from_numpy(x_val_cat).long().to(self.device)
+            best_val_loss = float("inf")
+            best_vae = deepcopy(vae.state_dict())
 
-        x_val_num = x_val_num.to(self.device)
-        x_val_cat = x_val_cat.to(self.device)
-
-        best_val_loss = float("inf")
-        best_vae = deepcopy(vae.state_dict())
-
-        epochs = resolve_epochs_from_training_steps(
-            self.vae_num_epochs,
-            self.vae_training_steps,
-            len(x),
-            batch_size,
-        )
         pbar = tqdm(range(epochs))
 
         start_time = time.monotonic()
@@ -337,52 +359,54 @@ class TabSynGenerator(BaseGenerator):
                 loss.backward()
                 optimizer.step()
                 step += 1
-                if (
-                    self.cap_train_time is not None
-                    and step % self.log_steps == 0
-                    and time.monotonic() - start_time > self.cap_train_time
-                ):
-                    print(f"Training timed out after {self.cap_train_time} seconds.")
+                if time_cap is not None and time.monotonic() - start_time > time_cap:
+                    print(f"Training timed out after {time_cap} seconds.")
                     timed_out = True
                     break
 
             if timed_out:
                 break
 
-            vae.eval()
-            with torch.no_grad():
-                Recon_X_num, Recon_X_cat, mu_z, std_z = vae(x_val_num, x_val_cat)
+            if use_validation:
+                vae.eval()
+                with torch.no_grad():
+                    Recon_X_num, Recon_X_cat, mu_z, std_z = vae(x_val_num, x_val_cat)
 
-                val_mse_loss, val_ce_loss, val_kl_loss, val_acc = self._compute_loss(
-                    x_val_num, x_val_cat, Recon_X_num, Recon_X_cat, mu_z, std_z
-                )
-                val_loss = val_mse_loss.item() * 0 + val_ce_loss.item()
+                    val_mse_loss, val_ce_loss, val_kl_loss, val_acc = (
+                        self._compute_loss(
+                            x_val_num, x_val_cat, Recon_X_num, Recon_X_cat, mu_z, std_z
+                        )
+                    )
+                    # fixed bug: zeroing out mse loss
+                    # val_loss = val_mse_loss.item() * 0 + val_ce_loss.item()
+                    val_loss = val_mse_loss.item() + val_ce_loss.item()
 
-                scheduler.step(val_loss)
-                new_lr = optimizer.param_groups[0]["lr"]
+                    scheduler.step(val_loss)
+                    new_lr = optimizer.param_groups[0]["lr"]
 
-                if new_lr != current_lr:
-                    current_lr = new_lr
+                    if new_lr != current_lr:
+                        current_lr = new_lr
 
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    best_vae = deepcopy(vae.state_dict())
-                    patience = 0
-                else:
-                    patience += 1
-                    if patience == 10:
-                        if beta > self.vae_min_beta:
-                            beta = beta * self.vae_lambda
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        best_vae = deepcopy(vae.state_dict())
+                        patience = 0
+                    else:
+                        patience += 1
+                        if patience == 10:
+                            if beta > self.vae_min_beta:
+                                beta = beta * self.vae_lambda
 
-        vae.load_state_dict(best_vae)
+        if use_validation:
+            vae.load_state_dict(best_vae)
         vae.eval()
-        return vae
+        return vae, time.monotonic() - start_time
 
     def _encode_vae(self, vae, x):
         pre_encoder = Encoder_model(
             self.vae_num_layers,
             self.d_numerical,
-            self.categories,
+            self.embedding_categories,
             self.vae_d_token,
             self.vae_n_head,
             self.vae_factor,
@@ -419,7 +443,7 @@ class TabSynGenerator(BaseGenerator):
             train_z = np.concatenate(train_z)
         return train_z
 
-    def _train_diffusion(self, train_z):
+    def _train_diffusion(self, train_z, epochs, time_cap, X_val=None):
         train_z = torch.from_numpy(train_z).float()
         train_z = train_z[:, 1:, :]
         B, num_tokens, self.token_dim = train_z.shape
@@ -457,17 +481,15 @@ class TabSynGenerator(BaseGenerator):
         )
         scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.9, patience=20)
         model.train()
+        self.model = model
 
-        epochs = resolve_epochs_from_training_steps(
-            self.epochs,
-            self.training_steps,
-            B,
-            self.batch_size,
-        )
+        best_val_score = float("inf")
+        best_val_model = None
         start_time = time.monotonic()
         timed_out = False
+        stop_training = False
         step = 0
-        for _ in tqdm(range(epochs)):
+        for epoch in tqdm(range(epochs)):
             batch_loss = 0.0
             len_input = 0
             for _, inputs in train_loader:
@@ -483,36 +505,69 @@ class TabSynGenerator(BaseGenerator):
                 optimizer.step()
                 step += 1
                 if (
-                    self.cap_train_time is not None
-                    and step % self.log_steps == 0
-                    and time.monotonic() - start_time > self.cap_train_time
+                    X_val is not None
+                    and self.training_steps is not None
+                    and step > 0
+                    and step % self.val_steps == 0
                 ):
-                    print(f"Training timed out after {self.cap_train_time} seconds.")
+                    model.eval()
+                    score = validate_c2st(self, X_val, random_state=self.random_state)
+                    if score < best_val_score:
+                        best_val_score = score
+                        best_val_model = clone_state_dict(model)
+                    else:
+                        stop_training = True
+                        break
+                    model.train()
+
+                if time_cap is not None and time.monotonic() - start_time > time_cap:
+                    print(f"Training timed out after {time_cap} seconds.")
                     timed_out = True
                     break
 
             curr_loss = batch_loss / len_input
             scheduler.step(curr_loss)
-            if timed_out:
+            if (
+                X_val is not None
+                and self.training_steps is None
+                and (epoch + 1) % self.val_steps == 0
+            ):
+                model.eval()
+                score = validate_c2st(self, X_val, random_state=self.random_state)
+                if score < best_val_score:
+                    best_val_score = score
+                    best_val_model = clone_state_dict(model)
+                else:
+                    stop_training = True
+            if timed_out or stop_training:
                 break
 
+        if best_val_model is not None:
+            model.load_state_dict(
+                {k: v.to(self.device) for k, v in best_val_model.items()}
+            )
+        model.eval()
         return model
 
     def _compute_loss(self, X_num, X_cat, Recon_X_num, Recon_X_cat, mu_z, logvar_z):
         mse_loss = (X_num - Recon_X_num).pow(2).mean()
-        ce_loss = 0
-        acc = 0
-        total_num = 0
+        ce_loss = X_num.new_tensor(0.0)
+        acc = X_num.new_tensor(0.0)
+        total_num = X_num.new_tensor(0.0)
+        ce_terms = 0
 
         for idx, x_cat in enumerate(Recon_X_cat):
             if x_cat is not None:
-                ce_loss += CE_LOSS_FN(x_cat, X_cat[:, idx])
+                valid = X_cat[:, idx] < x_cat.shape[1]
+                if valid.any():
+                    ce_loss += CE_LOSS_FN(x_cat[valid], X_cat[valid, idx])
+                    ce_terms += 1
                 x_hat = x_cat.argmax(dim=-1)
-            acc += (x_hat == X_cat[:, idx]).float().sum()
-            total_num += x_hat.shape[0]
+                acc += (x_hat[valid] == X_cat[valid, idx]).float().sum()
+                total_num += valid.float().sum()
 
-        ce_loss /= idx + 1
-        acc /= total_num
+        ce_loss = ce_loss / max(ce_terms, 1)
+        acc = acc / total_num.clamp_min(1)
         # loss = mse_loss + ce_loss
 
         temp = 1 + logvar_z - mu_z.pow(2) - logvar_z.exp()
@@ -520,31 +575,23 @@ class TabSynGenerator(BaseGenerator):
         loss_kld = -0.5 * torch.mean(temp.mean(-1).mean())
         return mse_loss, ce_loss, loss_kld, acc
 
-    def save(self, path):
-        path = Path(path)
-        state = {
-            "random_state": self.random_state,
-            "target_column": self.target_column,
-            "val_size": self.val_size,
+    def _state(self):
+        return {
             "vae_num_layers": self.vae_num_layers,
-            "vae_training_steps": self.vae_training_steps,
             "vae_d_token": self.vae_d_token,
             "vae_n_head": self.vae_n_head,
             "vae_factor": self.vae_factor,
-            "batch_size": self.batch_size,
-            "epochs": self.epochs,
-            "training_steps": self.training_steps,
-            "lr": self.lr,
             "embedding_dim": self.embedding_dim,
             "mlp_dim": self.mlp_dim,
             "mlp_layers": self.mlp_layers,
             "num_timesteps": self.num_timesteps,
-            "cap_train_time": self.cap_train_time,
-            "log_steps": self.log_steps,
+            "target_column": self.target_column,
             "ori_columns": self.ori_columns,
             "discrete_features": self.discrete_features,
             "numerical_features": self.numerical_features,
             "ordinal_encoder": self.ordinal_encoder,
+            "category_unknown_indices": self.category_unknown_indices,
+            "embedding_categories": self.embedding_categories,
             "scaler": self.scaler,
             "d_numerical": self.d_numerical,
             "categories": self.categories,
@@ -552,46 +599,42 @@ class TabSynGenerator(BaseGenerator):
             "token_dim": self.token_dim,
             "train_z_mean": self.train_z_mean,
         }
-        save_generator_state(path, state)
+
+    def _save_extra(self, path: Path) -> None:
         torch.save(self.model.state_dict(), path / "diffusion_model.pt")
         torch.save(self.pre_decoder.state_dict(), path / "pre_decoder.pt")
-        return path
 
-    @classmethod
-    def load(cls, path):
-        path = Path(path)
-        generator = restore_generator(cls, load_generator_state(path))
-        generator.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        if not hasattr(generator, "embedding_dim"):
-            generator.embedding_dim = generator.diffusion_dim_t
-        generator.mlp_dim = getattr(generator, "mlp_dim", generator.embedding_dim * 2)
-        generator.mlp_layers = getattr(generator, "mlp_layers", 2)
+    def _load_extra(self, path: Path) -> None:
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if not hasattr(self, "embedding_dim"):
+            self.embedding_dim = self.diffusion_dim_t
+        self.mlp_dim = getattr(self, "mlp_dim", self.embedding_dim * 2)
+        self.mlp_layers = getattr(self, "mlp_layers", 2)
 
-        generator.pre_decoder = Decoder_model(
-            generator.vae_num_layers,
-            generator.d_numerical,
-            generator.categories,
-            generator.vae_d_token,
-            generator.vae_n_head,
-            generator.vae_factor,
+        self.pre_decoder = Decoder_model(
+            self.vae_num_layers,
+            self.d_numerical,
+            self.categories,
+            self.vae_d_token,
+            self.vae_n_head,
+            self.vae_factor,
             bias=True,
-        ).to(generator.device)
-        generator.pre_decoder.load_state_dict(
-            torch.load(path / "pre_decoder.pt", map_location=generator.device)
+        ).to(self.device)
+        self.pre_decoder.load_state_dict(
+            torch.load(path / "pre_decoder.pt", map_location=self.device)
         )
-        generator.pre_decoder.eval()
+        self.pre_decoder.eval()
 
         denoise_fn = MLPDiffusion(
-            generator.sample_dim,
-            generator.embedding_dim,
-            mlp_dim=generator.mlp_dim,
-            mlp_layers=generator.mlp_layers,
-        ).to(generator.device)
-        generator.model = Model(denoise_fn=denoise_fn, hid_dim=generator.sample_dim).to(
-            generator.device
+            self.sample_dim,
+            self.embedding_dim,
+            mlp_dim=self.mlp_dim,
+            mlp_layers=self.mlp_layers,
+        ).to(self.device)
+        self.model = Model(denoise_fn=denoise_fn, hid_dim=self.sample_dim).to(
+            self.device
         )
-        generator.model.load_state_dict(
-            torch.load(path / "diffusion_model.pt", map_location=generator.device)
+        self.model.load_state_dict(
+            torch.load(path / "diffusion_model.pt", map_location=self.device)
         )
-        generator.model.eval()
-        return generator
+        self.model.eval()

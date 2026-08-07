@@ -149,8 +149,8 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
             t.squeeze(), sigma=sigma_num
         )
 
-        d_loss = torch.zeros((1,)).float()
-        c_loss = torch.zeros((1,)).float()
+        d_loss = torch.zeros((1,), device=device, dtype=x.dtype)
+        c_loss = torch.zeros((1,), device=device, dtype=x.dtype)
 
         if x_num.shape[1] > 0:
             c_loss = self._edm_loss(model_out_num, x_num, sigma_num)
