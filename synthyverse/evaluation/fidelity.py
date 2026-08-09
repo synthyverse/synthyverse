@@ -67,9 +67,12 @@ class ClassifierTwoSampleTest(BaseMetric):
             If None, XGBoost uses {"n_estimators": 500, "early_stopping_rounds": 30}
             and other models use no extra parameters.
         nfold (int): Number of cross-validation folds. Default: 3.
+        test_repeats (int): Number of synthetic subsamples to score against X_test
+            when X_test is provided. Default: 3.
 
     Outputs:
-        "c2st.auc"; lower scores indicate better fidelity.
+        "c2st.auc" and, when X_test is provided, "c2st.test.auc";
+        lower scores indicate better fidelity.
 
     Example:
         >>> import pandas as pd
@@ -98,11 +101,15 @@ class ClassifierTwoSampleTest(BaseMetric):
         model_params: dict = None,
         nfold: int = 3,
         random_state: int = 0,
+        test_repeats: int = 3,
     ):
         super().__init__(random_state=random_state)
         self.nfold = int(nfold)
         if self.nfold < 2:
             raise ValueError("nfold must be >= 2.")
+        self.test_repeats = int(test_repeats)
+        if self.test_repeats < 1:
+            raise ValueError("test_repeats must be >= 1.")
         self.model_name = model_name
         if model_params is None:
             self.model_params = (
@@ -120,12 +127,43 @@ class ClassifierTwoSampleTest(BaseMetric):
         X_test: pd.DataFrame = None,
         discrete_features: list = None,
     ):
-        x_train = pd.concat([X, X_syn], ignore_index=True).copy()
+        result = {
+            f"{self.name}.auc": self._score_split(X, X_syn, discrete_features),
+        }
+
+        if X_test is not None:
+            if len(X_syn) < len(X_test):
+                raise ValueError(
+                    "ClassifierTwoSampleTest requires X_syn to have at least as "
+                    "many rows as X_test when computing the test score."
+                )
+
+            test_scores = []
+            for repeat in range(self.test_repeats):
+                syn_sample = X_syn.sample(
+                    n=len(X_test),
+                    replace=False,
+                    random_state=self.random_state + repeat,
+                )
+                test_scores.append(
+                    self._score_split(X_test, syn_sample, discrete_features)
+                )
+            result[f"{self.name}.test.auc"] = float(np.mean(test_scores))
+
+        return result
+
+    def _score_split(
+        self,
+        real: pd.DataFrame,
+        syn: pd.DataFrame,
+        discrete_features: list,
+    ) -> float:
+        x_train = pd.concat([real, syn], ignore_index=True).copy()
         y_train = pd.concat(
-            [pd.Series([0] * len(X)), pd.Series([1] * len(X_syn))],
+            [pd.Series([0] * len(real)), pd.Series([1] * len(syn))],
             ignore_index=True,
         )
-        minority_class_size = min(len(X), len(X_syn))
+        minority_class_size = min(len(real), len(syn))
         if minority_class_size < 2:
             raise ValueError(
                 "ClassifierTwoSampleTest requires at least two real and two "
@@ -133,7 +171,7 @@ class ClassifierTwoSampleTest(BaseMetric):
             )
         nfold = min(self.nfold, minority_class_size)
 
-        score = cv_ml_task(
+        return cv_ml_task(
             x_train,
             y_train,
             discrete_features,
@@ -144,10 +182,6 @@ class ClassifierTwoSampleTest(BaseMetric):
             score_fn="auc",
             nfold=nfold,
         )["auc"]
-
-        return {
-            f"{self.name}.auc": score,
-        }
 
 
 class AlphaPrecisionBetaRecall(BaseMetric):

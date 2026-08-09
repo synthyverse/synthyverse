@@ -25,6 +25,8 @@ from ctgan.errors import InvalidDataError
 from ctgan.synthesizers._utils import _set_device, validate_and_set_device
 from ctgan.synthesizers.base import BaseSynthesizer, random_state
 
+from synthyverse.utils.utils import get_total_trainable_params
+
 
 class Discriminator(Module):
     """Discriminator for the CTGAN."""
@@ -391,6 +393,10 @@ class CTGAN(BaseSynthesizer):
             pac=self.pac,
         ).to(self._device)
 
+        print(
+            f"Total trainable parameters: {get_total_trainable_params(self._generator) + get_total_trainable_params(discriminator)}"
+        )
+
         optimizerG = optim.Adam(
             self._generator.parameters(),
             lr=self._generator_lr,
@@ -501,9 +507,8 @@ class CTGAN(BaseSynthesizer):
                 loss_g.backward()
                 optimizerG.step()
                 step += 1
-                if (
-                    validate_callback is not None
-                    and validate_callback(step, i + 1, False)
+                if validate_callback is not None and validate_callback(
+                    step, i + 1, False
                 ):
                     stop_training = True
                     break

@@ -22,7 +22,7 @@ from ..dgm_utils import (
     validate_c2st,
 )
 from ...utils.utils import resolve_epochs_from_training_steps
-
+from ...utils.utils import get_total_trainable_params
 
 CE_LOSS_FN = nn.CrossEntropyLoss()
 
@@ -473,6 +473,8 @@ class TabSynGenerator(BaseGenerator):
         model = Model(denoise_fn=denoise_fn, hid_dim=train_data.shape[1]).to(
             self.device
         )
+
+        print(f"Total trainable parameters: {get_total_trainable_params(model)}")
 
         optimizer = torch.optim.Adam(
             model.parameters(),

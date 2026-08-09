@@ -15,6 +15,8 @@ from ctgan.data_transformer import DataTransformer
 from ctgan.synthesizers._utils import _set_device, validate_and_set_device
 from ctgan.synthesizers.base import BaseSynthesizer, random_state
 
+from ...utils.utils import get_total_trainable_params
+
 
 class Encoder(Module):
     """Encoder for the TVAE.
@@ -168,6 +170,9 @@ class TVAE(BaseSynthesizer):
         self.decoder = Decoder(self.embedding_dim, self.decompress_dims, data_dim).to(
             self._device
         )
+        print(
+            f"Total trainable parameters: {get_total_trainable_params(encoder) + get_total_trainable_params(self.decoder)}"
+        )
         optimizerAE = Adam(
             list(encoder.parameters()) + list(self.decoder.parameters()),
             weight_decay=self.l2scale,
@@ -210,9 +215,8 @@ class TVAE(BaseSynthesizer):
                 batch.append(id_)
                 loss_values.append(loss.detach().cpu().item())
                 step += 1
-                if (
-                    validate_callback is not None
-                    and validate_callback(step, i + 1, False)
+                if validate_callback is not None and validate_callback(
+                    step, i + 1, False
                 ):
                     stop_training = True
                     break

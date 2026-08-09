@@ -261,7 +261,6 @@ class TabularSynthesisBenchmark:
         n_train_seeds: int = 1,
         n_sets: int = 1,
         test_size: float = 0.2,
-        val_size: float = 0.2,
         results_save_path: Union[str, Path] = "results",
         append_results: bool = False,
         max_eval_samples: Optional[int] = None,
@@ -287,8 +286,6 @@ class TabularSynthesisBenchmark:
                 generator. Default: 1.
             test_size (float): Fraction of data reserved for testing.
                 Default: 0.2.
-            val_size (float): Fraction of metric training data reserved for
-                validation internally when metrics need it. Default: 0.2.
             results_save_path (str or Path): Directory or CSV path for
                 evaluation results. If a directory is provided, results are
                 written to ``<results_save_path>/<generator>.csv``.
@@ -311,7 +308,7 @@ class TabularSynthesisBenchmark:
         """
         if self.model_save_dir is None:
             raise ValueError("model_save_dir must be set to load saved generators.")
-        self._validate_split_config(test_size, val_size)
+        self._validate_test_size(test_size)
         self._validate_metrics(metrics)
         max_eval_samples = self._effective_max_eval_samples(max_eval_samples)
         results_path = self._resolve_results_path(results_save_path)
@@ -337,7 +334,6 @@ class TabularSynthesisBenchmark:
                 n_sets=n_sets,
                 train_seed=train_seed,
                 max_eval_samples=max_eval_samples,
-                val_size=val_size,
             )
             result_rows.extend(rows)
             new_rows.extend(rows)
@@ -351,7 +347,6 @@ class TabularSynthesisBenchmark:
         n_train_seeds: int = 1,
         n_sets: int = 1,
         test_size: float = 0.2,
-        val_size: float = 0.2,
         results_save_path: Union[str, Path] = "results",
         append_results: bool = False,
         max_eval_samples: Optional[int] = None,
@@ -364,7 +359,7 @@ class TabularSynthesisBenchmark:
         """
         if self.dataset_save_dir is None:
             raise ValueError("dataset_save_dir must be set to evaluate saved datasets.")
-        self._validate_split_config(test_size, val_size)
+        self._validate_test_size(test_size)
         self._validate_metrics(metrics)
         max_eval_samples = self._effective_max_eval_samples(max_eval_samples)
         results_path = self._resolve_results_path(results_save_path)
@@ -412,7 +407,6 @@ class TabularSynthesisBenchmark:
                     train_seed=train_seed,
                     set_index=set_index,
                     sampling_seed=sampling_seed,
-                    val_size=val_size,
                 )
                 result_rows.extend(rows)
                 new_rows.extend(rows)
@@ -426,7 +420,6 @@ class TabularSynthesisBenchmark:
         n_train_seeds: int = 1,
         n_sets: int = 1,
         test_size: float = 0.2,
-        val_size: float = 0.2,
         full_determinism: bool = False,
         results_save_path: Union[str, Path] = "results",
         max_eval_samples: Optional[int] = None,
@@ -445,9 +438,6 @@ class TabularSynthesisBenchmark:
                 generator. Default: 1.
             test_size (float): Fraction of data reserved for testing.
                 Default: 0.2.
-            val_size (float): Fraction of training data reserved internally by
-                metrics that need validation data. Generator validation is
-                configured via ``generator_params``. Default: 0.2.
             full_determinism (bool): Whether fitted generators should request
                 stricter deterministic framework behavior. Default: False.
             results_save_path (str or Path): Directory or CSV path for all
@@ -463,7 +453,7 @@ class TabularSynthesisBenchmark:
             >>> metrics = ["marginals", "dcr"]
             >>> results = benchmark.run(metrics=metrics, n_train_seeds=3, n_sets=2)
         """
-        self._validate_split_config(test_size, val_size)
+        self._validate_test_size(test_size)
         self._validate_metrics(metrics)
         max_eval_samples = self._effective_max_eval_samples(max_eval_samples)
         results_path = self._resolve_results_path(results_save_path)
@@ -520,7 +510,6 @@ class TabularSynthesisBenchmark:
                 n_sets=n_sets,
                 train_seed=train_seed,
                 max_eval_samples=max_eval_samples,
-                val_size=val_size,
             )
             result_rows.extend(rows)
             new_rows.extend(rows)
@@ -653,7 +642,6 @@ class TabularSynthesisBenchmark:
         n_sets: int,
         train_seed: int,
         max_eval_samples: Optional[int],
-        val_size: float,
     ) -> list[dict[str, Any]]:
         result_rows = []
         for set_index in memory_guarded(range(n_sets)):
@@ -710,7 +698,6 @@ class TabularSynthesisBenchmark:
                     train_seed=train_seed,
                     set_index=set_index,
                     sampling_seed=sampling_seed,
-                    val_size=val_size,
                 )
             )
 
@@ -725,7 +712,6 @@ class TabularSynthesisBenchmark:
         train_seed: int,
         set_index: int,
         sampling_seed: int,
-        val_size: float,
     ) -> list[dict[str, Any]]:
         from synthyverse.evaluation.eval import TabularMetricEvaluator
 
@@ -736,7 +722,6 @@ class TabularSynthesisBenchmark:
             metrics=metrics,
             target_column=self.target_column,
             random_state=sampling_seed,
-            val_size=val_size,
         )
         evaluation_start_time = perf_counter()
         metric_results = evaluator.evaluate(
@@ -924,12 +909,6 @@ class TabularSynthesisBenchmark:
     def _validate_test_size(test_size: float) -> None:
         if not 0 < test_size < 1:
             raise ValueError("test_size must be between 0 and 1.")
-
-    @staticmethod
-    def _validate_split_config(test_size: float, val_size: float) -> None:
-        TabularSynthesisBenchmark._validate_test_size(test_size)
-        if not 0 <= val_size < 1:
-            raise ValueError("val_size must be non-negative and less than 1.")
 
     @staticmethod
     def _validate_max_eval_samples(max_eval_samples: Optional[int]) -> Optional[int]:

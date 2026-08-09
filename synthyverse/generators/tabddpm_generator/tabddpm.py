@@ -20,6 +20,7 @@ from ..dgm_utils import (
 )
 from ...utils.utils import resolve_epochs_from_training_steps
 from .gaussian_multinomial_diffsuion import GaussianMultinomialDiffusion
+from ...utils.utils import get_total_trainable_params
 
 
 class TabDDPMGenerator(BaseGenerator):
@@ -234,6 +235,10 @@ class TabDDPMGenerator(BaseGenerator):
             scheduler=self.scheduler,
             device=self.device,
         ).to(self.device)
+
+        print(
+            f"Total trainable parameters: {get_total_trainable_params(self.diffusion)}"
+        )
 
         self.ema_model = deepcopy(self.diffusion.denoise_fn)
         for param in self.ema_model.parameters():

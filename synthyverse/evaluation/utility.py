@@ -32,7 +32,7 @@ class MLE(BaseMetric):
             For XGBoost, passing ``early_stopping_rounds`` enables early stopping
             and requires ``val_size > 0``.
         val_size (float): Fraction of the fitting train set reserved for
-            validation when XGBoost early stopping needs it. Default: 0.2.
+            validation when XGBoost early stopping needs it. Default: 0.15.
         include_baseline (bool): Whether to compute and include the real-train/
             real-test baseline. Default: True.
 
@@ -70,7 +70,7 @@ class MLE(BaseMetric):
         train_set: str = "synthetic",  # whether to compute TSTR or TRTS
         model_name: str = "xgboost",
         model_params: dict = None,
-        val_size: float = 0.2,
+        val_size: float = 0.15,
         include_baseline: bool = True,
     ):
         super().__init__(random_state=random_state)

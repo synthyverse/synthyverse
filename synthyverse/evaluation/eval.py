@@ -53,8 +53,6 @@ class TabularMetricEvaluator:
         metrics (Union[dict, list]): Dictionary mapping metric names to their parameters, or list of metric names (will use default parameters). Dictionaries can be used to specify metric hyperparameters, and compute different configurations of the same metric (see the example below).
         target_column (str): Name of the target column for supervised metrics. Default: "target".
         random_state (int): Random seed for reproducibility. Default: 0.
-        val_size (float): Fraction of training data metrics may reserve for
-            validation internally. Default: 0.2.
 
     Example:
         >>> import pandas as pd
@@ -71,7 +69,7 @@ class TabularMetricEvaluator:
         >>> metrics = ["mle"]
         >>>
         >>> # Compute different configurations of the same metric by adding a dash to the metric name
-        >>> metrics = {"mle-trts": {"train_set":"real"}, "mle-tstr": {"train_set":"synthetic"}}
+        >>> metrics = {"mle-trts": {"train_set":"real"}, "mle-tstr": {"train_set":"synthetic", "val_size": 0.2}}
         >>>
         >>> # Create evaluator
         >>> evaluator = TabularMetricEvaluator(
@@ -93,7 +91,6 @@ class TabularMetricEvaluator:
         metrics: Union[dict, list],
         target_column: str = "target",
         random_state: int = 0,
-        val_size: float = 0.2,
     ):
 
         if isinstance(metrics, list):
@@ -104,9 +101,6 @@ class TabularMetricEvaluator:
             raise ValueError("metrics must be a list or a dictionary")
         self.target_column = target_column
         self.random_state = random_state
-        if not 0 <= val_size < 1:
-            raise ValueError("val_size must be non-negative and less than 1.")
-        self.val_size = val_size
 
     def evaluate(
         self,
@@ -155,8 +149,6 @@ class TabularMetricEvaluator:
             required_params = inspect.signature(metric_cls.__init__).parameters.keys()
             if "target_column" in required_params:
                 params["target_column"] = self.target_column
-            if "val_size" in required_params and "val_size" not in params:
-                params["val_size"] = self.val_size
             metric = metric_cls(**params)
             metric_result = metric.evaluate(
                 x,
