@@ -38,10 +38,11 @@ class TabSynGenerator(BaseGenerator):
 
     Args:
         target_column (str): Name of the target column, potentially used for stratified validation splitting. Default: None.
-        val_size_vae (float): Fraction of training rows reserved for VAE
+        val_size (float): Fraction of training rows reserved for VAE
             learning-rate / beta scheduling. Default: 0.15.
-        val_size_diffusion (float): Fraction of training rows reserved for
-            diffusion C2ST early stopping. Default: 0.0.
+        validate_diffusion (bool): Whether to reuse the VAE validation set
+            for diffusion C2ST early stopping. When False, validation rows
+            are added back for diffusion training. Default: False.
         val_steps (int): Epochs between diffusion validation, or training steps when ``training_steps`` is provided. Default: 5000.
         batch_size (int): Batch size applied to both VAE and diffusion training. Default: 4096.
         epochs (int): Maximum number of diffusion training epochs. Default: 10001.
@@ -101,8 +102,8 @@ class TabSynGenerator(BaseGenerator):
     def __init__(
         self,
         target_column: Optional[str] = None,
-        val_size_vae: float = 0.15,
-        val_size_diffusion: float = 0.0,
+        val_size: float = 0.15,
+        validate_diffusion: bool = False,
         val_steps: int = 5000,
         vae_lr: float = 1e-3,
         vae_wd: float = 0,
@@ -130,8 +131,8 @@ class TabSynGenerator(BaseGenerator):
     ):
         super().__init__(random_state=random_state, full_determinism=full_determinism)
         self.target_column = target_column
-        self.val_size_vae = val_size_vae
-        self.val_size_diffusion = val_size_diffusion
+        self.val_size = val_size
+        self.validate_diffusion = validate_diffusion
         self.val_steps = val_steps
         self.batch_size = batch_size
         self.epochs = epochs
@@ -161,26 +162,22 @@ class TabSynGenerator(BaseGenerator):
         x = X.copy()
         self.ori_columns = X.columns
         self.discrete_features = list(discrete_features)
-        if self.val_size_vae >= 1:
-            raise ValueError("TabSyn requires val_size_vae to be less than 1.")
-        if self.val_size_diffusion >= 1:
-            raise ValueError("TabSyn requires val_size_diffusion to be less than 1.")
+        if self.val_size >= 1:
+            raise ValueError("TabSyn requires val_size to be less than 1.")
+        if self.validate_diffusion and self.val_size <= 0:
+            raise ValueError(
+                "TabSyn requires val_size to be greater than 0 when validate_diffusion=True."
+            )
 
-        x, x_val_vae_raw = split_validation(
+        x, x_val_raw = split_validation(
             x,
-            self.val_size_vae,
+            self.val_size,
             self.target_column,
             self.discrete_features,
             self.random_state,
         )
-        x_diffusion, x_val_diffusion_raw = split_validation(
-            x,
-            self.val_size_diffusion,
-            self.target_column,
-            self.discrete_features,
-            self.random_state,
-        )
-        x_val_vae = x_val_vae_raw.copy() if x_val_vae_raw is not None else None
+        x_val_vae = x_val_raw.copy() if x_val_raw is not None else None
+        x_val_diffusion_raw = x_val_raw if self.validate_diffusion else None
 
         self.category_unknown_indices = np.array(
             self._categorical_cardinalities(self.discrete_features)
@@ -192,14 +189,14 @@ class TabSynGenerator(BaseGenerator):
         ]
         self.scaler.fit(x[self.numerical_features])
         x[self.numerical_features] = self.scaler.transform(x[self.numerical_features])
-        if x_val_diffusion_raw is not None:
-            x_diffusion[self.numerical_features] = self.scaler.transform(
-                x_diffusion[self.numerical_features]
-            )
         if x_val_vae is not None:
             x_val_vae[self.numerical_features] = self.scaler.transform(
                 x_val_vae[self.numerical_features]
             )
+        if self.validate_diffusion or x_val_vae is None:
+            x_diffusion = x
+        else:
+            x_diffusion = pd.concat([x, x_val_vae], ignore_index=True)
 
         vae_batch_size = min(self.batch_size, len(x))
         vae_epochs = resolve_epochs_from_training_steps(
