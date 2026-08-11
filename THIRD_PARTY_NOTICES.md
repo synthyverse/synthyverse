@@ -59,6 +59,16 @@ The MIT license text for these adapted implementations is kept in
 - Modifications: `Refactored API, simple ordinal encoding for categories.`
 - Upstream NOTICE text, if any: `None`
 
+### ForestDiffusionGenerator
+
+- Synthyverse files: `synthyverse/generators/forestdiffusion_generator/*`
+- Upstream project: `ForestDiffusion-MO (https://github.com/layer6ai-labs/forest-diffusion-mo)`
+- Upstream license: MIT License
+- Upstream copyright notice: `Copyright (c) 2026 Layer 6 AI`
+- Imported or last compared against: `Commit 93edb9f`
+- Modifications: `Refactored API, allow storing XGBoost models in-memory.`
+- Upstream NOTICE text, if any: `None`
+
 ## Apache-2.0-licensed adapted implementations
 
 The Apache-2.0 license text for these adapted implementations is kept in

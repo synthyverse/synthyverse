@@ -22,6 +22,7 @@ _BASE_GENERATORS = {
     "SynthpopGenerator": (".synthpop_generator", "synthpop"),
     "XGBDDPMGenerator": (".xgbddpm_generator", "xgbddpm"),
     "XGBDiffusionGenerator": (".xgbdiffusion_generator", "xgbdiffusion"),
+    "ForestDiffusionGenerator": (".forestdiffusion_generator", "forestdiffusion"),
 }
 
 _CTGAN_GENERATORS = {

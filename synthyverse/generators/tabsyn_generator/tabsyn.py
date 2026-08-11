@@ -378,8 +378,8 @@ class TabSynGenerator(BaseGenerator):
                         )
                     )
                     # fixed bug: zeroing out mse loss
-                    # val_loss = val_mse_loss.item() * 0 + val_ce_loss.item()
-                    val_loss = val_mse_loss.item() + val_ce_loss.item()
+                    val_loss = val_mse_loss.item() * 0 + val_ce_loss.item()
+                    # val_loss = val_mse_loss.item() + val_ce_loss.item()
 
                     scheduler.step(val_loss)
                     new_lr = optimizer.param_groups[0]["lr"]
