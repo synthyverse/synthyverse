@@ -36,16 +36,24 @@ class Discretizer:
             self.disttree.fit(X_num_trn)
             groups = self.disttree.get_groups(X_num_trn)
 
-        if self.adjust_means:
-            means, stds = [], []
+        if self.variant == "gmm":
+            means = []
+            stds = []
             for i in range(X_num_trn.shape[1]):
+                raw_means = torch.tensor(self.gmms[i].means_.squeeze(), dtype=torch.float32)
+                raw_stds = torch.tensor(np.sqrt(self.gmms[i].covariances_.squeeze()), dtype=torch.float32)
                 df = pd.DataFrame({"x": X_num_trn[:, i].clone(), "group": groups[:, i]})
-                df_stats = df.groupby("group").agg(["mean", "std"]).droplevel(0, axis=1)
-                means.append(torch.tensor(df_stats["mean"].to_numpy(), dtype=torch.float32))
-                stds.append(torch.tensor(df_stats["std"].to_numpy(), dtype=torch.float32))
-        elif self.variant == "gmm":
-            means = [torch.tensor(gmm.means_.squeeze(), dtype=torch.float32) for gmm in self.gmms]
-            stds = [torch.tensor(np.sqrt(gmm.covariances_.squeeze()), dtype=torch.float32) for gmm in self.gmms]
+                df_stats = df.groupby("group").agg(["mean", "std", "count"]).droplevel(0, axis=1)
+                if self.adjust_means:
+                    for group_id, row in df_stats.iterrows():
+                        raw_means[int(group_id)] = row["mean"]
+                        if row["count"] > 1 and np.isfinite(row["std"]):
+                            raw_stds[int(group_id)] = row["std"]
+                cats = torch.as_tensor(self.gmm_ord_enc.categories_[i])
+                cats = cats[~torch.isnan(cats)].long()
+                means.append(raw_means[cats])
+                stds.append(raw_stds[cats])
+
         elif self.variant == "dt":
             means = [torch.tensor(m, dtype=torch.float32) for m in self.disttree.means]
             stds = [torch.tensor(s, dtype=torch.float32) for s in self.disttree.stds]
@@ -55,9 +63,10 @@ class Discretizer:
         for i in range(X_num_trn.shape[1]):
             df = pd.DataFrame({"x": X_num_trn[:, i].clone(), "group": groups[:, i]})
             df_stats = df.groupby("group").agg(["mean", "std"]).droplevel(0, axis=1)
-            infl_idx = df_stats.loc[df_stats["std"] == 0].index.to_list()
+            infl_idx = df_stats.index[df_stats["std"] == 0].astype(int).to_list()
             self.has_inflated.append(len(infl_idx) > 0)
             self.infl_groups.append(infl_idx)
+            means[i][infl_idx] = torch.tensor(df_stats.loc[infl_idx, "mean"].to_numpy(), dtype=torch.float32)
             stds[i][infl_idx] = 0
 
         if self.has_missing.any():
@@ -67,26 +76,6 @@ class Discretizer:
                     stds[i] = torch.cat((torch.zeros(1), stds[i]))
         self.means = means
         self.stds = stds
-
-    def encode(self, X):
-        groups = self._get_gmm_groups(X) if self.variant == "gmm" else self.disttree.get_groups(X)
-        return (*self.postprocess_groups(groups), self.infl_groups, self.has_missing)
-
-    def postprocess_groups(self, groups):
-        infl_mask = []
-        for i in range(groups.shape[1]):
-            infl_mask.append(torch.tensor(np.isin(groups[:, i], self.infl_groups[i]), dtype=torch.bool))
-        infl_mask = torch.column_stack(infl_mask)
-
-        miss_mask = []
-        for i in range(groups.shape[1]):
-            g_i = groups[:, i]
-            miss_mask.append(np.isnan(g_i))
-            if self.has_missing[i]:
-                groups[:, i] = np.nan_to_num(g_i.copy() + 1, nan=0, copy=True)
-        miss_mask = np.column_stack(miss_mask) if len(miss_mask) > 0 else None
-        miss_mask = torch.tensor(miss_mask, dtype=torch.bool) if self.has_missing.any() else None
-        return torch.tensor(groups, dtype=torch.long), miss_mask | infl_mask if miss_mask is not None else infl_mask
 
     def _get_gmm_groups(self, X):
         groups = []
@@ -102,7 +91,36 @@ class Discretizer:
             self.fit_gmm_ord_enc = False
             self.gmm_ord_enc = OrdinalEncoder()
             self.gmm_ord_enc.fit(groups)
-        return self.gmm_ord_enc.transform(groups)
+        groups = self.gmm_ord_enc.transform(groups)
+        return groups
+
+    def encode(self, X):
+        if self.variant == "gmm":
+            groups = self._get_gmm_groups(X)
+        elif self.variant == "dt":
+            groups = self.disttree.get_groups(X)
+        groups, mask = self.postprocess_groups(groups)
+        return groups, mask, self.infl_groups, self.has_missing
+
+    def postprocess_groups(self, groups):
+        infl_mask = []
+        for i in range(groups.shape[1]):
+            mask = np.isin(groups[:, i], self.infl_groups[i])
+            infl_mask.append(torch.tensor(mask, dtype=torch.bool))
+        infl_mask = torch.column_stack(infl_mask)
+        miss_mask = []
+        for i in range(groups.shape[1]):
+            g_i = groups[:, i]
+            miss_mask.append(np.isnan(g_i))
+            if self.has_missing[i]:
+                new_g_i = g_i.copy() + 1
+                new_g_i = np.nan_to_num(new_g_i, nan=0, copy=True)
+                groups[:, i] = new_g_i
+        miss_mask = np.column_stack(miss_mask) if len(miss_mask) > 0 else None
+        miss_mask = torch.tensor(miss_mask, dtype=torch.bool) if self.has_missing.any() else None
+        mask = miss_mask | infl_mask if miss_mask is not None else infl_mask
+        groups = torch.tensor(groups, dtype=torch.long)
+        return groups, mask
 
     def _train_bgmms(self, X, k_max=20):
         bgmms = []
