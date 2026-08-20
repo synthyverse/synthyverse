@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "synthyverse"
-version = "0.2.5"
+version = "0.2.6"
 description = "Synthetic data generation and evaluation library"
 readme = "README.md"
 requires-python = ">=3.8"

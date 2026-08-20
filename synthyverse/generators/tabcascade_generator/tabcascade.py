@@ -142,6 +142,7 @@ class TabCascadeGenerator(BaseGenerator):
         embedding_dim: int = 256,
         num_timesteps: int = 200,
         encoder: str = "dt",
+        adjust_means: bool = False,
         max_depth: int = 8,
         k_max: int = 10,
         lowres_cat_emb_dim: int = 16,
@@ -189,27 +190,10 @@ class TabCascadeGenerator(BaseGenerator):
             variant=self.config.data.encoder,
             seed=self.random_state,
             k_max=self.config.data.k_max,
+            adjust_means=self.config.data.adjust_means,
             max_depth=self.config.data.max_depth,
         )
         groups, mask, infl_groups, has_miss = self.z_encoder.encode(x_num)
-
-        if self.config.data.encoder == "gmm":
-            for i in range(groups.shape[1]):
-                raw_groups = self.z_encoder.gmm_ord_enc.categories_[i]
-                raw_groups = torch.tensor(
-                    raw_groups[~pd.isna(raw_groups)], dtype=torch.long
-                )
-                idx = raw_groups + 1 if has_miss[i] else raw_groups
-                if has_miss[i]:
-                    idx = torch.cat((torch.zeros(1, dtype=torch.long), idx))
-                self.z_encoder.means[i] = self.z_encoder.means[i][idx]
-                self.z_encoder.stds[i] = self.z_encoder.stds[i][idx]
-                infl_groups_i = torch.tensor(infl_groups[i], dtype=torch.long)
-                self.z_encoder.stds[i][infl_groups_i + int(has_miss[i])] = 0
-            self.gmm_ord_enc = OrdinalEncoder()
-            groups = self.gmm_ord_enc.fit_transform(groups.numpy())
-            groups = torch.from_numpy(groups).long()
-
         self.z_means = self.z_encoder.means
         self.z_stds = self.z_encoder.stds
         return groups, mask, infl_groups, has_miss
@@ -508,13 +492,7 @@ class TabCascadeGenerator(BaseGenerator):
             batch_size=self.config.highres.model.generation_batch_size,
             verbose=False,
         )
-
-        if self.config.data.encoder == "gmm":
-            z_num_gen_enc = self.gmm_ord_enc.inverse_transform(z_num_gen)
-            z_num_gen_enc = torch.from_numpy(z_num_gen_enc).long()
-        else:
-            z_num_gen_enc = z_num_gen
-        infl_mask, miss_mask = self.get_masks(z_num_gen_enc)
+        infl_mask, miss_mask = self.get_masks(z_num_gen)
         z_num_gen_means = (
             self.highres.get_group_means(
                 z_num_gen.to(self.device) + self.highres.group_offset
@@ -587,6 +565,7 @@ class TabCascadeGenerator(BaseGenerator):
         return config(
             data={
                 "encoder": self.encoder,
+                "adjust_means": self.adjust_means,
                 "max_depth": self.max_depth,
                 "k_max": self.k_max,
                 "batch_size": self.batch_size,
@@ -668,7 +647,6 @@ class TabCascadeGenerator(BaseGenerator):
                 "z_has_miss": self.z_has_miss,
                 "lowres": self.lowres.state_dict(),
                 "highres": self.highres.state_dict(),
-                "gmm_ord_enc": getattr(self, "gmm_ord_enc", None),
             },
             path / "tabcascade.pt",
         )
@@ -685,8 +663,6 @@ class TabCascadeGenerator(BaseGenerator):
         self.z_stds = state["z_stds"]
         self.z_infl_groups = state["z_infl_groups"]
         self.z_has_miss = state["z_has_miss"]
-        if state["gmm_ord_enc"] is not None:
-            self.gmm_ord_enc = state["gmm_ord_enc"]
         self.lowres = self.get_lowres_model().to(self.device)
         self.highres = self.get_highres_model().to(self.device)
         self.lowres.load_state_dict(state["lowres"])
