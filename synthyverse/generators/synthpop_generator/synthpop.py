@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
+from sklearn.metrics import normalized_mutual_info_score
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from tqdm.auto import tqdm
 
@@ -10,7 +11,7 @@ from ..base import BaseGenerator
 class SynthpopGenerator(BaseGenerator):
     """Synthpop generator using sequential decision trees.
 
-    Fits bagged column-order models. Each bag trains one decision tree per
+    Fits bagged autoregressive models. Each bag trains one decision tree per
     column on a random subsample of the real data. The first column in each
     order is sampled from real marginal distributions. Each following column is
     predicted from all columns to its left using a decision tree. Synthetic data
@@ -24,8 +25,12 @@ class SynthpopGenerator(BaseGenerator):
         minibucket_sampling (int): Minimum number of source samples used when
             sampling from honest-tree leaves. Leaves with fewer source samples
             are collapsed upward. Default: 3.
-        K (int): Number of bagged feature-order models. When ``K < 1``, the
-            original feature order is used. Default: 100.
+        K (int): Number of bagged ensemble models. Default: 100.
+        order (str): Feature order strategy for each ensemble member. ``"random"``
+            randomizes the feature order within each member. ``"original"`` keeps
+            the input feature order in every member. ``"mi"`` uses one fixed
+            greedy normalized-mutual-information order, discretizing numerical
+            features into 20 bins. Default: "random".
         n_jobs (int): Number of parallel jobs used during training and
             generation. Default: -1.
         tree_kwargs (dict, optional): Additional keyword arguments passed to
@@ -85,6 +90,7 @@ class SynthpopGenerator(BaseGenerator):
         minibucket: int = 10,
         minibucket_sampling: int = 3,
         K: int = 100,
+        order: str = "random",
         n_jobs: int = -1,
         tree_kwargs: dict = None,
         subsample: float = 1.0,
@@ -108,6 +114,11 @@ class SynthpopGenerator(BaseGenerator):
         self.minibucket = int(minibucket)
         self.minibucket_sampling = int(minibucket_sampling)
         self.K = int(K)
+        if self.K < 1:
+            raise ValueError("K must be at least 1.")
+        self.order = str(order).lower()
+        if self.order not in {"random", "original", "mi"}:
+            raise ValueError("order must be one of 'random', 'original', or 'mi'.")
         self.n_jobs = n_jobs
         self.subsample = float(subsample)
         self.subsample_with_replacement = bool(subsample_with_replacement)
@@ -144,12 +155,14 @@ class SynthpopGenerator(BaseGenerator):
         }
 
         X_np = X.to_numpy(dtype=float)
-        n_models = max(1, self.K)
+        n_models = self.K
         n_cols = len(self.columns)
         self.marginal_values = [X_np[:, i] for i in range(n_cols)]
         self.fit_random_state = self.random_state
         self.tree_kwargs["random_state"] = self.fit_random_state
         self.models = [{} for _ in range(n_models)]
+        if self.order == "mi":
+            self.mi_order = self._mutual_information_order(X_np)
 
         def fit_model(model_idx):
             order = self._feature_order(model_idx)
@@ -178,7 +191,7 @@ class SynthpopGenerator(BaseGenerator):
                 tree = tree_class(**tree_kwargs)
                 tree.fit(X_train[:, predictors], X_train[:, target])
                 columns[target] = tree
-            return model_idx, {"columns": columns}
+            return model_idx, {"columns": columns, "order": order}
 
         fits = Parallel(
             n_jobs=self.n_jobs, prefer="threads", return_as="generator_unordered"
@@ -379,6 +392,12 @@ class SynthpopGenerator(BaseGenerator):
             self._reset_runtime_caches()
 
     def __post_load__(self):
+        self.K = int(self.K)
+        if self.K < 1:
+            raise ValueError("K must be at least 1.")
+        self.order = str(self.order).lower()
+        if self.order not in {"random", "original", "mi"}:
+            raise ValueError("order must be one of 'random', 'original', or 'mi'.")
         self.subsample = float(self.subsample)
         self.subsample_with_replacement = bool(
             getattr(self, "subsample_with_replacement", True)
@@ -399,15 +418,21 @@ class SynthpopGenerator(BaseGenerator):
 
     def _feature_order(self, model_idx):
         n_cols = len(self.columns)
-        if self.K < 1:
+        model = self.models[model_idx]
+        if "order" in model:
+            return model["order"]
+
+        if self.order == "original":
             order = list(range(n_cols))
             if self.condition_y is not None:
                 order = self._condition_order(order)
             return order
+        if self.order == "mi":
+            order = list(self.mi_order)
+            if self.condition_y is not None:
+                order = self._condition_order(order)
+            return order
 
-        model = self.models[model_idx]
-        if "order" in model:
-            return model["order"]
         seed = self._derive_seed(self.fit_random_state, 0, model_idx)
         order = np.random.default_rng(seed).permutation(n_cols).tolist()
         if self.condition_y is not None:
@@ -422,6 +447,35 @@ class SynthpopGenerator(BaseGenerator):
         else:
             order.append(target)
         return order
+
+    def _mutual_information_order(self, X_np):
+        labels = []
+        for col_idx in range(X_np.shape[1]):
+            values = X_np[:, col_idx]
+            labels.append(
+                values
+                if col_idx in self.discrete_idx
+                else np.digitize(values, np.histogram_bin_edges(values, bins=20)[1:-1])
+            )
+
+        n_cols = len(labels)
+        scores = np.zeros((n_cols, n_cols))
+        for i in range(len(labels)):
+            for j in range(i + 1, len(labels)):
+                score = normalized_mutual_info_score(labels[i], labels[j])
+                scores[i, j] = score
+                scores[j, i] = score
+
+        selected = [int(np.argmax(scores.sum(axis=1)))]
+        remaining = set(range(n_cols)) - set(selected)
+        while remaining:
+            next_col = max(
+                remaining,
+                key=lambda col: (scores[col, selected].sum(), -col),
+            )
+            selected.append(next_col)
+            remaining.remove(next_col)
+        return selected
 
     def _train_indices(self, model_idx):
         if not self.subsample_with_replacement and (
@@ -599,6 +653,7 @@ class SynthpopGenerator(BaseGenerator):
         state = {
             "minibucket_sampling": self.minibucket_sampling,
             "K": self.K,
+            "order": self.order,
             "n_jobs": self.n_jobs,
             "subsample": self.subsample,
             "subsample_with_replacement": self.subsample_with_replacement,
@@ -615,6 +670,7 @@ class SynthpopGenerator(BaseGenerator):
             "fit_random_state": self.fit_random_state,
             "models": [
                 {
+                    "order": model["order"],
                     "columns": {
                         col: self._column_tree(model, col) for col in model["columns"]
                     }
@@ -624,4 +680,6 @@ class SynthpopGenerator(BaseGenerator):
         }
         if self.condition_y is not None:
             state["target_column"] = self.target_column
+        if self.order == "mi":
+            state["mi_order"] = self.mi_order
         return state
