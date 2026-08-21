@@ -184,7 +184,7 @@ class TVAE(BaseSynthesizer):
             iterator_description = "Loss: {loss:.3f}"
             iterator.set_description(iterator_description.format(loss=0))
 
-        start_time = time.monotonic()
+        train_time = 0.0
         step = 0
         timed_out = False
         stop_training = False
@@ -192,6 +192,7 @@ class TVAE(BaseSynthesizer):
             loss_values = []
             batch = []
             for id_, data in enumerate(loader):
+                step_start_time = time.monotonic()
                 optimizerAE.zero_grad()
                 real = data[0].to(self._device)
                 mu, std, logvar = encoder(real)
@@ -215,17 +216,18 @@ class TVAE(BaseSynthesizer):
                 batch.append(id_)
                 loss_values.append(loss.detach().cpu().item())
                 step += 1
+                train_time += time.monotonic() - step_start_time
+                if (
+                    self.cap_train_time is not None
+                    and train_time > self.cap_train_time
+                ):
+                    print(f"Training timed out after {self.cap_train_time} seconds.")
+                    timed_out = True
+                    break
                 if validate_callback is not None and validate_callback(
                     step, i + 1, False
                 ):
                     stop_training = True
-                    break
-                if (
-                    self.cap_train_time is not None
-                    and time.monotonic() - start_time > self.cap_train_time
-                ):
-                    print(f"Training timed out after {self.cap_train_time} seconds.")
-                    timed_out = True
                     break
 
             epoch_loss_df = pd.DataFrame(
@@ -247,7 +249,8 @@ class TVAE(BaseSynthesizer):
                     iterator_description.format(loss=loss.detach().cpu().item())
                 )
             if (
-                not stop_training
+                not timed_out
+                and not stop_training
                 and validate_callback is not None
                 and validate_callback(step, i + 1, True)
             ):

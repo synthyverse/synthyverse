@@ -40,10 +40,7 @@ class TabSynGenerator(BaseGenerator):
         target_column (str): Name of the target column, potentially used for stratified validation splitting. Default: None.
         val_size (float): Fraction of training rows reserved for VAE
             learning-rate / beta scheduling. Default: 0.15.
-        validate_diffusion (bool): Whether to reuse the VAE validation set
-            for diffusion C2ST early stopping. When False, validation rows
-            are added back for diffusion training. Default: False.
-        val_steps (int): Epochs between diffusion validation, or training steps when ``training_steps`` is provided. Default: 5000.
+        val_steps (int): Epochs between diffusion training-set C2ST validation, or training steps when ``training_steps`` is provided. Set to <=0 to disable validation. Default: 5000.
         batch_size (int): Batch size applied to both VAE and diffusion training. Default: 4096.
         epochs (int): Maximum number of diffusion training epochs. Default: 10001.
         training_steps (int, optional): Total diffusion training steps. When
@@ -103,7 +100,6 @@ class TabSynGenerator(BaseGenerator):
         self,
         target_column: Optional[str] = None,
         val_size: float = 0.15,
-        validate_diffusion: bool = False,
         val_steps: int = 5000,
         vae_lr: float = 1e-3,
         vae_wd: float = 0,
@@ -132,7 +128,6 @@ class TabSynGenerator(BaseGenerator):
         super().__init__(random_state=random_state, full_determinism=full_determinism)
         self.target_column = target_column
         self.val_size = val_size
-        self.validate_diffusion = validate_diffusion
         self.val_steps = val_steps
         self.batch_size = batch_size
         self.epochs = epochs
@@ -164,10 +159,7 @@ class TabSynGenerator(BaseGenerator):
         self.discrete_features = list(discrete_features)
         if self.val_size >= 1:
             raise ValueError("TabSyn requires val_size to be less than 1.")
-        if self.validate_diffusion and self.val_size <= 0:
-            raise ValueError(
-                "TabSyn requires val_size to be greater than 0 when validate_diffusion=True."
-            )
+        x_train_raw = x.copy()
 
         x, x_val_raw = split_validation(
             x,
@@ -177,7 +169,6 @@ class TabSynGenerator(BaseGenerator):
             self.random_state,
         )
         x_val_vae = x_val_raw.copy() if x_val_raw is not None else None
-        x_val_diffusion_raw = x_val_raw if self.validate_diffusion else None
 
         self.category_unknown_indices = np.array(
             self._categorical_cardinalities(self.discrete_features)
@@ -193,7 +184,7 @@ class TabSynGenerator(BaseGenerator):
             x_val_vae[self.numerical_features] = self.scaler.transform(
                 x_val_vae[self.numerical_features]
             )
-        if self.validate_diffusion or x_val_vae is None:
+        if x_val_vae is None:
             x_diffusion = x
         else:
             x_diffusion = pd.concat([x, x_val_vae], ignore_index=True)
@@ -226,7 +217,7 @@ class TabSynGenerator(BaseGenerator):
         if diffusion_time_cap is not None:
             diffusion_time_cap += max(vae_time_cap - vae_elapsed, 0)
         self.model = self._train_diffusion(
-            train_z, diffusion_epochs, diffusion_time_cap, x_val_diffusion_raw
+            train_z, diffusion_epochs, diffusion_time_cap, x_train_raw
         )
 
         return self
@@ -374,9 +365,7 @@ class TabSynGenerator(BaseGenerator):
                             x_val_num, x_val_cat, Recon_X_num, Recon_X_cat, mu_z, std_z
                         )
                     )
-                    # fixed bug: zeroing out mse loss
                     val_loss = val_mse_loss.item() * 0 + val_ce_loss.item()
-                    # val_loss = val_mse_loss.item() + val_ce_loss.item()
 
                     scheduler.step(val_loss)
                     new_lr = optimizer.param_groups[0]["lr"]
@@ -440,7 +429,7 @@ class TabSynGenerator(BaseGenerator):
             train_z = np.concatenate(train_z)
         return train_z
 
-    def _train_diffusion(self, train_z, epochs, time_cap, X_val=None):
+    def _train_diffusion(self, train_z, epochs, time_cap, X_train):
         train_z = torch.from_numpy(train_z).float()
         train_z = train_z[:, 1:, :]
         B, num_tokens, self.token_dim = train_z.shape
@@ -484,7 +473,7 @@ class TabSynGenerator(BaseGenerator):
 
         best_val_score = float("inf")
         best_val_model = None
-        start_time = time.monotonic()
+        train_time = 0.0
         timed_out = False
         stop_training = False
         step = 0
@@ -492,6 +481,7 @@ class TabSynGenerator(BaseGenerator):
             batch_loss = 0.0
             len_input = 0
             for _, inputs in train_loader:
+                step_start_time = time.monotonic()
                 inputs = inputs.to(self.device)
                 loss = model(inputs)
                 loss = loss.mean()
@@ -503,14 +493,20 @@ class TabSynGenerator(BaseGenerator):
                 loss.backward()
                 optimizer.step()
                 step += 1
+                train_time += time.monotonic() - step_start_time
+                if time_cap is not None and train_time > time_cap:
+                    print(f"Training timed out after {time_cap} seconds.")
+                    timed_out = True
+                    break
+
                 if (
-                    X_val is not None
+                    self.val_steps > 0
                     and self.training_steps is not None
                     and step > 0
                     and step % self.val_steps == 0
                 ):
                     model.eval()
-                    score = validate_c2st(self, X_val, random_state=self.random_state)
+                    score = validate_c2st(self, X_train, random_state=self.random_state)
                     if score < best_val_score:
                         best_val_score = score
                         best_val_model = clone_state_dict(model)
@@ -519,20 +515,18 @@ class TabSynGenerator(BaseGenerator):
                         break
                     model.train()
 
-                if time_cap is not None and time.monotonic() - start_time > time_cap:
-                    print(f"Training timed out after {time_cap} seconds.")
-                    timed_out = True
-                    break
-
             curr_loss = batch_loss / len_input
             scheduler.step(curr_loss)
+            if timed_out or stop_training:
+                break
+
             if (
-                X_val is not None
+                self.val_steps > 0
                 and self.training_steps is None
                 and (epoch + 1) % self.val_steps == 0
             ):
                 model.eval()
-                score = validate_c2st(self, X_val, random_state=self.random_state)
+                score = validate_c2st(self, X_train, random_state=self.random_state)
                 if score < best_val_score:
                     best_val_score = score
                     best_val_model = clone_state_dict(model)

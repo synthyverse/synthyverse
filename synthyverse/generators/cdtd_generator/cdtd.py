@@ -12,7 +12,6 @@ from ..dgm_utils import (
     FastTensorDataLoader,
     QuantileStandardScaler,
     clone_state_dict,
-    split_validation,
     validate_c2st,
 )
 from .layers import MLP, MixedTypeDiffusion
@@ -54,9 +53,7 @@ class CDTDGenerator(BaseGenerator):
         ema_decay (float): Exponential moving average decay. Default: 0.999.
         log_steps (int): Steps between logging. Default: 100.
         cap_train_time (float): Time limit in seconds for training. Default: None.
-        val_size (float): Fraction of training rows reserved for validation set early stopping. Default: 0.0.
-        val_steps (int): Steps between validation. Default: 5000.
-        target_column (str): Name of the target column, potentially used for stratified validation splitting. Default: None.
+        val_steps (int): Steps between training-set C2ST validation. Set to <=0 to disable validation. Default: 5000.
 
     Example:
         >>> import pandas as pd
@@ -106,9 +103,7 @@ class CDTDGenerator(BaseGenerator):
         random_state: int = 0,
         full_determinism: bool = False,
         cap_train_time: Optional[float] = None,
-        val_size: float = 0.0,
         val_steps: int = 5000,
-        target_column: Optional[str] = None,
     ):
         super().__init__(random_state=random_state, full_determinism=full_determinism)
         self.cat_emb_dim = cat_emb_dim
@@ -132,9 +127,7 @@ class CDTDGenerator(BaseGenerator):
         self.ema_decay = ema_decay
         self.log_steps = log_steps
         self.cap_train_time = cap_train_time
-        self.val_size = val_size
         self.val_steps = val_steps
-        self.target_column = target_column
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
         self.discrete_features = discrete_features
@@ -143,23 +136,15 @@ class CDTDGenerator(BaseGenerator):
         ]
         self.col_order = X.columns
 
-        X = X.copy()
+        X_train = X.copy()
 
-        X, X_val = split_validation(
-            X,
-            self.val_size,
-            self.target_column,
-            self.discrete_features,
-            self.random_state,
+        self.quant_encoder = QuantileStandardScaler(X_train.shape[0], self.random_state)
+        X_train[self.numerical_features] = self.quant_encoder.fit_transform(
+            X_train[self.numerical_features].astype(float)
         )
 
-        self.quant_encoder = QuantileStandardScaler(X.shape[0], self.random_state)
-        X[self.numerical_features] = self.quant_encoder.fit_transform(
-            X[self.numerical_features].astype(float)
-        )
-
-        X_discrete = torch.tensor(X[self.discrete_features].to_numpy()).long()
-        X_numerical = torch.tensor(X[self.numerical_features].to_numpy()).float()
+        X_discrete = torch.tensor(X_train[self.discrete_features].to_numpy()).long()
+        X_numerical = torch.tensor(X_train[self.numerical_features].to_numpy()).float()
 
         # --- build diffusion model ---
         self.num_cat_features = X_discrete.shape[1]
@@ -245,9 +230,10 @@ class CDTDGenerator(BaseGenerator):
         best_val_score = float("inf")
         best_val_model = None
 
-        start_time = time.monotonic()
+        train_time = 0.0
         with tqdm(initial=current_step, total=self.training_steps) as pbar:
             while current_step < self.training_steps:
+                step_start_time = time.monotonic()
                 optimizer.zero_grad()
 
                 inputs = next(train_iter)
@@ -277,8 +263,16 @@ class CDTDGenerator(BaseGenerator):
                 for param_group in optimizer.param_groups:
                     param_group["lr"] = scheduler(current_step)
 
+                train_time += time.monotonic() - step_start_time
                 if (
-                    X_val is not None
+                    self.cap_train_time is not None
+                    and train_time > self.cap_train_time
+                ):
+                    print(f"Training timed out after {self.cap_train_time} seconds.")
+                    break
+
+                if (
+                    self.val_steps > 0
                     and current_step % self.val_steps == 0
                     and current_step > 0
                 ):
@@ -286,7 +280,9 @@ class CDTDGenerator(BaseGenerator):
                     self.diff_model.eval()
                     ema_diff_model.store()
                     ema_diff_model.copy_to()
-                    score = validate_c2st(self, X_val, random_state=self.random_state)
+
+                    score = validate_c2st(self, X, random_state=self.random_state)
+                    print(f"Validation score at step {current_step}: {score}")
 
                     if score < best_val_score:
                         best_val_score = score
@@ -300,13 +296,6 @@ class CDTDGenerator(BaseGenerator):
 
                     if stop_training:
                         break
-
-                if (
-                    self.cap_train_time is not None
-                    and (time.monotonic() - start_time) > self.cap_train_time
-                ):
-                    print(f"Training timed out after {self.cap_train_time} seconds.")
-                    break
 
         if best_val_model is None:
             ema_diff_model.copy_to()

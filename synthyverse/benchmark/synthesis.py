@@ -1087,16 +1087,12 @@ class PeakMemoryMonitor:
         self.interval_seconds = interval_seconds
         self.peak_memory_mb: Optional[float] = None
         self.peak_cuda_memory_mb: Optional[float] = None
-        self._baseline_rss_bytes: Optional[int] = None
-        self._baseline_cuda_bytes: Optional[int] = None
         self._peak_rss_bytes: Optional[int] = None
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
     def __enter__(self) -> "PeakMemoryMonitor":
-        self._baseline_rss_bytes = _current_process_memory_bytes()
         self._sample_once()
-        self._baseline_cuda_bytes = _cuda_memory_bytes()
         _reset_cuda_peak_memory()
         self._thread = threading.Thread(target=self._sample_until_stopped, daemon=True)
         self._thread.start()
@@ -1108,12 +1104,8 @@ class PeakMemoryMonitor:
         if self._thread is not None:
             self._thread.join(timeout=1.0)
         self._sample_once()
-        self.peak_memory_mb = _bytes_to_mib(
-            _subtract_baseline(self._peak_rss_bytes, self._baseline_rss_bytes)
-        )
-        self.peak_cuda_memory_mb = _bytes_to_mib(
-            _subtract_baseline(_cuda_peak_memory_bytes(), self._baseline_cuda_bytes)
-        )
+        self.peak_memory_mb = _bytes_to_mib(self._peak_rss_bytes)
+        self.peak_cuda_memory_mb = _bytes_to_mib(_cuda_peak_memory_bytes())
 
     def _sample_until_stopped(self) -> None:
         while not self._stop_event.wait(self.interval_seconds):
@@ -1131,15 +1123,6 @@ def _bytes_to_mib(value: Optional[int]) -> Optional[float]:
     if value is None:
         return None
     return value / BYTES_PER_MIB
-
-
-def _subtract_baseline(
-    value: Optional[int],
-    baseline: Optional[int],
-) -> Optional[int]:
-    if value is None or baseline is None:
-        return None
-    return max(0, value - baseline)
 
 
 def _current_process_memory_bytes() -> Optional[int]:
@@ -1264,18 +1247,6 @@ def _cuda_peak_memory_bytes() -> Optional[int]:
             return None
         torch.cuda.synchronize()
         return int(torch.cuda.max_memory_allocated())
-    except Exception:
-        return None
-
-
-def _cuda_memory_bytes() -> Optional[int]:
-    try:
-        import torch
-
-        if not torch.cuda.is_available():
-            return None
-        torch.cuda.synchronize()
-        return int(torch.cuda.memory_allocated())
     except Exception:
         return None
 

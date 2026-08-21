@@ -424,12 +424,13 @@ class CTGAN(BaseSynthesizer):
             epoch_iterator.set_description(description.format(gen=0, dis=0))
 
         steps_per_epoch = max(len(train_data) // self._batch_size, 1)
-        start_time = time.monotonic()
+        train_time = 0.0
         step = 0
         timed_out = False
         stop_training = False
         for i in epoch_iterator:
             for id_ in range(steps_per_epoch):
+                step_start_time = time.monotonic()
                 for n in range(self._discriminator_steps):
                     fakez = torch.normal(mean=mean, std=std)
 
@@ -507,17 +508,18 @@ class CTGAN(BaseSynthesizer):
                 loss_g.backward()
                 optimizerG.step()
                 step += 1
+                train_time += time.monotonic() - step_start_time
+                if (
+                    self.cap_train_time is not None
+                    and train_time > self.cap_train_time
+                ):
+                    print(f"Training timed out after {self.cap_train_time} seconds.")
+                    timed_out = True
+                    break
                 if validate_callback is not None and validate_callback(
                     step, i + 1, False
                 ):
                     stop_training = True
-                    break
-                if (
-                    self.cap_train_time is not None
-                    and time.monotonic() - start_time > self.cap_train_time
-                ):
-                    print(f"Training timed out after {self.cap_train_time} seconds.")
-                    timed_out = True
                     break
 
             generator_loss = loss_g.detach().cpu().item()
@@ -542,7 +544,8 @@ class CTGAN(BaseSynthesizer):
                     description.format(gen=generator_loss, dis=discriminator_loss)
                 )
             if (
-                not stop_training
+                not timed_out
+                and not stop_training
                 and validate_callback is not None
                 and validate_callback(step, i + 1, True)
             ):

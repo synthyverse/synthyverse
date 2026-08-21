@@ -1,6 +1,6 @@
 import random
 from contextlib import contextmanager
-
+from math import ceil
 import numpy as np
 import torch
 import torch.nn as nn
@@ -30,16 +30,22 @@ def preserve_rng_state(generator):
 
 
 def validate_c2st(
-    self, X_val: pd.DataFrame, n_sets: int = 3, nfolds: int = 3, random_state: int = 0
+    self,
+    X: pd.DataFrame,
+    nfolds: int = 3,
+    random_state: int = 0,
+    max_samples: int = 50_000,
 ):
-    # preserves rng state for training the DGM
+    n = min(len(X), max_samples)
+    n_sets = int(max(min(ceil(max_samples / len(X)), 10), 3))
     with preserve_rng_state(self):
         result = 0
         for i in range(n_sets):
             state = random_state + i + 1
-            syn = self.generate(len(X_val), random_state=state)
+            x = X.sample(n, replace=False, ignore_index=True, random_state=state)
+            syn = self.generate(n, random_state=state)
             score = ClassifierTwoSampleTest(nfold=nfolds, random_state=state).evaluate(
-                X_val, syn, discrete_features=self.discrete_features
+                x, syn, discrete_features=self.discrete_features
             )["c2st.auc"]
             result += abs(score - 0.5)
         return result / n_sets
@@ -162,7 +168,9 @@ class FastTensorDataLoader:
 
         n_batches, remainder = divmod(self.dataset_len, self.batch_size)
         self.n_batches = n_batches if drop_last else n_batches + (remainder > 0)
-        self.iter_len = self.n_batches * self.batch_size if drop_last else self.dataset_len
+        self.iter_len = (
+            self.n_batches * self.batch_size if drop_last else self.dataset_len
+        )
 
     def __iter__(self):
         self.indices = torch.randperm(self.dataset_len) if self.shuffle else None

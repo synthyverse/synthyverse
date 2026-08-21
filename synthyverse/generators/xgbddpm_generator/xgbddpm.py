@@ -74,6 +74,9 @@ class XGBDDPMGenerator(BaseGenerator):
             True.
         model_per_label (bool): Whether to train separate models per categorical
             ``target_column`` value. Default: True.
+        iv_preprocessing (bool): Whether to model inflated numerical values via
+            extra categorical indicators and ``np.nan`` placeholders. Default:
+            True.
         **kwargs: Additional keyword arguments accepted for API compatibility.
 
     Example:
@@ -116,6 +119,7 @@ class XGBDDPMGenerator(BaseGenerator):
         objective: str = "v",  # x, epsilon, or v
         model_per_timestep: bool = True,
         model_per_label: bool = True,
+        iv_preprocessing: bool = True,
         random_state: int = 0,
         full_determinism: bool = False,
         **kwargs,
@@ -138,6 +142,8 @@ class XGBDDPMGenerator(BaseGenerator):
 
         self.model_per_timestep = model_per_timestep
         self.model_per_label = model_per_label
+        self.iv_preprocessing = iv_preprocessing
+        self.iv_spikes = []
         self.refresh_every_k = refresh_every_k
         self.xgboost_params = (
             xgboost_params.copy() if xgboost_params is not None else {}
@@ -160,26 +166,37 @@ class XGBDDPMGenerator(BaseGenerator):
     def _fit(self, X: pd.DataFrame, discrete_features: list):
         # store original training column order for exact reconstruction
         self.ori_cols = X.columns.tolist()
+        input_discrete_features = list(discrete_features)
+        X, model_discrete_features = self._preprocess_inflated_values(
+            X, input_discrete_features
+        )
 
-        self.discrete_features = [x for x in X.columns if x in discrete_features]
-        self.numerical_features = [c for c in X.columns if c not in discrete_features]
+        self.discrete_features = [
+            x for x in self.ori_cols if x in input_discrete_features
+        ]
+        self.model_discrete_features = [
+            x for x in X.columns if x in model_discrete_features
+        ]
+        self.numerical_features = [
+            c for c in X.columns if c not in model_discrete_features
+        ]
         self.numerical_features_set = set(self.numerical_features)
 
         # When conditioning on a categorical target, keep it outside the diffusion state.
         self.disc_features_x = [
             col
-            for col in self.discrete_features
+            for col in self.model_discrete_features
             if col != self.target_column or not self.model_per_label
         ]
         self.num_features_x = self.numerical_features
         self.is_conditional = (
-            self.target_column in self.discrete_features and self.model_per_label
+            self.target_column in self.model_discrete_features and self.model_per_label
         )
 
         X_tr = X.copy()
         self.n_cls = (
-            X_tr[self.discrete_features].max(axis=0) + 1
-            if len(self.discrete_features) > 0
+            X_tr[self.model_discrete_features].max(axis=0) + 1
+            if len(self.model_discrete_features) > 0
             else None
         )
 
@@ -202,11 +219,13 @@ class XGBDDPMGenerator(BaseGenerator):
         if self.is_conditional:
             cond = X_tr[self.target_column].unique()
         else:
-            cols = self.numerical_features + self.discrete_features
+            cols = self.numerical_features + self.model_discrete_features
 
         self.model_cols_x = cols
         self.model_col_idx = {col: i for i, col in enumerate(cols)}
-        self.model_disc_features = [x for x in self.discrete_features if x in cols]
+        self.model_disc_features = [
+            x for x in self.model_discrete_features if x in cols
+        ]
         model_disc_features_set = set(self.model_disc_features)
         self.model_feature_types = [
             "c" if x in model_disc_features_set else "q" for x in cols
@@ -302,14 +321,58 @@ class XGBDDPMGenerator(BaseGenerator):
         if self.is_conditional:
             syn[self.target_column] = lv_samples.to_numpy()
 
+        # inverse scale
+        syn = self._inverse_scale(syn)
+        syn = self._postprocess_inflated_values(syn)
+
         # reinstate original column order
         ori_cols = [x for x in self.ori_cols if x in syn.columns]
         syn = syn[ori_cols]
 
-        # inverse scale
-        syn = self._inverse_scale(syn)
-
         return syn
+
+    def _preprocess_inflated_values(self, X: pd.DataFrame, discrete_features: list):
+        self.iv_spikes = []
+        if not self.iv_preprocessing:
+            return X.copy(), list(discrete_features)
+
+        x = X.copy()
+        discrete_features = list(discrete_features)
+        for col in [c for c in x.columns if c not in discrete_features]:
+            counts = x[col].value_counts()
+            if counts.empty:
+                continue
+
+            spikes = counts[counts > 10 * counts.mean()].index.tolist()
+            if not spikes:
+                continue
+
+            indicator = f"__iv_{col}"
+            while indicator in x.columns:
+                indicator = f"_{indicator}"
+
+            x[indicator] = 0
+            for i, value in enumerate(spikes, start=1):
+                mask = x[col] == value
+                x.loc[mask, indicator] = i
+                x.loc[mask, col] = np.nan
+
+            self.iv_spikes.append((col, indicator, spikes))
+            discrete_features.append(indicator)
+
+        return x, discrete_features
+
+    def _postprocess_inflated_values(self, X: pd.DataFrame):
+        if not self.iv_spikes:
+            return X
+
+        x = X.copy()
+        for col, indicator, spikes in self.iv_spikes:
+            indicator_values = x[indicator].round().astype(np.int64)
+            for i, value in enumerate(spikes, start=1):
+                x.loc[indicator_values == i, col] = value
+
+        return x.drop(columns=[indicator for _, indicator, _ in self.iv_spikes])
 
     def _fit_one(
         self,
@@ -544,8 +607,11 @@ class XGBDDPMGenerator(BaseGenerator):
             "timesteps": self.timesteps,
             "n_jobs": self.n_jobs,
             "model_per_timestep": self.model_per_timestep,
+            "iv_preprocessing": self.iv_preprocessing,
+            "iv_spikes": self.iv_spikes,
             "ori_cols": self.ori_cols,
             "discrete_features": self.discrete_features,
+            "model_discrete_features": self.model_discrete_features,
             "numerical_features_set": self.numerical_features_set,
             "disc_features_x": self.disc_features_x,
             "num_features_x": self.num_features_x,

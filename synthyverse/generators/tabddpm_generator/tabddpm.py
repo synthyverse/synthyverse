@@ -15,7 +15,6 @@ from ..dgm_utils import (
     FastTensorDataLoader,
     QuantileStandardScaler,
     clone_state_dict,
-    split_validation,
     validate_c2st,
 )
 from ...utils.utils import resolve_epochs_from_training_steps
@@ -34,8 +33,7 @@ class TabDDPMGenerator(BaseGenerator):
 
     Args:
         target_column (str, optional): Name of the target column. Required when
-            ``conditional_generation`` is True. Also used for stratified
-            validation splitting when the column is discrete.
+            ``conditional_generation`` is True.
         conditional_generation (bool): Whether to condition generation on a
             discrete ``target_column``. Continuous targets are ignored for
             conditioning. Default: False.
@@ -55,8 +53,7 @@ class TabDDPMGenerator(BaseGenerator):
             Default: ``{}``.
         embedding_dim (int): Embedding dimension. Default: 128.
         cap_train_time (float): Time limit in seconds for training. Default: None.
-        val_size (float): Fraction of training rows reserved for validation set early stopping. Default: 0.0.
-        val_steps (int): Epochs between validation, or training steps when ``training_steps`` is provided. Default: 5000.
+        val_steps (int): Epochs between training-set C2ST validation, or training steps when ``training_steps`` is provided. Set to <=0 to disable validation. Default: 5000.
 
     Example:
         >>> import pandas as pd
@@ -94,7 +91,6 @@ class TabDDPMGenerator(BaseGenerator):
         model_params: dict = {},
         embedding_dim: int = 128,
         cap_train_time: Optional[float] = None,
-        val_size: float = 0.0,
         val_steps: int = 5000,
         random_state: int = 0,
         full_determinism: bool = False,
@@ -116,7 +112,6 @@ class TabDDPMGenerator(BaseGenerator):
         self.conditional_generation = conditional_generation
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.cap_train_time = cap_train_time
-        self.val_size = val_size
         self.val_steps = val_steps
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
@@ -129,13 +124,7 @@ class TabDDPMGenerator(BaseGenerator):
             )
         if self.conditional_generation and self.target_column not in X.columns:
             raise ValueError(f"target_column '{self.target_column}' is not in X.")
-        X, X_val = split_validation(
-            X,
-            self.val_size,
-            self.target_column,
-            self.discrete_features,
-            self.random_state,
-        )
+        X = X.copy()
         self.is_conditional = (
             self.conditional_generation and self.target_column in self.discrete_features
         )
@@ -158,7 +147,7 @@ class TabDDPMGenerator(BaseGenerator):
                 self._cond_dist = counts / counts.sum()
 
         train = self._fit_transform(train, discrete_columns)
-        self._fit_diffusion(train, cond, discrete_columns, X_val)
+        self._fit_diffusion(train, cond, discrete_columns, X)
         return self
 
     def _fit_transform(self, X: pd.DataFrame, discrete_columns: list) -> pd.DataFrame:
@@ -189,7 +178,7 @@ class TabDDPMGenerator(BaseGenerator):
         X: pd.DataFrame,
         cond: Optional[pd.Series],
         discrete_columns: list,
-        X_val: pd.DataFrame = None,
+        X_train: pd.DataFrame,
     ) -> None:
         cat_info = [
             (col, self._categorical_cardinality(col)) for col in discrete_columns
@@ -261,12 +250,13 @@ class TabDDPMGenerator(BaseGenerator):
 
         best_val_score = float("inf")
         best_val_model = None
-        start_time = time.monotonic()
+        train_time = 0.0
         timed_out = False
         stop_training = False
         for epoch in pbar:
             self.diffusion.train()
             for x, y in self.dataloader:
+                step_start_time = time.monotonic()
                 self.optimizer.zero_grad()
                 args = (x,) if cond is None else (x, y)
                 loss_multi, loss_gauss = self.diffusion.mixed_loss(*args)
@@ -292,14 +282,23 @@ class TabDDPMGenerator(BaseGenerator):
                     curr_count = 0
                     curr_loss_multi = curr_loss_gauss = 0.0
 
+                train_time += time.monotonic() - step_start_time
                 if (
-                    X_val is not None
+                    self.cap_train_time is not None
+                    and train_time > self.cap_train_time
+                ):
+                    print(f"Training timed out after {self.cap_train_time} seconds.")
+                    timed_out = True
+                    break
+
+                if (
+                    self.val_steps > 0
                     and self.training_steps is not None
                     and steps > 0
                     and steps % self.val_steps == 0
                 ):
                     self.diffusion.eval()
-                    score = validate_c2st(self, X_val, random_state=self.random_state)
+                    score = validate_c2st(self, X_train, random_state=self.random_state)
                     if score < best_val_score:
                         best_val_score = score
                         best_val_model = clone_state_dict(self.diffusion)
@@ -308,22 +307,16 @@ class TabDDPMGenerator(BaseGenerator):
                         break
                     self.diffusion.train()
 
-                if (
-                    self.cap_train_time is not None
-                    and time.monotonic() - start_time > self.cap_train_time
-                ):
-                    print(f"Training timed out after {self.cap_train_time} seconds.")
-                    timed_out = True
-                    break
-
             pbar.set_postfix(loss=loss_value)
+            if timed_out or stop_training:
+                break
             if (
-                X_val is not None
+                self.val_steps > 0
                 and self.training_steps is None
                 and (epoch + 1) % self.val_steps == 0
             ):
                 self.diffusion.eval()
-                score = validate_c2st(self, X_val, random_state=self.random_state)
+                score = validate_c2st(self, X_train, random_state=self.random_state)
                 if score < best_val_score:
                     best_val_score = score
                     best_val_model = clone_state_dict(self.diffusion)

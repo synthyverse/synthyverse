@@ -20,7 +20,6 @@ from ..dgm_utils import (
     FastTensorDataLoader,
     QuantileStandardScaler,
     clone_state_dict,
-    split_validation,
     validate_c2st,
 )
 from .diffusion import UnifiedCtimeDiffusion
@@ -98,9 +97,7 @@ class TabDiffGenerator(BaseGenerator):
         k_init (float): Initial k for learned categorical schedules. Default: -6.0.
         k_offset (float): K offset for learned categorical schedules. Default: 1.0.
         cap_train_time (float): Time limit in seconds for training. Default: None.
-        val_size (float): Fraction of training rows reserved for validation set early stopping. Default: 0.0.
-        val_steps (int): Epochs between validation, or training steps when ``training_steps`` is provided. Default: 5000.
-        target_column (str): Name of the target column, potentially used for stratified validation splitting. Default: None.
+        val_steps (int): Epochs between training-set C2ST validation, or training steps when ``training_steps`` is provided. Set to <=0 to disable validation. Default: 5000.
 
     Example:
         >>> import pandas as pd
@@ -162,9 +159,7 @@ class TabDiffGenerator(BaseGenerator):
         k_init: float = -6.0,
         k_offset: float = 1.0,
         cap_train_time: Optional[float] = None,
-        val_size: float = 0.0,
         val_steps: int = 5000,
-        target_column: Optional[str] = None,
         random_state: int = 0,
         full_determinism: bool = False,
     ):
@@ -206,19 +201,11 @@ class TabDiffGenerator(BaseGenerator):
         self.k_init = k_init
         self.k_offset = k_offset
         self.cap_train_time = cap_train_time
-        self.val_size = val_size
         self.val_steps = val_steps
-        self.target_column = target_column
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
-        X, X_val = split_validation(
-            X,
-            self.val_size,
-            self.target_column,
-            discrete_features,
-            self.random_state,
-        )
+        X = X.copy()
         epochs = resolve_epochs_from_training_steps(
             self.epochs,
             self.training_steps,
@@ -269,7 +256,7 @@ class TabDiffGenerator(BaseGenerator):
         best_val_score = float("inf")
         best_val_model = None
 
-        start_time = time.monotonic()
+        train_time = 0.0
         timed_out = False
         stop_training = False
         step = 0
@@ -283,6 +270,7 @@ class TabDiffGenerator(BaseGenerator):
             dloss_sum = closs_sum = n_obs = 0
             self.diffusion.train()
             for _, batch in train_loader:
+                step_start_time = time.monotonic()
                 batch = batch.float().to(self.device)
                 optimizer.zero_grad()
                 dloss, closs = self.diffusion.mixed_loss(batch)
@@ -293,14 +281,23 @@ class TabDiffGenerator(BaseGenerator):
                 closs_sum += closs.item() * len(batch)
                 n_obs += len(batch)
                 step += 1
+                train_time += time.monotonic() - step_start_time
                 if (
-                    X_val is not None
+                    self.cap_train_time is not None
+                    and train_time > self.cap_train_time
+                ):
+                    print(f"Training timed out after {self.cap_train_time} seconds.")
+                    timed_out = True
+                    break
+
+                if (
+                    self.val_steps > 0
                     and self.training_steps is not None
                     and step > 0
                     and step % self.val_steps == 0
                 ):
                     self.diffusion.eval()
-                    score = validate_c2st(self, X_val, random_state=self.random_state)
+                    score = validate_c2st(self, X, random_state=self.random_state)
                     if score < best_val_score:
                         best_val_score = score
                         best_val_model = clone_state_dict(self.diffusion)
@@ -308,14 +305,6 @@ class TabDiffGenerator(BaseGenerator):
                         stop_training = True
                         break
                     self.diffusion.train()
-
-                if (
-                    self.cap_train_time is not None
-                    and time.monotonic() - start_time > self.cap_train_time
-                ):
-                    print(f"Training timed out after {self.cap_train_time} seconds.")
-                    timed_out = True
-                    break
 
             if n_obs == 0:
                 raise ValueError("TabDiff training produced no observations in an epoch.")
@@ -348,13 +337,16 @@ class TabDiffGenerator(BaseGenerator):
                 self.diffusion.cat_schedule.parameters(),
                 self.ema_decay,
             )
+            if timed_out or stop_training:
+                break
+
             if (
-                X_val is not None
+                self.val_steps > 0
                 and self.training_steps is None
                 and (epoch + 1) % self.val_steps == 0
             ):
                 self.diffusion.eval()
-                score = validate_c2st(self, X_val, random_state=self.random_state)
+                score = validate_c2st(self, X, random_state=self.random_state)
                 if score < best_val_score:
                     best_val_score = score
                     best_val_model = clone_state_dict(self.diffusion)

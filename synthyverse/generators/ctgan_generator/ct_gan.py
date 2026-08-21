@@ -7,7 +7,7 @@ import pandas as pd
 
 from .._optional import require_ctgan
 from ..base import BaseGenerator
-from ..dgm_utils import clone_state_dict, split_validation, validate_c2st
+from ..dgm_utils import clone_state_dict, validate_c2st
 from ...utils.utils import resolve_epochs_from_training_steps
 
 
@@ -41,9 +41,7 @@ class CTGANGenerator(BaseGenerator):
             discriminator. Default: 10.
         cuda (bool): Whether to use CUDA if available. Default: True.
         cap_train_time (float): Time limit in seconds for training. Default: None.
-        val_size (float): Fraction of training rows reserved for validation set early stopping. Default: 0.0.
-        val_steps (int): Epochs between validation, or training steps when ``training_steps`` is provided. Default: 50.
-        target_column (str): Name of the target column, potentially used for stratified validation splitting. Default: None.
+        val_steps (int): Epochs between training-set C2ST validation, or training steps when ``training_steps`` is provided. Set to <=0 to disable validation. Default: 50.
 
     Example:
         >>> import pandas as pd
@@ -85,9 +83,7 @@ class CTGANGenerator(BaseGenerator):
         pac=10,
         cuda=True,
         cap_train_time: Optional[float] = None,
-        val_size: float = 0.0,
         val_steps: int = 50,
-        target_column: Optional[str] = None,
         random_state: int = 0,
         full_determinism: bool = False,
     ):
@@ -114,21 +110,13 @@ class CTGANGenerator(BaseGenerator):
             raise ValueError("pac must be >= 1.")
         self.cuda = cuda
         self.cap_train_time = cap_train_time
-        self.val_size = val_size
         self.val_steps = val_steps
-        self.target_column = target_column
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
         from .synthesizer import CTGAN
 
         self.discrete_features = list(discrete_features)
-        X, X_val = split_validation(
-            X,
-            self.val_size,
-            self.target_column,
-            self.discrete_features,
-            self.random_state,
-        )
+        X = X.copy()
 
         self.batch_size = self._round_batch_size(self.batch_size, self.pac)
         epochs = resolve_epochs_from_training_steps(
@@ -164,7 +152,7 @@ class CTGANGenerator(BaseGenerator):
         def validate():
             nonlocal best_val_score, best_val_model
             self.model._generator.eval()
-            score = validate_c2st(self, X_val, random_state=self.random_state)
+            score = validate_c2st(self, X, random_state=self.random_state)
             self.model._generator.train()
             if score < best_val_score:
                 best_val_score = score
@@ -173,7 +161,7 @@ class CTGANGenerator(BaseGenerator):
             return True
 
         def validate_callback(step, epoch, epoch_end):
-            if X_val is None:
+            if self.val_steps <= 0:
                 return False
             if self.training_steps is not None:
                 return (
@@ -220,9 +208,7 @@ class CTGANGenerator(BaseGenerator):
             "pac": self.pac,
             "cuda": self.cuda,
             "cap_train_time": self.cap_train_time,
-            "val_size": self.val_size,
             "val_steps": self.val_steps,
-            "target_column": self.target_column,
             "discrete_features": getattr(self, "discrete_features", None),
         }
 
