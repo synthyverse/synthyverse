@@ -66,7 +66,7 @@ class TabularSynthesisBenchmark:
             ``"mean"``, ``"median"``, ``"most_frequent"``, and
             ``"missforest"``. Default: ``"drop"``.
         monitor_memory (bool): Whether to record peak CPU and, when available,
-            CUDA memory usage during training and sampling. Default: False.
+            CUDA memory used by training. Default: False.
         reuse_processors (bool): Whether to reuse saved preprocessing artifacts
             for each train seed when available. Default: True.
         max_eval_samples (int or None): Default maximum number of rows per real
@@ -654,21 +654,12 @@ class TabularSynthesisBenchmark:
             )
             n_train_syn = len(X_train_eval)
 
-            memory_monitor = None
             sampling_start_time = perf_counter()
-            if self.monitor_memory:
-                with PeakMemoryMonitor() as memory_monitor:
-                    X_syn = generator.generate(
-                        n_train_syn,
-                        random_state=sampling_seed,
-                    )
-                    X_syn = processor.postprocess(X_syn)
-            else:
-                X_syn = generator.generate(
-                    n_train_syn,
-                    random_state=sampling_seed,
-                )
-                X_syn = processor.postprocess(X_syn)
+            X_syn = generator.generate(
+                n_train_syn,
+                random_state=sampling_seed,
+            )
+            X_syn = processor.postprocess(X_syn)
 
             X_syn = X_syn.reset_index(drop=True)
             sampling_time = perf_counter() - sampling_start_time
@@ -685,9 +676,6 @@ class TabularSynthesisBenchmark:
                     "train_seed": train_seed,
                     "set": set_index,
                 }
-            )
-            result_rows.extend(
-                memory_metric_rows("sampling", memory_monitor, train_seed, set_index)
             )
             result_rows.extend(
                 self._evaluate_synthetic_datasets(
@@ -1081,18 +1069,22 @@ def training_timeout_rows(
 
 
 class PeakMemoryMonitor:
-    """Sample process memory while a benchmark step is running."""
+    """Sample memory used above the pre-training baseline."""
 
     def __init__(self, interval_seconds: float = 1.0):
         self.interval_seconds = interval_seconds
         self.peak_memory_mb: Optional[float] = None
         self.peak_cuda_memory_mb: Optional[float] = None
+        self._baseline_rss_bytes: Optional[int] = None
+        self._baseline_cuda_memory_bytes: Optional[int] = None
         self._peak_rss_bytes: Optional[int] = None
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
     def __enter__(self) -> "PeakMemoryMonitor":
-        self._sample_once()
+        self._baseline_rss_bytes = _current_process_memory_bytes()
+        self._peak_rss_bytes = self._baseline_rss_bytes
+        self._baseline_cuda_memory_bytes = _current_cuda_memory_bytes()
         _reset_cuda_peak_memory()
         self._thread = threading.Thread(target=self._sample_until_stopped, daemon=True)
         self._thread.start()
@@ -1104,8 +1096,15 @@ class PeakMemoryMonitor:
         if self._thread is not None:
             self._thread.join(timeout=1.0)
         self._sample_once()
-        self.peak_memory_mb = _bytes_to_mib(self._peak_rss_bytes)
-        self.peak_cuda_memory_mb = _bytes_to_mib(_cuda_peak_memory_bytes())
+        self.peak_memory_mb = _bytes_to_mib(
+            _memory_delta_bytes(self._peak_rss_bytes, self._baseline_rss_bytes)
+        )
+        self.peak_cuda_memory_mb = _bytes_to_mib(
+            _memory_delta_bytes(
+                _cuda_peak_memory_bytes(),
+                self._baseline_cuda_memory_bytes,
+            )
+        )
 
     def _sample_until_stopped(self) -> None:
         while not self._stop_event.wait(self.interval_seconds):
@@ -1123,6 +1122,15 @@ def _bytes_to_mib(value: Optional[int]) -> Optional[float]:
     if value is None:
         return None
     return value / BYTES_PER_MIB
+
+
+def _memory_delta_bytes(
+    peak_bytes: Optional[int],
+    baseline_bytes: Optional[int],
+) -> Optional[int]:
+    if peak_bytes is None or baseline_bytes is None:
+        return None
+    return max(peak_bytes - baseline_bytes, 0)
 
 
 def _current_process_memory_bytes() -> Optional[int]:
@@ -1237,6 +1245,18 @@ def _reset_cuda_peak_memory() -> None:
             torch.cuda.reset_peak_memory_stats()
     except Exception:
         return
+
+
+def _current_cuda_memory_bytes() -> Optional[int]:
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        torch.cuda.synchronize()
+        return int(torch.cuda.memory_allocated())
+    except Exception:
+        return None
 
 
 def _cuda_peak_memory_bytes() -> Optional[int]:

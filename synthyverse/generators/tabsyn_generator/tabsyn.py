@@ -40,7 +40,7 @@ class TabSynGenerator(BaseGenerator):
         target_column (str): Name of the target column, potentially used for stratified validation splitting. Default: None.
         val_size (float): Fraction of training rows reserved for VAE
             learning-rate / beta scheduling. Default: 0.15.
-        val_steps (int): Epochs between diffusion training-set C2ST validation, or training steps when ``training_steps`` is provided. Set to <=0 to disable validation. Default: 5000.
+        val_steps (int): Epochs between diffusion training-set C2ST validation, or training steps when ``training_steps`` is provided. Set to <=0 to disable validation. Default: 500.
         batch_size (int): Batch size applied to both VAE and diffusion training. Default: 4096.
         epochs (int): Maximum number of diffusion training epochs. Default: 10001.
         training_steps (int, optional): Total diffusion training steps. When
@@ -100,7 +100,7 @@ class TabSynGenerator(BaseGenerator):
         self,
         target_column: Optional[str] = None,
         val_size: float = 0.15,
-        val_steps: int = 5000,
+        val_steps: int = 500,
         vae_lr: float = 1e-3,
         vae_wd: float = 0,
         vae_d_token: int = 4,

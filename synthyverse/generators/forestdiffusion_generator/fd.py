@@ -29,15 +29,15 @@ class ForestDiffusionGenerator(BaseGenerator):
             trained XGBoost models are kept in memory. Default: None.
         num_timesteps: The number of noise levels to use. Default: 50.
         diffusion_type: The type of diffusion to use. Default: "vp".
-        multi_output: Whether to use multi-output XGBoost ensembles. Default: False.
+        multi_output: Whether to use multi-output XGBoost. Default: False.
         xgb_hypers: The hyperparameters for the XGBoost models. Default: {"n_estimators": 100, "max_depth": 6, "early_stopping_rounds": 50}.
         noise_samples_per_row: The number of different noise samples per real data sample. Default: 100.
         eps: The timestep to stop generation at. Default: 0.001.
         beta_min: The minimum beta for the diffusion. Default: 0.1.
         beta_max: The maximum beta for the diffusion. Default: 8.
         n_jobs: The number of parallel jobs to use. Default: -1.
-        backend: The backend to use. Default: "loky".
-        n_batch: The number of batches to use. Default: -1.
+        backend: The joblib backend to use. Default: "loky".
+        n_batch: The number of batches to use in XGBoost data iterator. Set to <=0 to disable data iterator. Default: -1.
 
     Example:
         >>> import pandas as pd

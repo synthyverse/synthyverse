@@ -47,7 +47,7 @@ class XGBDiffusionGenerator(BaseGenerator):
         eps (float): Lower endpoint of the diffusion time grid. Default: 1e-3.
         xgboost_params (dict, optional): Parameters passed to each
             diffusion-enabled XGBoost regressor. Default: ``{"n_estimators": 500,
-            "max_depth": 6, "early_stopping_rounds": 20,
+            "max_depth": 6, "early_stopping_rounds": 50,
             "min_boosting_round": 50, "eta": 0.06}``.
         clip_extremes (bool): Whether to clip generated values to the training
             data range. Default: True.
@@ -56,9 +56,6 @@ class XGBDiffusionGenerator(BaseGenerator):
             True.
         model_per_label (bool): Whether to train separate models per categorical
             ``target_column`` value. Default: True.
-        iv_preprocessing (bool): Whether to model inflated numerical values via
-            extra categorical indicators and ``np.nan`` placeholders. Default:
-            True.
         **kwargs: Additional keyword arguments accepted for API compatibility.
 
     Example:
@@ -98,14 +95,13 @@ class XGBDiffusionGenerator(BaseGenerator):
         xgboost_params: Optional[Dict[str, Any]] = {
             "n_estimators": 500,
             "max_depth": 6,
-            "early_stopping_rounds": 20,
+            "early_stopping_rounds": 50,
             "min_boosting_round": 50,
             "eta": 0.06,
         },
         clip_extremes: bool = True,
         model_per_timestep: bool = True,
         model_per_label: bool = True,
-        iv_preprocessing: bool = True,
         random_state: int = 0,
         full_determinism: bool = False,
         **kwargs,
@@ -129,8 +125,6 @@ class XGBDiffusionGenerator(BaseGenerator):
         self.clip_extremes = clip_extremes
         self.model_per_timestep = model_per_timestep
         self.model_per_label = model_per_label
-        self.iv_preprocessing = iv_preprocessing
-        self.iv_spikes = []
         self.xgboost_params = (
             xgboost_params.copy() if xgboost_params is not None else {}
         )
@@ -146,18 +140,10 @@ class XGBDiffusionGenerator(BaseGenerator):
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
         self.ori_cols = X.columns.tolist()
-        input_discrete_features = list(discrete_features)
-        X, model_discrete_features = self._preprocess_inflated_values(
-            X, input_discrete_features
-        )
-        self.discrete_features = [
-            x for x in self.ori_cols if x in input_discrete_features
-        ]
-        self.model_discrete_features = [
-            x for x in X.columns if x in model_discrete_features
-        ]
+        self.discrete_features = [x for x in self.ori_cols if x in discrete_features]
+        self.model_discrete_features = self.discrete_features
         self.numerical_features = [
-            c for c in X.columns if c not in model_discrete_features
+            c for c in X.columns if c not in self.model_discrete_features
         ]
         self.is_conditional = (
             self.target_column in self.model_discrete_features and self.model_per_label
@@ -239,55 +225,11 @@ class XGBDiffusionGenerator(BaseGenerator):
         syn[self.model_cols] = self.scaler.inverse_transform(syn[self.model_cols])
         syn = self._clean_onehot_data(syn)
         syn = self._clip_extremes(syn)
-        syn = self._postprocess_inflated_values(syn)
 
         if self.is_conditional:
             syn[self.target_column] = lv_samples.to_numpy()
 
         return syn[self.ori_cols]
-
-    def _preprocess_inflated_values(self, X: pd.DataFrame, discrete_features: list):
-        self.iv_spikes = []
-        if not self.iv_preprocessing:
-            return X.copy(), list(discrete_features)
-
-        x = X.copy()
-        discrete_features = list(discrete_features)
-        for col in [c for c in x.columns if c not in discrete_features]:
-            counts = x[col].value_counts()
-            if counts.empty:
-                continue
-
-            spikes = counts[counts > 10 * counts.mean()].index.tolist()
-            if not spikes:
-                continue
-
-            indicator = f"__iv_{col}"
-            while indicator in x.columns:
-                indicator = f"_{indicator}"
-
-            x[indicator] = 0
-            for i, value in enumerate(spikes, start=1):
-                mask = x[col] == value
-                x.loc[mask, indicator] = i
-                x.loc[mask, col] = np.nan
-
-            self.iv_spikes.append((col, indicator, spikes))
-            discrete_features.append(indicator)
-
-        return x, discrete_features
-
-    def _postprocess_inflated_values(self, X: pd.DataFrame):
-        if not self.iv_spikes:
-            return X
-
-        x = X.copy()
-        for col, indicator, spikes in self.iv_spikes:
-            indicator_values = x[indicator].round().astype(np.int64)
-            for i, value in enumerate(spikes, start=1):
-                x.loc[indicator_values == i, col] = value
-
-        return x.drop(columns=[indicator for _, indicator, _ in self.iv_spikes])
 
     def _fit_one(self, X: pd.DataFrame, t: Optional[int], lv: int, col: str):
         mask = self.labels == lv if self.is_conditional else slice(None)
@@ -403,8 +345,6 @@ class XGBDiffusionGenerator(BaseGenerator):
             "eps": self.eps,
             "clip_extremes": self.clip_extremes,
             "model_per_timestep": self.model_per_timestep,
-            "iv_preprocessing": self.iv_preprocessing,
-            "iv_spikes": self.iv_spikes,
             "ori_cols": self.ori_cols,
             "discrete_features": self.discrete_features,
             "model_discrete_features": self.model_discrete_features,

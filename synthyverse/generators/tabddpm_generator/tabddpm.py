@@ -43,7 +43,7 @@ class TabDDPMGenerator(BaseGenerator):
             the training sample size and batch size. Default: None.
         lr (float): Learning rate. Default: 0.002.
         weight_decay (float): Weight decay for optimization. Default: 1e-4.
-        batch_size (int): Batch size for training. Default: 1024.
+        batch_size (int): Batch size for training. Default: 4096.
         num_timesteps (int): Number of diffusion timesteps. Default: 1000.
         gaussian_loss_type (str): Type of Gaussian loss. Options: "mse", "kl". Default: "mse".
         scheduler (str): Beta scheduler type. Options: "cosine", "linear". Default: "cosine".
@@ -53,7 +53,7 @@ class TabDDPMGenerator(BaseGenerator):
             Default: ``{}``.
         embedding_dim (int): Embedding dimension. Default: 128.
         cap_train_time (float): Time limit in seconds for training. Default: None.
-        val_steps (int): Epochs between training-set C2ST validation, or training steps when ``training_steps`` is provided. Set to <=0 to disable validation. Default: 5000.
+        val_steps (int): Epochs between training-set C2ST validation, or training steps when ``training_steps`` is provided. Set to <=0 to disable validation. Default: 200.
 
     Example:
         >>> import pandas as pd
@@ -83,7 +83,7 @@ class TabDDPMGenerator(BaseGenerator):
         epochs: int = 1000,
         lr: float = 0.002,
         weight_decay: float = 1e-4,
-        batch_size: int = 1024,
+        batch_size: int = 4096,
         num_timesteps: int = 1000,
         gaussian_loss_type: str = "mse",
         scheduler: str = "cosine",
@@ -91,7 +91,7 @@ class TabDDPMGenerator(BaseGenerator):
         model_params: dict = {},
         embedding_dim: int = 128,
         cap_train_time: Optional[float] = None,
-        val_steps: int = 5000,
+        val_steps: int = 200,
         random_state: int = 0,
         full_determinism: bool = False,
         training_steps: int = None,
@@ -283,10 +283,7 @@ class TabDDPMGenerator(BaseGenerator):
                     curr_loss_multi = curr_loss_gauss = 0.0
 
                 train_time += time.monotonic() - step_start_time
-                if (
-                    self.cap_train_time is not None
-                    and train_time > self.cap_train_time
-                ):
+                if self.cap_train_time is not None and train_time > self.cap_train_time:
                     print(f"Training timed out after {self.cap_train_time} seconds.")
                     timed_out = True
                     break

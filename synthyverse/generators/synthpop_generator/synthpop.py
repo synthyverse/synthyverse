@@ -21,10 +21,10 @@ class SynthpopGenerator(BaseGenerator):
 
     Args:
         minibucket (int): Minimum number of split-learning samples required at
-            a tree leaf. Passed to sklearn as ``min_samples_leaf``. Default: 10.
+            a tree leaf. Passed to sklearn as ``min_samples_leaf``. Default: 5.
         minibucket_sampling (int): Minimum number of source samples used when
             sampling from honest-tree leaves. Leaves with fewer source samples
-            are collapsed upward. Default: 3.
+            are collapsed upward. Default: 5.
         K (int): Number of bagged ensemble models. Default: 100.
         order (str): Feature order strategy for each ensemble member. ``"random"``
             randomizes the feature order within each member. ``"original"`` keeps
@@ -38,10 +38,10 @@ class SynthpopGenerator(BaseGenerator):
         subsample (float): Fraction of rows used to train each tree when
             ``0 < subsample < 1``. Values outside that interval use all rows,
             or a full-size bootstrap sample when ``subsample_with_replacement``
-            is True. Default: 1.0.
+            is True. Default: 0.5.
         subsample_with_replacement (bool): If True, train each tree on a
             bootstrap subsample and use out-of-bag rows for honest sampling.
-            If False, train on a subsample without replacement. Default: True.
+            If False, train on a subsample without replacement. Default: False.
         honest_trees (bool): If True, sample from out-of-bag rows for bootstrap
             trees or unused rows for subsampling without replacement. Default:
             True.
@@ -60,8 +60,8 @@ class SynthpopGenerator(BaseGenerator):
             ``None``, ``"none"``, and ``"bootstrap"`` keep straightforward
             resampling. ``"histogram"`` samples from equal-width histogram
             bins. ``"kde"`` samples from a Gaussian KDE fitted to the
-            source values. ``"eqf"`` samples through an
-            interpolated empirical quantile function. Default: None.
+            source values. ``"eqf"`` samples through a linearly-interpolated
+            empirical quantile function. Default: None.
         kde_kwargs (dict, optional): Optional KDE settings. Use
             ``{"bandwidth": value}`` to set an absolute bandwidth; otherwise
             Scott's rule is used. Default: None.
@@ -87,14 +87,14 @@ class SynthpopGenerator(BaseGenerator):
 
     def __init__(
         self,
-        minibucket: int = 10,
-        minibucket_sampling: int = 3,
+        minibucket: int = 5,
+        minibucket_sampling: int = 5,
         K: int = 100,
         order: str = "random",
         n_jobs: int = -1,
         tree_kwargs: dict = None,
-        subsample: float = 1.0,
-        subsample_with_replacement: bool = True,
+        subsample: float = 0.5,
+        subsample_with_replacement: bool = False,
         honest_trees: bool = True,
         cache_real_leafs: bool = False,
         cache_honest_lookup: bool = False,
@@ -673,7 +673,7 @@ class SynthpopGenerator(BaseGenerator):
                     "order": model["order"],
                     "columns": {
                         col: self._column_tree(model, col) for col in model["columns"]
-                    }
+                    },
                 }
                 for model in self.models
             ],

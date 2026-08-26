@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -14,26 +14,61 @@ from tqdm import tqdm
 from ..base import BaseGenerator
 from ..dgm_utils import QuantileStandardScaler
 
+import math
 
-def noise_schedule(
-    T: int,
-    alpha_bar_start: float = 0.9999,
-    alpha_bar_end: float = 1e-4,
-):
-    theta_start = np.arccos(np.sqrt(alpha_bar_start))
-    theta_end = np.arccos(np.sqrt(alpha_bar_end))
 
-    theta = np.linspace(theta_start, theta_end, T)
-    alpha_bars = np.cos(theta) ** 2
+def get_beta_schedule(schedule: str = "cosine", T: int = 50) -> np.ndarray:
+    # implementation from synthcity's TabDDPM: https://github.com/vanderschaarlab/synthcity/blob/main/src/synthcity/plugins/core/models/tabular_ddpm/gaussian_multinomial_diffsuion.py
+    if schedule == "linear":
+        # Linear schedule from Ho et al, extended to work for any number of
+        # diffusion steps.
+        scale = 1000 / T
+        beta_start = scale * 0.0001
+        beta_end = scale * 0.02
+        betas = np.linspace(beta_start, beta_end, T, dtype=np.float64)
+    elif schedule == "cosine":
+        # Create a beta schedule that discretizes the given alpha_t_bar function,
+        # which defines the cumulative product of (1-beta) over time from t = [0,1].
+        def alpha_bar(t: float) -> float:
+            return math.cos((t + 0.008) / 1.008 * math.pi / 2) ** 2
 
-    alphas = np.empty(T)
-    alphas[0] = alpha_bars[0]
-    alphas[1:] = alpha_bars[1:] / alpha_bars[:-1]
+        # a lambda that takes an argument t between 0 and 1 and produces the cumulative
+        # product of (1-beta) up to that part of the diffusion process.
+        max_beta = 0.999
+        # the maximum beta to use; use values lower than 1 to prevent singularities.
+        betas = []
+        for i in range(T):
+            t1 = i / T
+            t2 = (i + 1) / T
+            betas.append(min(1 - alpha_bar(t2) / alpha_bar(t1), max_beta))
+        betas = np.array(betas)
+    else:
+        raise NotImplementedError(f"unknown beta schedule: {schedule}")
 
-    betas = np.clip(1.0 - alphas, 1e-8, 0.999)
-    alpha_bars = np.cumprod(1.0 - betas)
+    alphas = 1.0 - betas
+    alpha_bars = np.cumprod(alphas)
+    return betas, alphas, alpha_bars
 
-    return betas, 1.0 - betas, alpha_bars
+
+# def noise_schedule(
+#     T: int,
+#     alpha_bar_start: float = 0.9999,
+#     alpha_bar_end: float = 1e-4,
+# ):
+#     theta_start = np.arccos(np.sqrt(alpha_bar_start))
+#     theta_end = np.arccos(np.sqrt(alpha_bar_end))
+
+#     theta = np.linspace(theta_start, theta_end, T)
+#     alpha_bars = np.cos(theta) ** 2
+
+#     alphas = np.empty(T)
+#     alphas[0] = alpha_bars[0]
+#     alphas[1:] = alpha_bars[1:] / alpha_bars[:-1]
+
+#     betas = np.clip(1.0 - alphas, 1e-8, 0.999)
+#     alpha_bars = np.cumprod(1.0 - betas)
+
+#     return betas, 1.0 - betas, alpha_bars
 
 
 class XGBDDPMGenerator(BaseGenerator):
@@ -52,6 +87,7 @@ class XGBDDPMGenerator(BaseGenerator):
             modeling when it is categorical and ``model_per_label=True``.
         num_timesteps (int): Number of diffusion timesteps for training and
             sampling. Default: 50.
+        schedule (str): Beta schedule to use. Options: "linear", "cosine". Default: "cosine".
         refresh_every_k (int): Number of boosting rounds between noise seed
             refreshes. Default: 1.
         noise_samples_per_row (int): Number of times to extend the training set,
@@ -74,9 +110,7 @@ class XGBDDPMGenerator(BaseGenerator):
             True.
         model_per_label (bool): Whether to train separate models per categorical
             ``target_column`` value. Default: True.
-        iv_preprocessing (bool): Whether to model inflated numerical values via
-            extra categorical indicators and ``np.nan`` placeholders. Default:
-            True.
+        backend: The joblib backend to use. Options: "threads", "loky". Default: "threads".
         **kwargs: Additional keyword arguments accepted for API compatibility.
 
     Example:
@@ -104,6 +138,7 @@ class XGBDDPMGenerator(BaseGenerator):
         self,
         target_column: str,
         num_timesteps: int = 50,
+        schedule: str = "cosine",
         refresh_every_k: int = 1,
         noise_samples_per_row: int = 1,
         n_jobs: int = -1,
@@ -119,7 +154,7 @@ class XGBDDPMGenerator(BaseGenerator):
         objective: str = "v",  # x, epsilon, or v
         model_per_timestep: bool = True,
         model_per_label: bool = True,
-        iv_preprocessing: bool = True,
+        backend: str = "threads",
         random_state: int = 0,
         full_determinism: bool = False,
         **kwargs,
@@ -139,11 +174,15 @@ class XGBDDPMGenerator(BaseGenerator):
         self.noise_samples_per_row = noise_samples_per_row
         self.n_jobs = n_jobs
         self.n_jobs_xgb = n_jobs_xgb
+        self.backend = backend
+        self.schedule = schedule
+        assert self.schedule in (
+            "linear",
+            "cosine",
+        ), "schedule must be either linear or cosine"
 
         self.model_per_timestep = model_per_timestep
         self.model_per_label = model_per_label
-        self.iv_preprocessing = iv_preprocessing
-        self.iv_spikes = []
         self.refresh_every_k = refresh_every_k
         self.xgboost_params = (
             xgboost_params.copy() if xgboost_params is not None else {}
@@ -166,19 +205,11 @@ class XGBDDPMGenerator(BaseGenerator):
     def _fit(self, X: pd.DataFrame, discrete_features: list):
         # store original training column order for exact reconstruction
         self.ori_cols = X.columns.tolist()
-        input_discrete_features = list(discrete_features)
-        X, model_discrete_features = self._preprocess_inflated_values(
-            X, input_discrete_features
-        )
 
-        self.discrete_features = [
-            x for x in self.ori_cols if x in input_discrete_features
-        ]
-        self.model_discrete_features = [
-            x for x in X.columns if x in model_discrete_features
-        ]
+        self.discrete_features = [x for x in self.ori_cols if x in discrete_features]
+        self.model_discrete_features = self.discrete_features
         self.numerical_features = [
-            c for c in X.columns if c not in model_discrete_features
+            c for c in X.columns if c not in self.model_discrete_features
         ]
         self.numerical_features_set = set(self.numerical_features)
 
@@ -203,7 +234,9 @@ class XGBDDPMGenerator(BaseGenerator):
         X_tr = self._scale(X_tr)
 
         # build diffusion schedule used by the DDPM estimators and sampler
-        self.betas_, self.alphas_, self.alpha_bars_ = noise_schedule(self.timesteps)
+        self.betas_, self.alphas_, self.alpha_bars_ = get_beta_schedule(
+            schedule=self.schedule, T=self.timesteps
+        )
 
         self.n_cls_ = (
             self.n_cls.loc[self.disc_features_x].to_numpy(dtype=np.int64)
@@ -248,7 +281,7 @@ class XGBDDPMGenerator(BaseGenerator):
         res = []
         fits = Parallel(
             n_jobs=self.n_jobs,
-            prefer="threads",
+            prefer=self.backend,
             return_as="generator_unordered",
         )(tasks)
         with tqdm(total=len(tasks), desc="Fitting models") as pbar:
@@ -323,56 +356,12 @@ class XGBDDPMGenerator(BaseGenerator):
 
         # inverse scale
         syn = self._inverse_scale(syn)
-        syn = self._postprocess_inflated_values(syn)
 
         # reinstate original column order
         ori_cols = [x for x in self.ori_cols if x in syn.columns]
         syn = syn[ori_cols]
 
         return syn
-
-    def _preprocess_inflated_values(self, X: pd.DataFrame, discrete_features: list):
-        self.iv_spikes = []
-        if not self.iv_preprocessing:
-            return X.copy(), list(discrete_features)
-
-        x = X.copy()
-        discrete_features = list(discrete_features)
-        for col in [c for c in x.columns if c not in discrete_features]:
-            counts = x[col].value_counts()
-            if counts.empty:
-                continue
-
-            spikes = counts[counts > 10 * counts.mean()].index.tolist()
-            if not spikes:
-                continue
-
-            indicator = f"__iv_{col}"
-            while indicator in x.columns:
-                indicator = f"_{indicator}"
-
-            x[indicator] = 0
-            for i, value in enumerate(spikes, start=1):
-                mask = x[col] == value
-                x.loc[mask, indicator] = i
-                x.loc[mask, col] = np.nan
-
-            self.iv_spikes.append((col, indicator, spikes))
-            discrete_features.append(indicator)
-
-        return x, discrete_features
-
-    def _postprocess_inflated_values(self, X: pd.DataFrame):
-        if not self.iv_spikes:
-            return X
-
-        x = X.copy()
-        for col, indicator, spikes in self.iv_spikes:
-            indicator_values = x[indicator].round().astype(np.int64)
-            for i, value in enumerate(spikes, start=1):
-                x.loc[indicator_values == i, col] = value
-
-        return x.drop(columns=[indicator for _, indicator, _ in self.iv_spikes])
 
     def _fit_one(
         self,
@@ -607,8 +596,6 @@ class XGBDDPMGenerator(BaseGenerator):
             "timesteps": self.timesteps,
             "n_jobs": self.n_jobs,
             "model_per_timestep": self.model_per_timestep,
-            "iv_preprocessing": self.iv_preprocessing,
-            "iv_spikes": self.iv_spikes,
             "ori_cols": self.ori_cols,
             "discrete_features": self.discrete_features,
             "model_discrete_features": self.model_discrete_features,

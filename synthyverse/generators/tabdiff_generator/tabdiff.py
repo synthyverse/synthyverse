@@ -97,7 +97,7 @@ class TabDiffGenerator(BaseGenerator):
         k_init (float): Initial k for learned categorical schedules. Default: -6.0.
         k_offset (float): K offset for learned categorical schedules. Default: 1.0.
         cap_train_time (float): Time limit in seconds for training. Default: None.
-        val_steps (int): Epochs between training-set C2ST validation, or training steps when ``training_steps`` is provided. Set to <=0 to disable validation. Default: 5000.
+        val_steps (int): Epochs between training-set C2ST validation, or training steps when ``training_steps`` is provided. Set to <=0 to disable validation. Default: 1000.
 
     Example:
         >>> import pandas as pd
@@ -159,7 +159,7 @@ class TabDiffGenerator(BaseGenerator):
         k_init: float = -6.0,
         k_offset: float = 1.0,
         cap_train_time: Optional[float] = None,
-        val_steps: int = 5000,
+        val_steps: int = 1000,
         random_state: int = 0,
         full_determinism: bool = False,
     ):
@@ -282,10 +282,7 @@ class TabDiffGenerator(BaseGenerator):
                 n_obs += len(batch)
                 step += 1
                 train_time += time.monotonic() - step_start_time
-                if (
-                    self.cap_train_time is not None
-                    and train_time > self.cap_train_time
-                ):
+                if self.cap_train_time is not None and train_time > self.cap_train_time:
                     print(f"Training timed out after {self.cap_train_time} seconds.")
                     timed_out = True
                     break
@@ -307,7 +304,9 @@ class TabDiffGenerator(BaseGenerator):
                     self.diffusion.train()
 
             if n_obs == 0:
-                raise ValueError("TabDiff training produced no observations in an epoch.")
+                raise ValueError(
+                    "TabDiff training produced no observations in an epoch."
+                )
             total_loss = dloss_sum / n_obs + closs_sum / n_obs
             if not np.isfinite(total_loss):
                 raise ValueError(
