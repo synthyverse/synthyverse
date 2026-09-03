@@ -110,7 +110,7 @@ class XGBDDPMGenerator(BaseGenerator):
             True.
         model_per_label (bool): Whether to train separate models per categorical
             ``target_column`` value. Default: True.
-        backend: The joblib backend to use. Options: "threads", "loky". Default: "threads".
+        backend: The joblib backend to use. Options: "threading", "loky". Default: "threading".
         **kwargs: Additional keyword arguments accepted for API compatibility.
 
     Example:
@@ -154,7 +154,7 @@ class XGBDDPMGenerator(BaseGenerator):
         objective: str = "v",  # x, epsilon, or v
         model_per_timestep: bool = True,
         model_per_label: bool = True,
-        backend: str = "threads",
+        backend: str = "threading",
         random_state: int = 0,
         full_determinism: bool = False,
         **kwargs,
@@ -264,7 +264,7 @@ class XGBDDPMGenerator(BaseGenerator):
             "c" if x in model_disc_features_set else "q" for x in cols
         ]
         if not self.model_per_timestep:
-            self.model_feature_types.append("c")
+            self.model_feature_types.append("q")
         self.model_n_classes = (
             self.n_cls.loc[self.model_disc_features].to_numpy(dtype=np.int64)
             if self.model_disc_features
@@ -281,7 +281,7 @@ class XGBDDPMGenerator(BaseGenerator):
         res = []
         fits = Parallel(
             n_jobs=self.n_jobs,
-            prefer=self.backend,
+            backend=self.backend,
             return_as="generator_unordered",
         )(tasks)
         with tqdm(total=len(tasks), desc="Fitting models") as pbar:
@@ -329,7 +329,7 @@ class XGBDDPMGenerator(BaseGenerator):
                     delayed(self._inference_one_col)(x_t, j, col, t, lv)
                     for j, col in enumerate(cols)
                 )
-                res = Parallel(n_jobs=self.n_jobs, prefer="threads")(tasks)
+                res = Parallel(n_jobs=self.n_jobs, backend="threading")(tasks)
 
                 # build x0_hat
                 x0_hat = np.empty_like(x_t)

@@ -88,7 +88,13 @@ class arf:
                 x_real[col] = x_real[col].cat.codes
 
         # If no synthetic data provided, sample from marginals
-        x_synth = x_real.apply(lambda x: x.sample(frac=1).values)
+        x_synth = pd.DataFrame(
+            {
+                col: np.random.permutation(x_real[col].to_numpy())
+                for col in self.orig_colnames
+            },
+            columns=self.orig_colnames,
+        )
 
         # Merge real and synthetic data
         x = pd.concat([x_real, x_synth])
@@ -97,6 +103,8 @@ class arf:
 
         # pass on x_real
         self.x_real = x_real
+        x_real_values = x_real.to_numpy()
+        n_real = x_real.shape[0]
 
         # Fit initial RF model
         clf_0 = RandomForestClassifier(
@@ -120,46 +128,35 @@ class arf:
             while not converged:  # Start adversarial loop
                 # get nodeIDs
                 nodeIDs = clf_0.apply(self.x_real)  # dimension [terminalnode, tree]
-
-                # add observation ID to x_real
-                x_real_obs = x_real.copy()
-                x_real_obs["obs"] = range(0, x_real.shape[0])
-
-                # add observation ID to nodeIDs
-                nodeIDs_pd = pd.DataFrame(nodeIDs)
-                tmp = nodeIDs_pd.copy()
-                # tmp.columns = [ "tree" + str(c) for c in tmp.columns ]
-                tmp["obs"] = range(0, x_real.shape[0])
-                tmp = tmp.melt(id_vars=["obs"], value_name="leaf", var_name="tree")
-
-                # match real data to trees and leafs (node id for tree)
-                x_real_obs = pd.merge(
-                    left=x_real_obs, right=tmp, on=["obs"], sort=False
+                flat_draws = np.random.randint(
+                    n_real * self.num_trees, size=n_real
                 )
-                x_real_obs.drop("obs", axis=1, inplace=True)
-
-                # sample leafs
-                tmp.drop("obs", axis=1, inplace=True)
-                tmp = tmp.sample(x_real.shape[0], axis=0, replace=True)
-                tmp = pd.Series(tmp.value_counts(sort=False), name="cnt").reset_index()
-                draw_from = pd.merge(
-                    left=tmp, right=x_real_obs, on=["tree", "leaf"], sort=False
+                trees = flat_draws // n_real
+                leaves = nodeIDs[flat_draws % n_real, trees]
+                tree_leaves, groups = np.unique(
+                    np.column_stack((trees, leaves)), axis=0, return_inverse=True
                 )
-
-                # sample synthetic data from leaf
-                grpd = draw_from.groupby(["tree", "leaf"])
-                x_synth = [
-                    grpd.get_group(ind).apply(
-                        lambda x: x.sample(
-                            n=grpd.get_group(ind)["cnt"].iloc[0], replace=True
-                        ).values
+                x_synth_values = np.empty_like(x_real_values)
+                order = np.argsort(groups)
+                sorted_groups = groups[order]
+                starts = np.r_[0, np.flatnonzero(np.diff(sorted_groups)) + 1]
+                ends = np.r_[starts[1:], n_real]
+                for start, end in zip(starts, ends):
+                    tree, leaf = tree_leaves[sorted_groups[start]]
+                    obs = order[start:end]
+                    leaf_obs = np.flatnonzero(nodeIDs[:, tree] == leaf)
+                    row_draws = np.random.choice(
+                        leaf_obs, size=(len(obs), self.p), replace=True
                     )
-                    for ind in grpd.indices
-                ]
-                x_synth = pd.concat(x_synth).drop(["cnt", "tree", "leaf"], axis=1)
+                    x_synth_values[obs] = x_real_values[
+                        row_draws, np.arange(self.p)
+                    ]
+                x_synth = pd.DataFrame(
+                    x_synth_values, columns=self.orig_colnames
+                ).astype(x_real.dtypes.to_dict(), copy=False)
 
                 # delete unnecessary objects
-                del (nodeIDs, nodeIDs_pd, tmp, x_real_obs, draw_from)
+                del (nodeIDs, flat_draws, trees, leaves, tree_leaves, groups)
 
                 # merge real and synthetic data
                 x = pd.concat([x_real, x_synth])
@@ -432,6 +429,49 @@ class arf:
             ),
         }
 
+    def _build_forge_cache(self):
+        leaves = (
+            self.bnds[["f_idx", "tree", "nodeid", "cvg"]]
+            .drop_duplicates()
+            .reset_index(drop=True)
+        )
+        self._forge_leaf_probs = leaves["cvg"].to_numpy(dtype=float) / self.num_trees
+        leaf_index = pd.MultiIndex.from_frame(leaves[["tree", "nodeid"]])
+
+        self._forge_num_cache = {}
+        if np.invert(self.factor_cols).any():
+            params = self.params.copy()
+            params["_leaf_idx"] = leaf_index.get_indexer(
+                pd.MultiIndex.from_frame(params[["tree", "nodeid"]])
+            )
+            for col in np.array(self.orig_colnames)[np.invert(self.factor_cols)]:
+                col_params = params[params["variable"] == col].sort_values("_leaf_idx")
+                self._forge_num_cache[col] = {
+                    key: col_params[key].to_numpy(dtype=float)
+                    for key in ["min", "max", "mean", "sd"]
+                }
+
+        self._forge_cat_cache = {}
+        if self.factor_cols.any():
+            leaf_lookup = dict(zip(leaves["f_idx"], range(len(leaves))))
+            for col in np.array(self.orig_colnames)[self.factor_cols]:
+                values = [None] * len(leaves)
+                cdfs = [None] * len(leaves)
+                col_probs = self.class_probs[self.class_probs["variable"] == col]
+                order = np.argsort(col_probs["f_idx"].to_numpy())
+                f_idxs = col_probs["f_idx"].to_numpy()[order]
+                col_values = col_probs["value"].to_numpy(dtype=int)[order]
+                col_probs = col_probs["prob"].to_numpy(dtype=float)[order]
+                starts = np.r_[0, np.flatnonzero(np.diff(f_idxs)) + 1]
+                ends = np.r_[starts[1:], len(f_idxs)]
+                for start, end in zip(starts, ends):
+                    leaf_idx = leaf_lookup[f_idxs[start]]
+                    values[leaf_idx] = col_values[start:end]
+                    cdf = np.cumsum(col_probs[start:end])
+                    cdf[-1] = 1.0
+                    cdfs[leaf_idx] = cdf
+                self._forge_cat_cache[col] = (values, cdfs)
+
     # TO DO: optional -- think of dropping f_idx
     def forge(self, n):
         """This part is for data generation (FORGE)
@@ -450,44 +490,37 @@ class arf:
 
         # Sample new observations and get their terminal nodes
         # Draw random leaves with probability proportional to coverage
-        unique_bnds = self.bnds[["tree", "nodeid", "cvg"]].drop_duplicates()
+        if not hasattr(self, "_forge_leaf_probs"):
+            self._build_forge_cache()
         draws = np.random.choice(
-            a=range(unique_bnds.shape[0]), p=unique_bnds["cvg"] / self.num_trees, size=n
+            len(self._forge_leaf_probs), p=self._forge_leaf_probs, size=n
         )
-        sampled_trees_nodes = (
-            unique_bnds[["tree", "nodeid"]]
-            .iloc[draws,]
-            .reset_index(drop=True)
-            .reset_index()
-            .rename(columns={"index": "obs"})
-        )
-
-        # Get distributions parameters for each new obs.
-        if np.invert(self.factor_cols).any():
-            obs_params = pd.merge(
-                sampled_trees_nodes, self.params, on=["tree", "nodeid"]
-            ).sort_values(by=["obs"], ignore_index=True)
-
-        # Get probabilities for each new obs.
         if self.factor_cols.any():
-            obs_probs = pd.merge(
-                sampled_trees_nodes, self.class_probs, on=["tree", "nodeid"]
-            ).sort_values(by=["obs"], ignore_index=True)
+            order = np.argsort(draws)
+            sorted_draws = draws[order]
+            starts = np.r_[0, np.flatnonzero(np.diff(sorted_draws)) + 1]
+            ends = np.r_[starts[1:], n]
 
         # Sample new data from mixture distribution over trees
-        data_new = pd.DataFrame(index=range(n), columns=range(self.p))
+        data_new = {}
         for j in range(self.p):
             colname = self.orig_colnames[j]
 
             if self.factor_cols.iloc[j]:
                 # Factor columns: Multinomial distribution
-                data_new.isetitem(
-                    j,
-                    obs_probs[obs_probs["variable"] == colname]
-                    .groupby("obs")
-                    .sample(weights="prob")["value"]
-                    .reset_index(drop=True),
-                )
+                values, cdfs = self._forge_cat_cache[colname]
+                sampled = np.empty(n, dtype=int)
+                for start, end in zip(starts, ends):
+                    leaf_idx = sorted_draws[start]
+                    rows = order[start:end]
+                    sampled[rows] = values[leaf_idx][
+                        np.searchsorted(
+                            cdfs[leaf_idx],
+                            np.random.random(end - start),
+                            side="right",
+                        )
+                    ]
+                data_new[colname] = sampled
 
             else:
                 # Continuous columns: Match estimated distribution parameters with r...() function
@@ -496,31 +529,29 @@ class arf:
                     # data_new.loc[:, j] = np.random.normal(obs_params.loc[obs_params["variable"] == colname, "mean"], obs_params.loc[obs_params["variable"] == colname, "sd"], size = n)
 
                     # sample from truncated normal distribution
-                    myclip_a = obs_params.loc[obs_params["variable"] == colname, "min"]
-                    myclip_b = obs_params.loc[obs_params["variable"] == colname, "max"]
-                    myloc = obs_params.loc[obs_params["variable"] == colname, "mean"]
-                    myscale = obs_params.loc[obs_params["variable"] == colname, "sd"]
+                    params = self._forge_num_cache[colname]
+                    myclip_a = params["min"][draws]
+                    myclip_b = params["max"][draws]
+                    myloc = params["mean"][draws]
+                    myscale = params["sd"][draws]
                     zero_sd = myscale == 0
                     samples = myloc.copy()
                     if (~zero_sd).any():
-                        samples.loc[~zero_sd] = scipy.stats.truncnorm(
-                            a=(myclip_a.loc[~zero_sd] - myloc.loc[~zero_sd])
-                            / myscale.loc[~zero_sd],
-                            b=(myclip_b.loc[~zero_sd] - myloc.loc[~zero_sd])
-                            / myscale.loc[~zero_sd],
-                            loc=myloc.loc[~zero_sd],
-                            scale=myscale.loc[~zero_sd],
+                        samples[~zero_sd] = scipy.stats.truncnorm(
+                            a=(myclip_a[~zero_sd] - myloc[~zero_sd])
+                            / myscale[~zero_sd],
+                            b=(myclip_b[~zero_sd] - myloc[~zero_sd])
+                            / myscale[~zero_sd],
+                            loc=myloc[~zero_sd],
+                            scale=myscale[~zero_sd],
                         ).rvs(size=(~zero_sd).sum())
-                    data_new.isetitem(
-                        j,
-                        samples.reset_index(drop=True),
-                    )
+                    data_new[colname] = samples
                     del (myclip_a, myclip_b, myloc, myscale, zero_sd, samples)
                 else:
                     raise ValueError("Other distributions not yet implemented")
 
         # Use original column names
-        data_new = data_new.set_axis(self.orig_colnames, axis=1, copy=False)
+        data_new = pd.DataFrame(data_new, columns=self.orig_colnames)
 
         # Convert categories back to category
         for col in self.orig_colnames:

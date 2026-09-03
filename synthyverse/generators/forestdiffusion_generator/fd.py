@@ -38,6 +38,7 @@ class ForestDiffusionGenerator(BaseGenerator):
         n_jobs: The number of parallel jobs to use. Default: -1.
         backend: The joblib backend to use. Default: "loky".
         n_batch: The number of batches to use in XGBoost data iterator. Set to <=0 to disable data iterator. Default: -1.
+        memory_cap_gb: The maximum size in GiB for XGBoost models written to logdir during training. Default: 100.
 
     Example:
         >>> import pandas as pd
@@ -75,6 +76,7 @@ class ForestDiffusionGenerator(BaseGenerator):
         n_jobs: int = -1,
         backend: str = "loky",
         n_batch: int = -1,
+        memory_cap_gb: float = 100,
         random_state: int = 0,
         full_determinism: bool = False,
     ):
@@ -98,6 +100,7 @@ class ForestDiffusionGenerator(BaseGenerator):
         self.n_jobs = n_jobs
         self.backend = backend
         self.n_batch = n_batch
+        self.memory_cap_gb = memory_cap_gb
         self.models_to_disk = logdir is not None
         self.model = None
         self.random_state = random_state
@@ -158,6 +161,7 @@ class ForestDiffusionGenerator(BaseGenerator):
             backend=self.backend,  # joblib Parallel backend. Can be "loky", "multiprocessing", or "threading". We recommend not changing this.
             n_batch=self.n_batch,  # If >0, use data iterator with the specified number of batches when constructing QuantileDMatrix
             models_to_disk=self.models_to_disk,
+            memory_cap_gb=self.memory_cap_gb,
             seed=self.random_state,
         )
 
@@ -194,6 +198,7 @@ class ForestDiffusionGenerator(BaseGenerator):
             "n_jobs": self.n_jobs,
             "backend": self.backend,
             "n_batch": self.n_batch,
+            "memory_cap_gb": self.memory_cap_gb,
             "models_to_disk": self.models_to_disk,
         }
         for attr in ("output_columns", "feature_columns", "discrete_features"):
@@ -267,4 +272,5 @@ class ForestDiffusionGenerator(BaseGenerator):
         self.model.models_to_disk = True
         self.model.set_logdir(str(model_path))
         self.logdir = str(model_path)
+        self.memory_cap_gb = self.model.memory_cap_gb
         self.models_to_disk = True

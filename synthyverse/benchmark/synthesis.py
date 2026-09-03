@@ -783,8 +783,9 @@ class TabularSynthesisBenchmark:
             return generator
 
         legacy_name = re.split(r"[\W_]+", generator, maxsplit=1)[0]
-        if legacy_name != generator and TabularSynthesisBenchmark._is_registered_generator(
-            legacy_name
+        if (
+            legacy_name != generator
+            and TabularSynthesisBenchmark._is_registered_generator(legacy_name)
         ):
             return legacy_name
         return generator
@@ -1071,7 +1072,7 @@ def training_timeout_rows(
 class PeakMemoryMonitor:
     """Sample memory used above the pre-training baseline."""
 
-    def __init__(self, interval_seconds: float = 1.0):
+    def __init__(self, interval_seconds: float = 0.1):
         self.interval_seconds = interval_seconds
         self.peak_memory_mb: Optional[float] = None
         self.peak_cuda_memory_mb: Optional[float] = None
@@ -1162,7 +1163,34 @@ def _make_psutil_memory_reader():
     except Exception:
         return None
 
+    def process_memory_bytes(current_process) -> Optional[int]:
+        try:
+            memory_info = current_process.memory_full_info()
+        except Exception:
+            try:
+                return int(current_process.memory_info().rss)
+            except Exception:
+                return None
+
+        for field in ("pss", "uss", "rss"):
+            value = getattr(memory_info, field, None)
+            if value is not None:
+                return int(value)
+        return None
+
     def read_memory_bytes() -> Optional[int]:
+        try:
+            processes = [process, *process.children(recursive=True)]
+        except Exception:
+            processes = [process]
+
+        total_bytes = 0
+        for current_process in processes:
+            memory_bytes = process_memory_bytes(current_process)
+            if memory_bytes is not None:
+                total_bytes += memory_bytes
+        if total_bytes:
+            return total_bytes
         try:
             return int(process.memory_info().rss)
         except Exception:

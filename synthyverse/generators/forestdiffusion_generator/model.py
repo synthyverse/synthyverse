@@ -25,6 +25,14 @@ from .utils import (
 )
 
 
+def _directory_size(path):
+    return sum(
+        os.path.getsize(os.path.join(root, name))
+        for root, _, files in os.walk(path)
+        for name in files
+    )
+
+
 ## Class for the flow-matching or diffusion model
 # Categorical features should be numerical (rather than strings), make sure to use x = pd.factorize(x)[0] to make them as such
 # Make sure to specify which features are categorical and which are integers
@@ -52,6 +60,7 @@ class ForestModel:
         backend="loky",  # joblib Parallel backend. Can be "loky", "multiprocessing", or "threading". We recommend not changing this.
         n_batch=-1,  # If >0, use data iterator with the specified number of batches when constructing QuantileDMatrix
         models_to_disk=None,
+        memory_cap_gb=100,
         seed=0,
     ):
 
@@ -73,6 +82,7 @@ class ForestModel:
         if models_to_disk and logdir is None:
             raise ValueError("logdir must be provided when models_to_disk is enabled.")
         self.models_to_disk = models_to_disk
+        self.memory_cap_gb = memory_cap_gb
         self.set_logdir(logdir)
         assert diffusion_type == "vp" or diffusion_type == "flow"
         self.diffusion_type = diffusion_type
@@ -228,6 +238,7 @@ class ForestModel:
             model_dir,
             n_batch,
             models_to_disk,
+            memory_cap_bytes,
         ):
             path = (
                 os.path.join(model_dir, f"model_{i}_{j}.ubj")
@@ -270,6 +281,11 @@ class ForestModel:
                 )
                 if models_to_disk:
                     out.save_model(path)
+            if models_to_disk and _directory_size(model_dir) > memory_cap_bytes:
+                raise RuntimeError(
+                    f"ForestDiffusion XGBoost models exceeded the "
+                    f"{memory_cap_bytes / 1024**3:.2f} GiB memory cap."
+                )
             if not models_to_disk:
                 return i, j, out
             return
@@ -302,6 +318,7 @@ class ForestModel:
             model_dir=self.train_dir,
             n_batch=self.n_batch,
             models_to_disk=self.models_to_disk,
+            memory_cap_bytes=self.memory_cap_gb * 1024**3,
         )
 
         def create_memmap(array, file_path):
@@ -346,6 +363,7 @@ class ForestModel:
             self.regr = [[None for _ in range(self.n_t)] for _ in self.y_uniques]
 
         # Fit model(s)
+        training_error = None
         try:
             # joblib sets environment variables to allow a maximum of cpu_count()//n_jobs threads for each worker process.
             # setting n_jobs explicitly rather than using the default -1 allows us to maximize cpu use on small training runs.
@@ -386,10 +404,13 @@ class ForestModel:
                                     f"Complete training {n_complete_tasks} ensembles out of {self.n_t * len(self.mask_y)}\n"
                                 )
                         pbar.update(1)
+        except Exception as exc:
+            training_error = exc
+            raise
         finally:
             del X0_mmap, X1_mmap, X1_valid_mmap, Z_mmap, Z_valid_mmap
             gc.collect()
-            shutil.rmtree(temp_folder, ignore_errors=False)
+            shutil.rmtree(temp_folder, ignore_errors=training_error is not None)
 
         if self.checkpoint_path is not None:
             with open(self.checkpoint_path, "w") as file:
