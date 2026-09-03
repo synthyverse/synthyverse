@@ -170,9 +170,9 @@ class TVAE(BaseSynthesizer):
         self.decoder = Decoder(self.embedding_dim, self.decompress_dims, data_dim).to(
             self._device
         )
-        print(
-            f"Total trainable parameters: {get_total_trainable_params(encoder) + get_total_trainable_params(self.decoder)}"
-        )
+        self.trainable_params_ = get_total_trainable_params(
+            encoder
+        ) + get_total_trainable_params(self.decoder)
         optimizerAE = Adam(
             list(encoder.parameters()) + list(self.decoder.parameters()),
             weight_decay=self.l2scale,
@@ -187,6 +187,9 @@ class TVAE(BaseSynthesizer):
         train_time = 0.0
         step = 0
         timed_out = False
+        self.timed_out_ = False
+        self.trained_steps_ = 0
+        self.trained_epochs_ = 0
         stop_training = False
         for i in iterator:
             loss_values = []
@@ -216,6 +219,7 @@ class TVAE(BaseSynthesizer):
                 batch.append(id_)
                 loss_values.append(loss.detach().cpu().item())
                 step += 1
+                self.trained_steps_ = step
                 train_time += time.monotonic() - step_start_time
                 if (
                     self.cap_train_time is not None
@@ -223,6 +227,7 @@ class TVAE(BaseSynthesizer):
                 ):
                     print(f"Training timed out after {self.cap_train_time} seconds.")
                     timed_out = True
+                    self.timed_out_ = True
                     break
                 if validate_callback is not None and validate_callback(
                     step, i + 1, False
@@ -248,6 +253,7 @@ class TVAE(BaseSynthesizer):
                 iterator.set_description(
                     iterator_description.format(loss=loss.detach().cpu().item())
                 )
+            self.trained_epochs_ = i + 1
             if (
                 not timed_out
                 and not stop_training

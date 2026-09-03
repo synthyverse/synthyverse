@@ -38,9 +38,15 @@ class TabSynGenerator(BaseGenerator):
 
     Args:
         target_column (str): Name of the target column, potentially used for stratified validation splitting. Default: None.
-        val_size (float): Fraction of training rows reserved for VAE
-            learning-rate / beta scheduling. Default: 0.15.
-        val_steps (int): Epochs between diffusion training-set C2ST validation, or training steps when ``training_steps`` is provided. Set to <=0 to disable validation. Default: 500.
+        val_size (float): Fraction of rows reserved for VAE validation and
+            diffusion C2ST validation. Set to <=0 to disable both. Default: 0.2.
+        val_steps (int): Epochs between diffusion validation C2ST checks, or
+            training steps when ``training_steps`` is provided. Set to <=0 to
+            disable C2ST validation. Default: 500.
+        patience (int): Number of consecutive non-improving C2ST validation
+            checks before early stopping. Default: 3.
+        max_validation_rows (int): Maximum number of rows reserved for
+            validation. Extra rows remain in the training set. Default: 30000.
         batch_size (int): Batch size applied to both VAE and diffusion training. Default: 4096.
         epochs (int): Maximum number of diffusion training epochs. Default: 10001.
         training_steps (int, optional): Total diffusion training steps. When
@@ -99,8 +105,10 @@ class TabSynGenerator(BaseGenerator):
     def __init__(
         self,
         target_column: Optional[str] = None,
-        val_size: float = 0.15,
+        val_size: float = 0.2,
         val_steps: int = 500,
+        patience: int = 3,
+        max_validation_rows: int = 30_000,
         vae_lr: float = 1e-3,
         vae_wd: float = 0,
         vae_d_token: int = 4,
@@ -129,6 +137,8 @@ class TabSynGenerator(BaseGenerator):
         self.target_column = target_column
         self.val_size = val_size
         self.val_steps = val_steps
+        self.patience = patience
+        self.max_validation_rows = max_validation_rows
         self.batch_size = batch_size
         self.epochs = epochs
         self.training_steps = training_steps
@@ -159,7 +169,8 @@ class TabSynGenerator(BaseGenerator):
         self.discrete_features = list(discrete_features)
         if self.val_size >= 1:
             raise ValueError("TabSyn requires val_size to be less than 1.")
-        x_train_raw = x.copy()
+        if self.patience < 1:
+            raise ValueError("TabSyn requires patience to be at least 1.")
 
         x, x_val_raw = split_validation(
             x,
@@ -167,7 +178,10 @@ class TabSynGenerator(BaseGenerator):
             self.target_column,
             self.discrete_features,
             self.random_state,
+            self.max_validation_rows,
         )
+        x = x.reset_index(drop=True)
+        x_val_raw = x_val_raw.reset_index(drop=True) if x_val_raw is not None else None
         x_val_vae = x_val_raw.copy() if x_val_raw is not None else None
 
         self.category_unknown_indices = np.array(
@@ -184,7 +198,8 @@ class TabSynGenerator(BaseGenerator):
             x_val_vae[self.numerical_features] = self.scaler.transform(
                 x_val_vae[self.numerical_features]
             )
-        if x_val_vae is None:
+        use_c2st_validation = self.val_steps > 0 and x_val_raw is not None
+        if x_val_vae is None or use_c2st_validation:
             x_diffusion = x
         else:
             x_diffusion = pd.concat([x, x_val_vae], ignore_index=True)
@@ -217,7 +232,10 @@ class TabSynGenerator(BaseGenerator):
         if diffusion_time_cap is not None:
             diffusion_time_cap += max(vae_time_cap - vae_elapsed, 0)
         self.model = self._train_diffusion(
-            train_z, diffusion_epochs, diffusion_time_cap, x_train_raw
+            train_z,
+            diffusion_epochs,
+            diffusion_time_cap,
+            x_val_raw if use_c2st_validation else None,
         )
 
         return self
@@ -329,7 +347,9 @@ class TabSynGenerator(BaseGenerator):
         start_time = time.monotonic()
         timed_out = False
         step = 0
-        for _ in pbar:
+        self.vae_trained_steps_ = 0
+        self.vae_trained_epochs_ = 0
+        for epoch in pbar:
             vae.train()
             for batch_num, batch_cat in train_loader:
                 batch_num = batch_num.to(self.device)
@@ -347,10 +367,13 @@ class TabSynGenerator(BaseGenerator):
                 loss.backward()
                 optimizer.step()
                 step += 1
+                self.vae_trained_steps_ = step
                 if time_cap is not None and time.monotonic() - start_time > time_cap:
                     print(f"Training timed out after {time_cap} seconds.")
                     timed_out = True
                     break
+
+            self.vae_trained_epochs_ = epoch + 1
 
             if timed_out:
                 break
@@ -429,7 +452,7 @@ class TabSynGenerator(BaseGenerator):
             train_z = np.concatenate(train_z)
         return train_z
 
-    def _train_diffusion(self, train_z, epochs, time_cap, X_train):
+    def _train_diffusion(self, train_z, epochs, time_cap, X_val):
         train_z = torch.from_numpy(train_z).float()
         train_z = train_z[:, 1:, :]
         B, num_tokens, self.token_dim = train_z.shape
@@ -460,8 +483,6 @@ class TabSynGenerator(BaseGenerator):
             self.device
         )
 
-        print(f"Total trainable parameters: {get_total_trainable_params(model)}")
-
         optimizer = torch.optim.Adam(
             model.parameters(),
             lr=self.lr,
@@ -473,10 +494,27 @@ class TabSynGenerator(BaseGenerator):
 
         best_val_score = float("inf")
         best_val_model = None
+        bad_val_steps = 0
+        use_validation = X_val is not None
+
+        def validate():
+            nonlocal best_val_score, best_val_model, bad_val_steps
+            model.eval()
+            score = validate_c2st(self, X_val, random_state=self.random_state)
+            if score < best_val_score:
+                best_val_score = score
+                best_val_model = clone_state_dict(model)
+                bad_val_steps = 0
+            else:
+                bad_val_steps += 1
+            return bad_val_steps >= self.patience
+
         train_time = 0.0
         timed_out = False
         stop_training = False
         step = 0
+        self.diffusion_trained_steps_ = 0
+        self.diffusion_trained_epochs_ = 0
         for epoch in tqdm(range(epochs)):
             batch_loss = 0.0
             len_input = 0
@@ -493,6 +531,7 @@ class TabSynGenerator(BaseGenerator):
                 loss.backward()
                 optimizer.step()
                 step += 1
+                self.diffusion_trained_steps_ = step
                 train_time += time.monotonic() - step_start_time
                 if time_cap is not None and train_time > time_cap:
                     print(f"Training timed out after {time_cap} seconds.")
@@ -500,40 +539,34 @@ class TabSynGenerator(BaseGenerator):
                     break
 
                 if (
-                    self.val_steps > 0
+                    use_validation
                     and self.training_steps is not None
                     and step > 0
                     and step % self.val_steps == 0
                 ):
-                    model.eval()
-                    score = validate_c2st(self, X_train, random_state=self.random_state)
-                    if score < best_val_score:
-                        best_val_score = score
-                        best_val_model = clone_state_dict(model)
-                    else:
+                    if validate():
                         stop_training = True
                         break
                     model.train()
 
             curr_loss = batch_loss / len_input
             scheduler.step(curr_loss)
+            self.diffusion_trained_epochs_ = epoch + 1
             if timed_out or stop_training:
                 break
 
             if (
-                self.val_steps > 0
+                use_validation
                 and self.training_steps is None
                 and (epoch + 1) % self.val_steps == 0
             ):
-                model.eval()
-                score = validate_c2st(self, X_train, random_state=self.random_state)
-                if score < best_val_score:
-                    best_val_score = score
-                    best_val_model = clone_state_dict(model)
-                else:
+                if validate():
                     stop_training = True
             if timed_out or stop_training:
                 break
+
+        if timed_out and use_validation:
+            validate()
 
         if best_val_model is not None:
             model.load_state_dict(
@@ -541,6 +574,27 @@ class TabSynGenerator(BaseGenerator):
             )
         model.eval()
         return model
+
+    def get_trainable_params(self):
+        return get_total_trainable_params(self.model)
+
+    def get_trained_steps_epochs(self):
+        return {
+            (
+                "vae_trained_steps"
+                if self.vae_training_steps is not None
+                else "vae_trained_epochs"
+            ): (
+                self.vae_trained_steps_
+                if self.vae_training_steps is not None
+                else self.vae_trained_epochs_
+            ),
+            ("trained_steps" if self.training_steps is not None else "trained_epochs"): (
+                self.diffusion_trained_steps_
+                if self.training_steps is not None
+                else self.diffusion_trained_epochs_
+            ),
+        }
 
     def _compute_loss(self, X_num, X_cat, Recon_X_num, Recon_X_cat, mu_z, logvar_z):
         mse_loss = (X_num - Recon_X_num).pow(2).mean()
@@ -591,6 +645,10 @@ class TabSynGenerator(BaseGenerator):
             "sample_dim": self.sample_dim,
             "token_dim": self.token_dim,
             "train_z_mean": self.train_z_mean,
+            "vae_trained_steps_": self.vae_trained_steps_,
+            "vae_trained_epochs_": self.vae_trained_epochs_,
+            "diffusion_trained_steps_": self.diffusion_trained_steps_,
+            "diffusion_trained_epochs_": self.diffusion_trained_epochs_,
         }
 
     def _save_extra(self, path: Path) -> None:

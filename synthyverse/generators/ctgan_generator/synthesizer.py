@@ -393,9 +393,9 @@ class CTGAN(BaseSynthesizer):
             pac=self.pac,
         ).to(self._device)
 
-        print(
-            f"Total trainable parameters: {get_total_trainable_params(self._generator) + get_total_trainable_params(discriminator)}"
-        )
+        self.trainable_params_ = get_total_trainable_params(
+            self._generator
+        ) + get_total_trainable_params(discriminator)
 
         optimizerG = optim.Adam(
             self._generator.parameters(),
@@ -427,6 +427,9 @@ class CTGAN(BaseSynthesizer):
         train_time = 0.0
         step = 0
         timed_out = False
+        self.timed_out_ = False
+        self.trained_steps_ = 0
+        self.trained_epochs_ = 0
         stop_training = False
         for i in epoch_iterator:
             for id_ in range(steps_per_epoch):
@@ -508,6 +511,7 @@ class CTGAN(BaseSynthesizer):
                 loss_g.backward()
                 optimizerG.step()
                 step += 1
+                self.trained_steps_ = step
                 train_time += time.monotonic() - step_start_time
                 if (
                     self.cap_train_time is not None
@@ -515,6 +519,7 @@ class CTGAN(BaseSynthesizer):
                 ):
                     print(f"Training timed out after {self.cap_train_time} seconds.")
                     timed_out = True
+                    self.timed_out_ = True
                     break
                 if validate_callback is not None and validate_callback(
                     step, i + 1, False
@@ -543,6 +548,7 @@ class CTGAN(BaseSynthesizer):
                 epoch_iterator.set_description(
                     description.format(gen=generator_loss, dis=discriminator_loss)
                 )
+            self.trained_epochs_ = i + 1
             if (
                 not timed_out
                 and not stop_training

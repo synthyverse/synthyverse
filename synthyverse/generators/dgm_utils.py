@@ -32,23 +32,22 @@ def preserve_rng_state(generator):
 def validate_c2st(
     self,
     X: pd.DataFrame,
-    nfolds: int = 3,
+    nfolds: int = 5,
     random_state: int = 0,
-    max_samples: int = 50_000,
+    n_repeats: int = 3,
 ):
-    n = min(len(X), max_samples)
-    n_sets = int(max(min(ceil(max_samples / len(X)), 10), 3))
+    if n_repeats < 1:
+        raise ValueError("n_repeats must be at least 1.")
     with preserve_rng_state(self):
         result = 0
-        for i in range(n_sets):
+        for i in range(n_repeats):
             state = random_state + i + 1
-            x = X.sample(n, replace=False, ignore_index=True, random_state=state)
-            syn = self.generate(n, random_state=state)
+            syn = self.generate(len(X), random_state=state)
             score = ClassifierTwoSampleTest(nfold=nfolds, random_state=state).evaluate(
-                x, syn, discrete_features=self.discrete_features
+                X.reset_index(drop=True), syn, discrete_features=self.discrete_features
             )["c2st.auc"]
             result += abs(score - 0.5)
-        return result / n_sets
+        return result / n_repeats
 
 
 def clone_state_dict(model):
@@ -61,15 +60,25 @@ def split_validation(
     target_column: Optional[str] = None,
     discrete_features: list[str] = [],
     random_state: int = 42,
+    max_validation_rows: Optional[int] = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    if val_size <= 0:
+    if val_size <= 0 or len(X) <= 1:
         return X.copy(), None
-    if target_column is not None and target_column in discrete_features:
+    if target_column is not None and target_column not in X:
+        raise ValueError(f"target_column '{target_column}' is not in X.")
+    n_val = min(int(ceil(len(X) * val_size)), len(X) - 1)
+    if max_validation_rows is not None:
+        if max_validation_rows <= 0:
+            raise ValueError("max_validation_rows must be positive.")
+        n_val = min(n_val, max_validation_rows)
+    if n_val <= 0:
+        return X.copy(), None
+    if target_column is not None:
         return train_test_split(
-            X, test_size=val_size, random_state=random_state, stratify=X[target_column]
+            X, test_size=n_val, random_state=random_state, stratify=X[target_column]
         )
     else:
-        return train_test_split(X, test_size=val_size, random_state=random_state)
+        return train_test_split(X, test_size=n_val, random_state=random_state)
 
 
 class QuantileStandardScaler:

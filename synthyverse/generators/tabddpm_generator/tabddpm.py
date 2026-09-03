@@ -15,6 +15,7 @@ from ..dgm_utils import (
     FastTensorDataLoader,
     QuantileStandardScaler,
     clone_state_dict,
+    split_validation,
     validate_c2st,
 )
 from ...utils.utils import resolve_epochs_from_training_steps
@@ -53,7 +54,15 @@ class TabDDPMGenerator(BaseGenerator):
             Default: ``{}``.
         embedding_dim (int): Embedding dimension. Default: 128.
         cap_train_time (float): Time limit in seconds for training. Default: None.
-        val_steps (int): Epochs between training-set C2ST validation, or training steps when ``training_steps`` is provided. Set to <=0 to disable validation. Default: 200.
+        val_size (float): Fraction of rows reserved for C2ST validation. Set
+            to <=0 to disable C2ST early stopping. Default: 0.2.
+        val_steps (int): Epochs between validation C2ST checks, or training
+            steps when ``training_steps`` is provided. Set to <=0 to disable
+            validation. Default: 200.
+        patience (int): Number of consecutive non-improving C2ST validation
+            checks before early stopping. Default: 3.
+        max_validation_rows (int): Maximum number of rows reserved for C2ST
+            validation. Extra rows remain in the training set. Default: 30000.
 
     Example:
         >>> import pandas as pd
@@ -91,7 +100,10 @@ class TabDDPMGenerator(BaseGenerator):
         model_params: dict = {},
         embedding_dim: int = 128,
         cap_train_time: Optional[float] = None,
+        val_size: float = 0.2,
         val_steps: int = 200,
+        patience: int = 3,
+        max_validation_rows: int = 30_000,
         random_state: int = 0,
         full_determinism: bool = False,
         training_steps: int = None,
@@ -112,7 +124,10 @@ class TabDDPMGenerator(BaseGenerator):
         self.conditional_generation = conditional_generation
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.cap_train_time = cap_train_time
+        self.val_size = val_size
         self.val_steps = val_steps
+        self.patience = patience
+        self.max_validation_rows = max_validation_rows
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -125,6 +140,21 @@ class TabDDPMGenerator(BaseGenerator):
         if self.conditional_generation and self.target_column not in X.columns:
             raise ValueError(f"target_column '{self.target_column}' is not in X.")
         X = X.copy()
+        if self.val_size >= 1:
+            raise ValueError("TabDDPM requires val_size to be less than 1.")
+        if self.patience < 1:
+            raise ValueError("TabDDPM requires patience to be at least 1.")
+        X_val = None
+        if self.val_size > 0 and self.val_steps > 0:
+            X, X_val = split_validation(
+                X,
+                self.val_size,
+                self.target_column,
+                random_state=self.random_state,
+                max_validation_rows=self.max_validation_rows,
+            )
+            X = X.reset_index(drop=True)
+            X_val = X_val.reset_index(drop=True) if X_val is not None else None
         self.is_conditional = (
             self.conditional_generation and self.target_column in self.discrete_features
         )
@@ -147,7 +177,7 @@ class TabDDPMGenerator(BaseGenerator):
                 self._cond_dist = counts / counts.sum()
 
         train = self._fit_transform(train, discrete_columns)
-        self._fit_diffusion(train, cond, discrete_columns, X)
+        self._fit_diffusion(train, cond, discrete_columns, X_val)
         return self
 
     def _fit_transform(self, X: pd.DataFrame, discrete_columns: list) -> pd.DataFrame:
@@ -178,7 +208,7 @@ class TabDDPMGenerator(BaseGenerator):
         X: pd.DataFrame,
         cond: Optional[pd.Series],
         discrete_columns: list,
-        X_train: pd.DataFrame,
+        X_val: Optional[pd.DataFrame],
     ) -> None:
         cat_info = [
             (col, self._categorical_cardinality(col)) for col in discrete_columns
@@ -225,10 +255,6 @@ class TabDDPMGenerator(BaseGenerator):
             device=self.device,
         ).to(self.device)
 
-        print(
-            f"Total trainable parameters: {get_total_trainable_params(self.diffusion)}"
-        )
-
         self.ema_model = deepcopy(self.diffusion.denoise_fn)
         for param in self.ema_model.parameters():
             param.detach_()
@@ -250,9 +276,26 @@ class TabDDPMGenerator(BaseGenerator):
 
         best_val_score = float("inf")
         best_val_model = None
+        bad_val_steps = 0
+        use_validation = X_val is not None
+
+        def validate():
+            nonlocal best_val_score, best_val_model, bad_val_steps
+            self.diffusion.eval()
+            score = validate_c2st(self, X_val, random_state=self.random_state)
+            if score < best_val_score:
+                best_val_score = score
+                best_val_model = clone_state_dict(self.diffusion)
+                bad_val_steps = 0
+            else:
+                bad_val_steps += 1
+            return bad_val_steps >= self.patience
+
         train_time = 0.0
         timed_out = False
         stop_training = False
+        self.trained_steps_ = 0
+        self.trained_epochs_ = 0
         for epoch in pbar:
             self.diffusion.train()
             for x, y in self.dataloader:
@@ -269,6 +312,7 @@ class TabDDPMGenerator(BaseGenerator):
                 curr_loss_multi += loss_multi.item() * len(x)
                 curr_loss_gauss += loss_gauss.item() * len(x)
                 steps += 1
+                self.trained_steps_ = steps
 
                 mloss = np.around(curr_loss_multi / curr_count, 4)
                 gloss = np.around(curr_loss_gauss / curr_count, 4)
@@ -289,38 +333,31 @@ class TabDDPMGenerator(BaseGenerator):
                     break
 
                 if (
-                    self.val_steps > 0
+                    use_validation
                     and self.training_steps is not None
                     and steps > 0
                     and steps % self.val_steps == 0
                 ):
-                    self.diffusion.eval()
-                    score = validate_c2st(self, X_train, random_state=self.random_state)
-                    if score < best_val_score:
-                        best_val_score = score
-                        best_val_model = clone_state_dict(self.diffusion)
-                    else:
+                    if validate():
                         stop_training = True
                         break
                     self.diffusion.train()
 
             pbar.set_postfix(loss=loss_value)
+            self.trained_epochs_ = epoch + 1
             if timed_out or stop_training:
                 break
             if (
-                self.val_steps > 0
+                use_validation
                 and self.training_steps is None
                 and (epoch + 1) % self.val_steps == 0
             ):
-                self.diffusion.eval()
-                score = validate_c2st(self, X_train, random_state=self.random_state)
-                if score < best_val_score:
-                    best_val_score = score
-                    best_val_model = clone_state_dict(self.diffusion)
-                else:
+                if validate():
                     stop_training = True
             if timed_out or stop_training:
                 break
+        if timed_out and use_validation:
+            validate()
         if best_val_model is not None:
             self.diffusion.load_state_dict(
                 {k: v.to(self.device) for k, v in best_val_model.items()}
@@ -363,6 +400,14 @@ class TabDDPMGenerator(BaseGenerator):
             df = df.join(pd.Series(cond, name=self.target_name))
         return df[self.output_columns]
 
+    def get_trainable_params(self):
+        return get_total_trainable_params(self.diffusion)
+
+    def get_trained_steps_epochs(self):
+        if self.training_steps is not None:
+            return {"trained_steps": self.trained_steps_}
+        return {"trained_epochs": self.trained_epochs_}
+
     def _state(self):
         state = {
             "batch_size": self.batch_size,
@@ -378,6 +423,8 @@ class TabDDPMGenerator(BaseGenerator):
             "ordinal_encoder": self.ordinal_encoder,
             "feature_names_out": self.feature_names_out,
             "diffusion": self.diffusion,
+            "trained_steps_": self.trained_steps_,
+            "trained_epochs_": self.trained_epochs_,
         }
         if self.is_conditional:
             state["target_name"] = self.target_name

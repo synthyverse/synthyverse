@@ -20,6 +20,7 @@ from ..dgm_utils import (
     FastTensorDataLoader,
     QuantileStandardScaler,
     clone_state_dict,
+    split_validation,
     validate_c2st,
 )
 from .diffusion import UnifiedCtimeDiffusion
@@ -97,7 +98,17 @@ class TabDiffGenerator(BaseGenerator):
         k_init (float): Initial k for learned categorical schedules. Default: -6.0.
         k_offset (float): K offset for learned categorical schedules. Default: 1.0.
         cap_train_time (float): Time limit in seconds for training. Default: None.
-        val_steps (int): Epochs between training-set C2ST validation, or training steps when ``training_steps`` is provided. Set to <=0 to disable validation. Default: 1000.
+        target_column (str, optional): Column used for stratified validation
+            splitting. Default: None.
+        val_size (float): Fraction of rows reserved for C2ST validation. Set
+            to <=0 to disable C2ST early stopping. Default: 0.2.
+        val_steps (int): Epochs between validation C2ST checks, or training
+            steps when ``training_steps`` is provided. Set to <=0 to disable
+            validation. Default: 1000.
+        patience (int): Number of consecutive non-improving C2ST validation
+            checks before early stopping. Default: 3.
+        max_validation_rows (int): Maximum number of rows reserved for C2ST
+            validation. Extra rows remain in the training set. Default: 30000.
 
     Example:
         >>> import pandas as pd
@@ -159,7 +170,11 @@ class TabDiffGenerator(BaseGenerator):
         k_init: float = -6.0,
         k_offset: float = 1.0,
         cap_train_time: Optional[float] = None,
+        target_column: Optional[str] = None,
+        val_size: float = 0.2,
         val_steps: int = 1000,
+        patience: int = 3,
+        max_validation_rows: int = 30_000,
         random_state: int = 0,
         full_determinism: bool = False,
     ):
@@ -201,11 +216,40 @@ class TabDiffGenerator(BaseGenerator):
         self.k_init = k_init
         self.k_offset = k_offset
         self.cap_train_time = cap_train_time
+        self.target_column = target_column
+        self.val_size = val_size
         self.val_steps = val_steps
+        self.patience = patience
+        self.max_validation_rows = max_validation_rows
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
         X = X.copy()
+        if self.val_size >= 1:
+            raise ValueError("TabDiff requires val_size to be less than 1.")
+        if self.patience < 1:
+            raise ValueError("TabDiff requires patience to be at least 1.")
+        should_validate = self.val_size > 0 and self.val_steps > 0
+        if should_validate and self.max_validation_rows <= 0:
+            raise ValueError("TabDiff requires max_validation_rows to be positive.")
+        if (
+            should_validate
+            and self.target_column is not None
+            and self.target_column not in X
+        ):
+            raise ValueError(f"target_column '{self.target_column}' is not in X.")
+        X_val = None
+        if should_validate and len(X) > 1:
+            X, X_val = split_validation(
+                X,
+                self.val_size,
+                self.target_column,
+                random_state=self.random_state,
+                max_validation_rows=self.max_validation_rows,
+            )
+            X = X.reset_index(drop=True)
+            X_val = X_val.reset_index(drop=True) if X_val is not None else None
+
         epochs = resolve_epochs_from_training_steps(
             self.epochs,
             self.training_steps,
@@ -230,9 +274,6 @@ class TabDiffGenerator(BaseGenerator):
             else np.array([], dtype=np.int64)
         )
         self.diffusion = self._make_diffusion().to(self.device)
-        print(
-            f"Total trainable parameters: {get_total_trainable_params(self.diffusion):,}"
-        )
 
         train_loader = FastTensorDataLoader(
             None,
@@ -255,11 +296,27 @@ class TabDiffGenerator(BaseGenerator):
 
         best_val_score = float("inf")
         best_val_model = None
+        bad_val_steps = 0
+        use_validation = self.val_steps > 0 and X_val is not None
+
+        def validate():
+            nonlocal best_val_score, best_val_model, bad_val_steps
+            self.diffusion.eval()
+            score = validate_c2st(self, X_val, random_state=self.random_state)
+            if score < best_val_score:
+                best_val_score = score
+                best_val_model = clone_state_dict(self.diffusion)
+                bad_val_steps = 0
+            else:
+                bad_val_steps += 1
+            return bad_val_steps >= self.patience
 
         train_time = 0.0
         timed_out = False
         stop_training = False
         step = 0
+        self.trained_steps_ = 0
+        self.trained_epochs_ = 0
         for epoch in tqdm(range(epochs)):
             closs_weight = self.c_lambda
             if self.closs_weight_schedule == "anneal":
@@ -281,6 +338,7 @@ class TabDiffGenerator(BaseGenerator):
                 closs_sum += closs.item() * len(batch)
                 n_obs += len(batch)
                 step += 1
+                self.trained_steps_ = step
                 train_time += time.monotonic() - step_start_time
                 if self.cap_train_time is not None and train_time > self.cap_train_time:
                     print(f"Training timed out after {self.cap_train_time} seconds.")
@@ -288,17 +346,12 @@ class TabDiffGenerator(BaseGenerator):
                     break
 
                 if (
-                    self.val_steps > 0
+                    use_validation
                     and self.training_steps is not None
                     and step > 0
                     and step % self.val_steps == 0
                 ):
-                    self.diffusion.eval()
-                    score = validate_c2st(self, X, random_state=self.random_state)
-                    if score < best_val_score:
-                        best_val_score = score
-                        best_val_model = clone_state_dict(self.diffusion)
-                    else:
+                    if validate():
                         stop_training = True
                         break
                     self.diffusion.train()
@@ -321,6 +374,7 @@ class TabDiffGenerator(BaseGenerator):
             elif self.lr_scheduler != "fixed":
                 raise NotImplementedError(self.lr_scheduler)
 
+            self.trained_epochs_ = epoch + 1
             update_ema(
                 ema_model.parameters(),
                 self.diffusion._denoise_fn.parameters(),
@@ -340,19 +394,17 @@ class TabDiffGenerator(BaseGenerator):
                 break
 
             if (
-                self.val_steps > 0
+                use_validation
                 and self.training_steps is None
                 and (epoch + 1) % self.val_steps == 0
             ):
-                self.diffusion.eval()
-                score = validate_c2st(self, X, random_state=self.random_state)
-                if score < best_val_score:
-                    best_val_score = score
-                    best_val_model = clone_state_dict(self.diffusion)
-                else:
+                if validate():
                     stop_training = True
             if timed_out or stop_training:
                 break
+
+        if timed_out and use_validation:
+            validate()
 
         if best_val_model is None:
             self.diffusion._denoise_fn = ema_model
@@ -388,6 +440,14 @@ class TabDiffGenerator(BaseGenerator):
                 )
             )
         return pd.concat(frames, axis=1)[self.col_order]
+
+    def get_trainable_params(self):
+        return get_total_trainable_params(self.diffusion)
+
+    def get_trained_steps_epochs(self):
+        if self.training_steps is not None:
+            return {"trained_steps": self.trained_steps_}
+        return {"trained_epochs": self.trained_epochs_}
 
     def _fit_transform(self, X):
         if self.numerical_features:
@@ -494,6 +554,8 @@ class TabDiffGenerator(BaseGenerator):
             "categories": self.categories,
             "quantile_transformer": self.quantile_transformer,
             "ordinal_encoder": self.ordinal_encoder,
+            "trained_steps_": self.trained_steps_,
+            "trained_epochs_": self.trained_epochs_,
         }
 
     def _save_extra(self, path: Path) -> None:

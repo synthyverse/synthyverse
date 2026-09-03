@@ -247,6 +247,8 @@ class TabularSynthesisBenchmark:
                     "set": pd.NA,
                 }
             ]
+            rows.extend(trainable_param_rows(generator, train_seed))
+            rows.extend(trained_steps_epoch_rows(generator, train_seed))
             rows.extend(memory_metric_rows("training", memory_monitor, train_seed))
             result_rows.extend(rows)
             new_rows.extend(rows)
@@ -497,6 +499,8 @@ class TabularSynthesisBenchmark:
                     "set": pd.NA,
                 }
             ]
+            rows.extend(trainable_param_rows(generator, train_seed))
+            rows.extend(trained_steps_epoch_rows(generator, train_seed))
             rows.extend(memory_metric_rows("training", memory_monitor, train_seed))
             result_rows.extend(rows)
             new_rows.extend(rows)
@@ -1066,6 +1070,35 @@ def training_timeout_rows(
             "train_seed": train_seed,
             "set": pd.NA,
         },
+    ]
+
+
+def trainable_param_rows(generator, train_seed: int) -> list[dict[str, Any]]:
+    get_trainable_params = getattr(generator, "get_trainable_params", None)
+    if not callable(get_trainable_params):
+        return []
+    return [
+        {
+            "metric name": "trainable_params",
+            "metric value": get_trainable_params(),
+            "train_seed": train_seed,
+            "set": pd.NA,
+        }
+    ]
+
+
+def trained_steps_epoch_rows(generator, train_seed: int) -> list[dict[str, Any]]:
+    get_trained_steps_epochs = getattr(generator, "get_trained_steps_epochs", None)
+    if not callable(get_trained_steps_epochs):
+        return []
+    return [
+        {
+            "metric name": name,
+            "metric value": make_csv_safe(value),
+            "train_seed": train_seed,
+            "set": pd.NA,
+        }
+        for name, value in flatten_metrics(get_trained_steps_epochs())
     ]
 
 

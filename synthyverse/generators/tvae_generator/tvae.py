@@ -5,7 +5,7 @@ from typing import Optional
 import pandas as pd
 
 from ...utils.utils import resolve_epochs_from_training_steps
-from ..dgm_utils import clone_state_dict, validate_c2st
+from ..dgm_utils import clone_state_dict, split_validation, validate_c2st
 from .._optional import require_ctgan
 from ..base import BaseGenerator
 
@@ -34,7 +34,17 @@ class TVAEGenerator(BaseGenerator):
         cuda (bool): Whether to use CUDA if available. Default: True.
         verbose (bool): Whether to print training progress. Default: True.
         cap_train_time (float): Time limit in seconds for training. Default: None.
-        val_steps (int): Epochs between training-set C2ST validation, or training steps when ``training_steps`` is provided. Set to <=0 to disable validation. Default: 50.
+        target_column (str, optional): Column used for stratified validation
+            splitting. Default: None.
+        val_size (float): Fraction of rows reserved for C2ST validation. Set
+            to <=0 to disable C2ST early stopping. Default: 0.2.
+        val_steps (int): Epochs between validation C2ST checks, or training
+            steps when ``training_steps`` is provided. Set to <=0 to disable
+            validation. Default: 50.
+        patience (int): Number of consecutive non-improving C2ST validation
+            checks before early stopping. Default: 3.
+        max_validation_rows (int): Maximum number of rows reserved for C2ST
+            validation. Extra rows remain in the training set. Default: 30000.
 
     Example:
         >>> import pandas as pd
@@ -71,7 +81,11 @@ class TVAEGenerator(BaseGenerator):
         cuda=True,
         verbose=True,
         cap_train_time: Optional[float] = None,
+        target_column: Optional[str] = None,
+        val_size: float = 0.2,
         val_steps: int = 50,
+        patience: int = 3,
+        max_validation_rows: int = 30_000,
         random_state: int = 0,
         full_determinism: bool = False,
     ):
@@ -88,13 +102,32 @@ class TVAEGenerator(BaseGenerator):
         self.cuda = cuda
         self.verbose = verbose
         self.cap_train_time = cap_train_time
+        self.target_column = target_column
+        self.val_size = val_size
         self.val_steps = val_steps
+        self.patience = patience
+        self.max_validation_rows = max_validation_rows
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
         from .synthesizer import TVAE
 
         self.discrete_features = list(discrete_features)
         X = X.copy()
+        if self.val_size >= 1:
+            raise ValueError("TVAE requires val_size to be less than 1.")
+        if self.patience < 1:
+            raise ValueError("TVAE requires patience to be at least 1.")
+        X_val = None
+        if self.val_size > 0 and self.val_steps > 0:
+            X, X_val = split_validation(
+                X,
+                self.val_size,
+                self.target_column,
+                random_state=self.random_state,
+                max_validation_rows=self.max_validation_rows,
+            )
+            X = X.reset_index(drop=True)
+            X_val = X_val.reset_index(drop=True) if X_val is not None else None
 
         epochs = resolve_epochs_from_training_steps(
             self.epochs,
@@ -118,20 +151,24 @@ class TVAEGenerator(BaseGenerator):
 
         best_val_score = float("inf")
         best_val_model = None
+        bad_val_steps = 0
+        use_validation = X_val is not None
 
         def validate():
-            nonlocal best_val_score, best_val_model
+            nonlocal best_val_score, best_val_model, bad_val_steps
             self.model.decoder.eval()
-            score = validate_c2st(self, X, random_state=self.random_state)
+            score = validate_c2st(self, X_val, random_state=self.random_state)
             self.model.decoder.train()
             if score < best_val_score:
                 best_val_score = score
                 best_val_model = clone_state_dict(self.model.decoder)
-                return False
-            return True
+                bad_val_steps = 0
+            else:
+                bad_val_steps += 1
+            return bad_val_steps >= self.patience
 
         def validate_callback(step, epoch, epoch_end):
-            if self.val_steps <= 0:
+            if not use_validation:
                 return False
             if self.training_steps is not None:
                 return (
@@ -147,6 +184,8 @@ class TVAEGenerator(BaseGenerator):
             discrete_features,
             validate_callback=validate_callback,
         )
+        if getattr(self.model, "timed_out_", False) and use_validation:
+            validate()
 
         if best_val_model is not None:
             self.model.decoder.load_state_dict(
@@ -158,6 +197,14 @@ class TVAEGenerator(BaseGenerator):
 
     def _generate(self, n: int):
         return self.model.sample(n)
+
+    def get_trainable_params(self):
+        return self.model.trainable_params_
+
+    def get_trained_steps_epochs(self):
+        if self.training_steps is not None:
+            return {"trained_steps": self.model.trained_steps_}
+        return {"trained_epochs": self.model.trained_epochs_}
 
     def _state(self):
         return {
@@ -173,7 +220,11 @@ class TVAEGenerator(BaseGenerator):
             "cuda": self.cuda,
             "verbose": self.verbose,
             "cap_train_time": self.cap_train_time,
+            "target_column": self.target_column,
+            "val_size": self.val_size,
             "val_steps": self.val_steps,
+            "patience": self.patience,
+            "max_validation_rows": self.max_validation_rows,
             "discrete_features": getattr(self, "discrete_features", None),
         }
 

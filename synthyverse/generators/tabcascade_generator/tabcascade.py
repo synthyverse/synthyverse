@@ -15,6 +15,7 @@ from ..dgm_utils import (
     FastTensorDataLoader,
     QuantileStandardScaler,
     clone_state_dict,
+    split_validation,
     validate_c2st,
 )
 from ...utils.utils import get_total_trainable_params
@@ -111,7 +112,17 @@ class TabCascadeGenerator(BaseGenerator):
             Default: False.
         log_steps (int): Steps between progress logging. Default: 100.
         cap_train_time (float): Time limit in seconds for training. Default: None.
-        val_steps (int): Epochs between training-set C2ST validation, or training steps when ``training_steps`` is provided. Set to <=0 to disable validation. Default: 5000.
+        target_column (str, optional): Column used for stratified validation
+            splitting. Default: None.
+        val_size (float): Fraction of rows reserved for C2ST validation. Set
+            to <=0 to disable C2ST early stopping. Default: 0.2.
+        val_steps (int): Epochs between validation C2ST checks, or training
+            steps when ``training_steps`` is provided. Set to <=0 to disable
+            validation. Default: 5000.
+        patience (int): Number of consecutive non-improving C2ST validation
+            checks before early stopping. Default: 3.
+        max_validation_rows (int): Maximum number of rows reserved for C2ST
+            validation. Extra rows remain in the training set. Default: 30000.
 
     Example:
         >>> import pandas as pd
@@ -169,7 +180,11 @@ class TabCascadeGenerator(BaseGenerator):
         random_state: int = 0,
         full_determinism: bool = False,
         cap_train_time: Optional[float] = None,
+        target_column: Optional[str] = None,
+        val_size: float = 0.2,
         val_steps: int = 5000,
+        patience: int = 3,
+        max_validation_rows: int = 30_000,
     ):
         super().__init__(random_state=random_state, full_determinism=full_determinism)
         self.__dict__.update(locals())
@@ -283,7 +298,7 @@ class TabCascadeGenerator(BaseGenerator):
             cfg.cat_emb_dim,
         )
 
-    def _train_tabcascade(self, x_cat, x_num, X_train):
+    def _train_tabcascade(self, x_cat, x_num, X_val):
         self.n_cat_cols = x_cat.shape[1]
         z_groups, z_mask, self.z_infl_groups, self.z_has_miss = self.encode_into_z(
             x_num
@@ -294,11 +309,6 @@ class TabCascadeGenerator(BaseGenerator):
         self.train_loader = self.get_train_loader(x_cat, x_num, z_groups, z_mask)
         self.lowres = self.get_lowres_model().to(self.device)
         self.highres = self.get_highres_model().to(self.device)
-
-        print(
-            f"Total trainable parameters: "
-            f"{get_total_trainable_params(self.lowres) + get_total_trainable_params(self.highres):,}"
-        )
 
         ema_lowres = ExponentialMovingAverage(
             self.lowres.parameters(),
@@ -336,7 +346,37 @@ class TabCascadeGenerator(BaseGenerator):
         train_time = 0.0
         best_val_score = float("inf")
         best_val_model = None
+        bad_val_steps = 0
+        use_validation = X_val is not None
         stop_training = False
+        timed_out = False
+        self.trained_steps_ = 0
+        self.trained_epochs_ = 0
+
+        def validate():
+            nonlocal best_val_score, best_val_model, bad_val_steps
+            self.lowres.eval()
+            self.highres.eval()
+            ema_lowres.store()
+            ema_highres.store()
+            ema_lowres.copy_to()
+            ema_highres.copy_to()
+            score = validate_c2st(self, X_val, random_state=self.random_state)
+            if score < best_val_score:
+                best_val_score = score
+                best_val_model = {
+                    "lowres": clone_state_dict(self.lowres),
+                    "highres": clone_state_dict(self.highres),
+                }
+                bad_val_steps = 0
+            else:
+                bad_val_steps += 1
+            ema_lowres.restore()
+            ema_highres.restore()
+            self.lowres.train()
+            self.highres.train()
+            return bad_val_steps >= self.patience
+
         while step < self.config.lowres.training.num_steps_train:
             step_start_time = time.monotonic()
             if step < self.config.lowres.training.num_steps_warmup:
@@ -426,6 +466,8 @@ class TabCascadeGenerator(BaseGenerator):
                 lowres_loss_trn = highres_loss_trn = n_inputs = 0
 
             step += 1
+            self.trained_steps_ = step
+            self.trained_epochs_ = step / self._steps_per_epoch
             pbar.update(1)
 
             train_time += time.monotonic() - step_start_time
@@ -434,35 +476,23 @@ class TabCascadeGenerator(BaseGenerator):
                 and train_time > self.cap_train_time
             ):
                 print(f"Training timed out after {self.cap_train_time} seconds.")
+                timed_out = True
                 break
 
             if (
-                self._val_steps_train > 0
+                use_validation
+                and self._val_steps_train > 0
                 and step > 0
                 and step % self._val_steps_train == 0
             ):
-                self.lowres.eval()
-                self.highres.eval()
-                ema_lowres.store()
-                ema_highres.store()
-                ema_lowres.copy_to()
-                ema_highres.copy_to()
-                score = validate_c2st(self, X_train, random_state=self.random_state)
-                if score < best_val_score:
-                    best_val_score = score
-                    best_val_model = {
-                        "lowres": clone_state_dict(self.lowres),
-                        "highres": clone_state_dict(self.highres),
-                    }
-                else:
+                if validate():
                     stop_training = True
-                ema_lowres.restore()
-                ema_highres.restore()
-                self.lowres.train()
-                self.highres.train()
                 if stop_training:
                     break
         pbar.close()
+
+        if timed_out and use_validation:
+            validate()
 
         if best_val_model is None:
             ema_lowres.copy_to()
@@ -508,6 +538,22 @@ class TabCascadeGenerator(BaseGenerator):
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
         X = X.copy()
+        if self.val_size >= 1:
+            raise ValueError("TabCascade requires val_size to be less than 1.")
+        if self.patience < 1:
+            raise ValueError("TabCascade requires patience to be at least 1.")
+        X_val = None
+        if self.val_size > 0 and self.val_steps > 0:
+            X, X_val = split_validation(
+                X,
+                self.val_size,
+                self.target_column,
+                random_state=self.random_state,
+                max_validation_rows=self.max_validation_rows,
+            )
+            X = X.reset_index(drop=True)
+            X_val = X_val.reset_index(drop=True) if X_val is not None else None
+
         self.col_order = X.columns
         self.discrete_features = list(discrete_features)
         self.numerical_features = [
@@ -531,6 +577,7 @@ class TabCascadeGenerator(BaseGenerator):
         x_num = torch.tensor(x_num).float()
 
         steps_per_epoch = max(len(X) // min(self.batch_size, len(X)), 1)
+        self._steps_per_epoch = steps_per_epoch
         num_steps_train = self.training_steps or self.epochs * steps_per_epoch
         self._val_steps_train = 0
         if self.val_steps > 0:
@@ -541,7 +588,7 @@ class TabCascadeGenerator(BaseGenerator):
             )
         self.config = self._make_config(num_steps_train)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self._train_tabcascade(x_cat, x_num, X)
+        self._train_tabcascade(x_cat, x_num, X_val)
         return self
 
     def _generate(self, n: int):
@@ -557,6 +604,16 @@ class TabCascadeGenerator(BaseGenerator):
             )
         frames.append(pd.DataFrame(x_num, columns=self.numerical_features))
         return pd.concat(frames, axis=1)[self.col_order]
+
+    def get_trainable_params(self):
+        return get_total_trainable_params(self.lowres) + get_total_trainable_params(
+            self.highres
+        )
+
+    def get_trained_steps_epochs(self):
+        if self.training_steps is not None:
+            return {"trained_steps": self.trained_steps_}
+        return {"trained_epochs": self.trained_epochs_}
 
     def _make_config(self, num_steps_train):
         return config(
@@ -630,6 +687,14 @@ class TabCascadeGenerator(BaseGenerator):
             "numerical_features": self.numerical_features,
             "ordinal_encoder": self.ordinal_encoder,
             "quantile_encoder": self.quantile_encoder,
+            "target_column": self.target_column,
+            "val_size": self.val_size,
+            "val_steps": self.val_steps,
+            "patience": self.patience,
+            "max_validation_rows": self.max_validation_rows,
+            "trained_steps_": self.trained_steps_,
+            "trained_epochs_": self.trained_epochs_,
+            "_steps_per_epoch": self._steps_per_epoch,
         }
 
     def _save_extra(self, path: Path) -> None:

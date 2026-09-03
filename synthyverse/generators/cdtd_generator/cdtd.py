@@ -12,6 +12,7 @@ from ..dgm_utils import (
     FastTensorDataLoader,
     QuantileStandardScaler,
     clone_state_dict,
+    split_validation,
     validate_c2st,
 )
 from .layers import MLP, MixedTypeDiffusion
@@ -53,7 +54,16 @@ class CDTDGenerator(BaseGenerator):
         ema_decay (float): Exponential moving average decay. Default: 0.999.
         log_steps (int): Steps between logging. Default: 100.
         cap_train_time (float): Time limit in seconds for training. Default: None.
-        val_steps (int): Steps between training-set C2ST validation. Set to <=0 to disable validation. Default: 5000.
+        target_column (str, optional): Column used for stratified validation
+            splitting. Default: None.
+        val_size (float): Fraction of rows reserved for C2ST validation. Set
+            to <=0 to disable C2ST early stopping. Default: 0.2.
+        val_steps (int): Steps between validation C2ST checks. Set to <=0 to
+            disable validation. Default: 5000.
+        patience (int): Number of consecutive non-improving C2ST validation
+            checks before early stopping. Default: 3.
+        max_validation_rows (int): Maximum number of rows reserved for C2ST
+            validation. Extra rows remain in the training set. Default: 30000.
 
     Example:
         >>> import pandas as pd
@@ -103,7 +113,11 @@ class CDTDGenerator(BaseGenerator):
         random_state: int = 0,
         full_determinism: bool = False,
         cap_train_time: Optional[float] = None,
+        target_column: Optional[str] = None,
+        val_size: float = 0.2,
         val_steps: int = 5000,
+        patience: int = 3,
+        max_validation_rows: int = 30_000,
     ):
         super().__init__(random_state=random_state, full_determinism=full_determinism)
         self.cat_emb_dim = cat_emb_dim
@@ -127,9 +141,30 @@ class CDTDGenerator(BaseGenerator):
         self.ema_decay = ema_decay
         self.log_steps = log_steps
         self.cap_train_time = cap_train_time
+        self.target_column = target_column
+        self.val_size = val_size
         self.val_steps = val_steps
+        self.patience = patience
+        self.max_validation_rows = max_validation_rows
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
+        X = X.copy()
+        if self.val_size >= 1:
+            raise ValueError("CDTD requires val_size to be less than 1.")
+        if self.patience < 1:
+            raise ValueError("CDTD requires patience to be at least 1.")
+        X_val = None
+        if self.val_size > 0 and self.val_steps > 0:
+            X, X_val = split_validation(
+                X,
+                self.val_size,
+                self.target_column,
+                random_state=self.random_state,
+                max_validation_rows=self.max_validation_rows,
+            )
+            X = X.reset_index(drop=True)
+            X_val = X_val.reset_index(drop=True) if X_val is not None else None
+
         self.discrete_features = discrete_features
         self.numerical_features = [
             col for col in X.columns if col not in discrete_features
@@ -188,10 +223,6 @@ class CDTDGenerator(BaseGenerator):
             timewarp_weight_low_noise=self.timewarp_weight_low_noise,
         )
 
-        print(
-            f"Total trainable parameters: {get_total_trainable_params(self.diff_model):,}"
-        )
-
         # --- train ---
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -229,8 +260,31 @@ class CDTDGenerator(BaseGenerator):
 
         best_val_score = float("inf")
         best_val_model = None
+        bad_val_steps = 0
+        use_validation = X_val is not None
+
+        def validate():
+            nonlocal best_val_score, best_val_model, bad_val_steps
+            self.diff_model.eval()
+            ema_diff_model.store()
+            ema_diff_model.copy_to()
+            score = validate_c2st(self, X_val, random_state=self.random_state)
+            print(f"Validation score at step {current_step}: {score}")
+
+            if score < best_val_score:
+                best_val_score = score
+                best_val_model = clone_state_dict(self.diff_model)
+                bad_val_steps = 0
+            else:
+                bad_val_steps += 1
+
+            ema_diff_model.restore()
+            self.diff_model.train()
+            return bad_val_steps >= self.patience
 
         train_time = 0.0
+        timed_out = False
+        self.trained_steps_ = 0
         with tqdm(initial=current_step, total=self.training_steps) as pbar:
             while current_step < self.training_steps:
                 step_start_time = time.monotonic()
@@ -251,6 +305,7 @@ class CDTDGenerator(BaseGenerator):
                 sum_loss += losses["train_loss"].detach().mean().item() * x_cat.shape[0]
                 n_obs += x_cat.shape[0]
                 current_step += 1
+                self.trained_steps_ = current_step
                 pbar.update(1)
 
                 if current_step % self.log_steps == 0:
@@ -269,33 +324,19 @@ class CDTDGenerator(BaseGenerator):
                     and train_time > self.cap_train_time
                 ):
                     print(f"Training timed out after {self.cap_train_time} seconds.")
+                    timed_out = True
                     break
 
                 if (
-                    self.val_steps > 0
+                    use_validation
                     and current_step % self.val_steps == 0
                     and current_step > 0
                 ):
-                    # validate using c2st
-                    self.diff_model.eval()
-                    ema_diff_model.store()
-                    ema_diff_model.copy_to()
-
-                    score = validate_c2st(self, X, random_state=self.random_state)
-                    print(f"Validation score at step {current_step}: {score}")
-
-                    if score < best_val_score:
-                        best_val_score = score
-                        best_val_model = clone_state_dict(self.diff_model)
-                        stop_training = False
-                    else:
-                        stop_training = True
-
-                    ema_diff_model.restore()
-                    self.diff_model.train()
-
-                    if stop_training:
+                    if validate():
                         break
+
+        if timed_out and use_validation:
+            validate()
 
         if best_val_model is None:
             ema_diff_model.copy_to()
@@ -349,6 +390,12 @@ class CDTDGenerator(BaseGenerator):
 
         return syn_X
 
+    def get_trainable_params(self):
+        return get_total_trainable_params(self.diff_model)
+
+    def get_trained_steps_epochs(self):
+        return {"trained_steps": self.trained_steps_}
+
     def _state(self):
         return {
             "cat_emb_dim": self.cat_emb_dim,
@@ -375,6 +422,12 @@ class CDTDGenerator(BaseGenerator):
             "num_cont_features": self.num_cont_features,
             "categories": self.categories,
             "proportions": self.proportions,
+            "target_column": self.target_column,
+            "val_size": self.val_size,
+            "val_steps": self.val_steps,
+            "patience": self.patience,
+            "max_validation_rows": self.max_validation_rows,
+            "trained_steps_": self.trained_steps_,
         }
 
     def _save_extra(self, path: Path) -> None:
