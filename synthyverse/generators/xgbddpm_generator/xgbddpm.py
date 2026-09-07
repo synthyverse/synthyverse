@@ -50,32 +50,13 @@ def get_beta_schedule(schedule: str = "cosine", T: int = 50) -> np.ndarray:
     return betas, alphas, alpha_bars
 
 
-# def noise_schedule(
-#     T: int,
-#     alpha_bar_start: float = 0.9999,
-#     alpha_bar_end: float = 1e-4,
-# ):
-#     theta_start = np.arccos(np.sqrt(alpha_bar_start))
-#     theta_end = np.arccos(np.sqrt(alpha_bar_end))
-
-#     theta = np.linspace(theta_start, theta_end, T)
-#     alpha_bars = np.cos(theta) ** 2
-
-#     alphas = np.empty(T)
-#     alphas[0] = alpha_bars[0]
-#     alphas[1:] = alpha_bars[1:] / alpha_bars[:-1]
-
-#     betas = np.clip(1.0 - alphas, 1e-8, 0.999)
-#     alpha_bars = np.cumprod(1.0 - betas)
-
-#     return betas, 1.0 - betas, alpha_bars
-
-
 class XGBDDPMGenerator(BaseGenerator):
     """DDPM using XGBoost as backbone.
 
     Uses Gaussian diffusion for numerical features and multinomial diffusion for
-    categorical features.
+    categorical features by default. Categorical features can also be one-hot
+    encoded and modeled with Gaussian diffusion by setting
+    ``categorical_diffusion=False``.
 
     Allows marginalizing over noise seeds across boosting rounds to avoid
     massively extending the training set.
@@ -100,6 +81,9 @@ class XGBDDPMGenerator(BaseGenerator):
             DDPM-enabled XGBoost estimator. Default: ``{"n_estimators": 500,
             "max_depth": 6, "early_stopping_rounds": 50,
             "min_boosting_round": 50, "eta": 0.06}``.
+        dynamic_eta (float): If positive, set XGBoost ``eta`` to
+            ``(dynamic_eta * 100) / n_estimators``. Set to <= 0 to use the
+            ``eta`` value from ``xgboost_params``. Default: 0.3.
         deterministic_sampler (bool): Whether to use DDIM-style deterministic
             numerical sampling instead of DDPM sampling. Default: False.
         objective (str): Numerical prediction objective. Options: "x" predicts
@@ -110,6 +94,10 @@ class XGBDDPMGenerator(BaseGenerator):
             True.
         model_per_label (bool): Whether to train separate models per categorical
             ``target_column`` value. Default: True.
+        categorical_diffusion (bool): Whether to use categorical diffusion and
+            XGBoost classifiers for categorical features. If False, categorical
+            features are one-hot encoded and modeled as numerical features, then
+            converted back with argmax after sampling. Default: True.
         backend: The joblib backend to use. Options: "threading", "loky". Default: "threading".
         **kwargs: Additional keyword arguments accepted for API compatibility.
 
@@ -150,10 +138,12 @@ class XGBDDPMGenerator(BaseGenerator):
             "min_boosting_round": 50,
             "eta": 0.06,
         },
+        dynamic_eta: float = 0.3,
         deterministic_sampler: bool = False,
         objective: str = "v",  # x, epsilon, or v
         model_per_timestep: bool = True,
         model_per_label: bool = True,
+        categorical_diffusion: bool = True,
         backend: str = "threading",
         random_state: int = 0,
         full_determinism: bool = False,
@@ -183,10 +173,16 @@ class XGBDDPMGenerator(BaseGenerator):
 
         self.model_per_timestep = model_per_timestep
         self.model_per_label = model_per_label
+        self.categorical_diffusion = categorical_diffusion
         self.refresh_every_k = refresh_every_k
         self.xgboost_params = (
             xgboost_params.copy() if xgboost_params is not None else {}
         )
+        self.dynamic_eta = dynamic_eta
+        if self.dynamic_eta > 0:
+            self.xgboost_params["eta"] = (
+                self.dynamic_eta * 100
+            ) / self.xgboost_params["n_estimators"]
         self.xgboost_params.update(
             {
                 "tree_method": "hist",
@@ -207,9 +203,17 @@ class XGBDDPMGenerator(BaseGenerator):
         self.ori_cols = X.columns.tolist()
 
         self.discrete_features = [x for x in self.ori_cols if x in discrete_features]
-        self.model_discrete_features = self.discrete_features
+        self.categorical_onehot_cols = {}
+
+        X_tr = X.copy()
+        if self.categorical_diffusion:
+            self.model_discrete_features = self.discrete_features
+        else:
+            self.model_discrete_features = []
+            X_tr = self._one_hot_categoricals(X_tr)
+
         self.numerical_features = [
-            c for c in X.columns if c not in self.model_discrete_features
+            c for c in X_tr.columns if c not in self.model_discrete_features
         ]
         self.numerical_features_set = set(self.numerical_features)
 
@@ -224,7 +228,6 @@ class XGBDDPMGenerator(BaseGenerator):
             self.target_column in self.model_discrete_features and self.model_per_label
         )
 
-        X_tr = X.copy()
         self.n_cls = (
             X_tr[self.model_discrete_features].max(axis=0) + 1
             if len(self.model_discrete_features) > 0
@@ -244,7 +247,7 @@ class XGBDDPMGenerator(BaseGenerator):
             else None
         )
 
-        self.labels = X_tr[self.target_column]
+        self.labels = X_tr[self.target_column] if self.target_column in X_tr else None
 
         cols = self.num_features_x + self.disc_features_x
         cond = [None]
@@ -356,6 +359,8 @@ class XGBDDPMGenerator(BaseGenerator):
 
         # inverse scale
         syn = self._inverse_scale(syn)
+        if not self.categorical_diffusion:
+            syn = self._inverse_one_hot_categoricals(syn)
 
         # reinstate original column order
         ori_cols = [x for x in self.ori_cols if x in syn.columns]
@@ -588,6 +593,33 @@ class XGBDDPMGenerator(BaseGenerator):
 
         return X
 
+    def _one_hot_categoricals(self, X: pd.DataFrame):
+        X = X.copy()
+        used_cols = set(X.columns)
+        for i, col in enumerate(self.discrete_features):
+            n_cls = self._categorical_cardinality(col)
+            cols = []
+            for j in range(n_cls):
+                name = f"__xgbddpm_onehot_{i}_{j}"
+                while name in used_cols:
+                    name = f"_{name}"
+                used_cols.add(name)
+                cols.append(name)
+            vals = X[col].to_numpy(dtype=np.int64)
+            X[cols] = np.eye(n_cls, dtype=float)[vals]
+            self.categorical_onehot_cols[col] = cols
+        return X.drop(columns=self.discrete_features)
+
+    def _inverse_one_hot_categoricals(self, X: pd.DataFrame):
+        X = X.copy()
+        drop_cols = []
+        for col, cols in self.categorical_onehot_cols.items():
+            X[col] = np.argmax(X[cols].to_numpy(), axis=1).astype(np.int64)
+            drop_cols.extend(cols)
+        if drop_cols:
+            X = X.drop(columns=drop_cols)
+        return X
+
     def _state(self):
         return {
             "objective": self.objective,
@@ -596,8 +628,10 @@ class XGBDDPMGenerator(BaseGenerator):
             "timesteps": self.timesteps,
             "n_jobs": self.n_jobs,
             "model_per_timestep": self.model_per_timestep,
+            "categorical_diffusion": self.categorical_diffusion,
             "ori_cols": self.ori_cols,
             "discrete_features": self.discrete_features,
+            "categorical_onehot_cols": self.categorical_onehot_cols,
             "model_discrete_features": self.model_discrete_features,
             "numerical_features_set": self.numerical_features_set,
             "disc_features_x": self.disc_features_x,

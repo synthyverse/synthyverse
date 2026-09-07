@@ -16,7 +16,7 @@ The MIT license text for these adapted implementations is kept in
 - Upstream license: MIT License
 - Upstream copyright notice: `Copyright (c) 2023 Kristin Blesch, Marvin Wright`
 - Imported or last compared against: `Commit 8b63c1b`
-- Modifications: `Fallback when nodes contain single value.`
+- Modifications: `Fallback when nodes contain single value, and fast vectorized sampling.`
 - Upstream NOTICE text, if any: `None`
 
 ### CDTDGenerator
