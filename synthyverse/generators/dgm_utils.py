@@ -73,7 +73,8 @@ def split_validation(
         n_val = min(n_val, max_validation_rows)
     if n_val <= 0:
         return X.copy(), None
-    if target_column is not None:
+
+    if target_column in discrete_features:
         return train_test_split(
             X, test_size=n_val, random_state=random_state, stratify=X[target_column]
         )
