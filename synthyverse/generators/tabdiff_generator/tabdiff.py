@@ -274,6 +274,7 @@ class TabDiffGenerator(BaseGenerator):
             else np.array([], dtype=np.int64)
         )
         self.diffusion = self._make_diffusion().to(self.device)
+        self.trainable_params_ = get_total_trainable_params(self.diffusion)
 
         train_loader = FastTensorDataLoader(
             None,
@@ -442,6 +443,8 @@ class TabDiffGenerator(BaseGenerator):
         return pd.concat(frames, axis=1)[self.col_order]
 
     def get_trainable_params(self):
+        if hasattr(self, "trainable_params_"):
+            return self.trainable_params_
         return get_total_trainable_params(self.diffusion)
 
     def get_trained_steps_epochs(self):
@@ -556,6 +559,7 @@ class TabDiffGenerator(BaseGenerator):
             "ordinal_encoder": self.ordinal_encoder,
             "trained_steps_": self.trained_steps_,
             "trained_epochs_": self.trained_epochs_,
+            "trainable_params_": self.trainable_params_,
         }
 
     def _save_extra(self, path: Path) -> None:
