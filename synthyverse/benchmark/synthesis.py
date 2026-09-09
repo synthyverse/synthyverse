@@ -75,6 +75,8 @@ class TabularSynthesisBenchmark:
             the same varying seed used for sampling synthetic data. Each
             synthetic set is generated at the (capped) real-train evaluation
             size. Default: 100_000.
+        allow_generated_missings (bool): Whether to evaluate generated samples
+            with missing numerical values. Default: False.
         dataset_save_dir (str or Path or None): Directory for saving sampled
             synthetic datasets as parquet files. When provided, datasets are
             saved under ``dataset_save_dir/train_seed/sampling_seed``.
@@ -143,6 +145,7 @@ class TabularSynthesisBenchmark:
         monitor_memory: bool = False,
         reuse_processors: bool = True,
         max_eval_samples: Optional[int] = 100_000,
+        allow_generated_missings: bool = False,
         dataset_save_dir: Optional[Union[str, Path]] = None,
         cap_train_time: Optional[float] = None,
     ):
@@ -159,6 +162,7 @@ class TabularSynthesisBenchmark:
         self.monitor_memory = monitor_memory
         self.reuse_processors = reuse_processors
         self.max_eval_samples = self._validate_max_eval_samples(max_eval_samples)
+        self.allow_generated_missings = allow_generated_missings
         self.dataset_save_dir = (
             None if dataset_save_dir is None else Path(dataset_save_dir)
         )
@@ -710,6 +714,15 @@ class TabularSynthesisBenchmark:
         eval_categorical_features = [
             col for col in self.categorical_features if col in X_train_eval.columns
         ]
+        numerical_features = [
+            col for col in X_syn.columns if col not in eval_categorical_features
+        ]
+        if (
+            not self.allow_generated_missings
+            and X_syn[numerical_features].isna().any().any()
+        ):
+            return []
+
         evaluator = TabularMetricEvaluator(
             metrics=metrics,
             target_column=self.target_column,
