@@ -140,39 +140,50 @@ class TabularMetricEvaluator:
         for metric__ in memory_guarded(self.metrics.keys()):
             print(f"Evaluating metric: {metric__}")
             metric_, config_slug = _split_metric_config(metric__)
-            metric_cls = get_metric(metric_)
+            try:
+                metric_cls = get_metric(metric_)
 
-            # add necessary fixed parameters to the metrics:
-            metric_params = dict(self.metrics[metric__])
-            params = dict(metric_params)
-            params["random_state"] = self.random_state
-            required_params = inspect.signature(metric_cls.__init__).parameters.keys()
-            if "target_column" in required_params:
-                params["target_column"] = self.target_column
-            metric = metric_cls(**params)
-            metric_result = metric.evaluate(
-                x,
-                x_syn,
-                X_test=x_test,
-                discrete_features=eval_discrete_features,
-            )
-
-            if isinstance(metric_result, dict):
-                for key, value in metric_result.items():
-                    result_key = _with_metric_config_slug_in_key(
-                        metric_, key, config_slug
-                    )
-                    if result_key in dict_:
-                        raise ValueError(
-                            f"Duplicate metric result key '{result_key}' while "
-                            f"evaluating '{metric__}'. Use distinct metric names "
-                            "or config slugs so result keys remain unique."
-                        )
-                    dict_[result_key] = value
-            else:
-                warnings.warn(
-                    f"Metric '{metric__}' returned {type(metric_result).__name__} "
-                    "instead of dict - result discarded."
+                # add necessary fixed parameters to the metrics:
+                metric_params = dict(self.metrics[metric__])
+                params = dict(metric_params)
+                params["random_state"] = self.random_state
+                required_params = inspect.signature(
+                    metric_cls.__init__
+                ).parameters.keys()
+                if "target_column" in required_params:
+                    params["target_column"] = self.target_column
+                metric = metric_cls(**params)
+                metric_result = metric.evaluate(
+                    x,
+                    x_syn,
+                    X_test=x_test,
+                    discrete_features=eval_discrete_features,
                 )
+
+                if isinstance(metric_result, dict):
+                    for key, value in metric_result.items():
+                        result_key = _with_metric_config_slug_in_key(
+                            metric_, key, config_slug
+                        )
+                        if result_key in dict_:
+                            raise ValueError(
+                                f"Duplicate metric result key '{result_key}' while "
+                                f"evaluating '{metric__}'. Use distinct metric names "
+                                "or config slugs so result keys remain unique."
+                            )
+                        dict_[result_key] = value
+                else:
+                    warnings.warn(
+                        f"Metric '{metric__}' returned {type(metric_result).__name__} "
+                        "instead of dict - result discarded."
+                    )
+            except Exception as exc:
+                print(
+                    f"Error evaluating metric '{metric__}': "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                dict_[
+                    _with_metric_config_slug_in_key(metric_, "error", config_slug)
+                ] = float("nan")
 
         return dict_
