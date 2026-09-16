@@ -44,10 +44,10 @@ class CTGANGenerator(BaseGenerator):
         target_column (str, optional): Column used for stratified validation
             splitting. Default: None.
         val_size (float): Fraction of rows reserved for C2ST validation. Set
-            to <=0 to disable C2ST early stopping. Default: 0.2.
+            to <=0 to disable C2ST early stopping. Default: -1.
         val_steps (int): Epochs between validation C2ST checks, or training
             steps when ``training_steps`` is provided. Set to <=0 to disable
-            validation. Default: 50.
+            validation. Default: -1.
         patience (int): Number of consecutive non-improving C2ST validation
             checks before early stopping. Default: 3.
         max_validation_rows (int): Maximum number of rows reserved for C2ST
@@ -94,8 +94,8 @@ class CTGANGenerator(BaseGenerator):
         cuda=True,
         cap_train_time: Optional[float] = None,
         target_column: Optional[str] = None,
-        val_size: float = 0.2,
-        val_steps: int = 50,
+        val_size: float = -1,
+        val_steps: int = -1,
         patience: int = 3,
         max_validation_rows: int = 30_000,
         random_state: int = 0,

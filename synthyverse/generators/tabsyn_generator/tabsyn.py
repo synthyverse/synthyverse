@@ -39,10 +39,10 @@ class TabSynGenerator(BaseGenerator):
     Args:
         target_column (str): Name of the target column, potentially used for stratified validation splitting. Default: None.
         val_size (float): Fraction of rows reserved for VAE validation and
-            diffusion C2ST validation. Set to <=0 to disable both. Default: 0.2.
+            diffusion C2ST validation. Set to <=0 to disable both. Default: 0.15.
         val_steps (int): Epochs between diffusion validation C2ST checks, or
             training steps when ``training_steps`` is provided. Set to <=0 to
-            disable C2ST validation. Default: 500.
+            disable C2ST validation. Default: -1.
         patience (int): Number of consecutive non-improving C2ST validation
             checks before early stopping. Default: 3.
         max_validation_rows (int): Maximum number of rows reserved for
@@ -105,8 +105,8 @@ class TabSynGenerator(BaseGenerator):
     def __init__(
         self,
         target_column: Optional[str] = None,
-        val_size: float = 0.2,
-        val_steps: int = 500,
+        val_size: float = 0.15,
+        val_steps: int = -1,
         patience: int = 3,
         max_validation_rows: int = 30_000,
         vae_lr: float = 1e-3,
@@ -589,7 +589,9 @@ class TabSynGenerator(BaseGenerator):
                 if self.vae_training_steps is not None
                 else self.vae_trained_epochs_
             ),
-            ("trained_steps" if self.training_steps is not None else "trained_epochs"): (
+            (
+                "trained_steps" if self.training_steps is not None else "trained_epochs"
+            ): (
                 self.diffusion_trained_steps_
                 if self.training_steps is not None
                 else self.diffusion_trained_epochs_

@@ -37,7 +37,7 @@ class TabDDPMGenerator(BaseGenerator):
             ``conditional_generation`` is True.
         conditional_generation (bool): Whether to condition generation on a
             discrete ``target_column``. Continuous targets are ignored for
-            conditioning. Default: False.
+            conditioning. Default: True.
         epochs (int): Number of training epochs. Default: 1000.
         training_steps (int, optional): Total number of training steps. When
             provided, this overrides ``epochs`` by deriving the epoch count from
@@ -55,10 +55,10 @@ class TabDDPMGenerator(BaseGenerator):
         embedding_dim (int): Embedding dimension. Default: 128.
         cap_train_time (float): Time limit in seconds for training. Default: None.
         val_size (float): Fraction of rows reserved for C2ST validation. Set
-            to <=0 to disable C2ST early stopping. Default: 0.2.
+            to <=0 to disable C2ST early stopping. Default: -1.
         val_steps (int): Epochs between validation C2ST checks, or training
             steps when ``training_steps`` is provided. Set to <=0 to disable
-            validation. Default: 200.
+            validation. Default: -1.
         patience (int): Number of consecutive non-improving C2ST validation
             checks before early stopping. Default: 3.
         max_validation_rows (int): Maximum number of rows reserved for C2ST
@@ -88,7 +88,7 @@ class TabDDPMGenerator(BaseGenerator):
     def __init__(
         self,
         target_column: Optional[str] = None,
-        conditional_generation: bool = False,
+        conditional_generation: bool = True,
         epochs: int = 1000,
         lr: float = 0.002,
         weight_decay: float = 1e-4,
@@ -100,8 +100,8 @@ class TabDDPMGenerator(BaseGenerator):
         model_params: dict = {},
         embedding_dim: int = 128,
         cap_train_time: Optional[float] = None,
-        val_size: float = 0.2,
-        val_steps: int = 200,
+        val_size: float = -1,
+        val_steps: int = -1,
         patience: int = 3,
         max_validation_rows: int = 30_000,
         random_state: int = 0,

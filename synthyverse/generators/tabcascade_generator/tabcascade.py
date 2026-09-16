@@ -115,10 +115,10 @@ class TabCascadeGenerator(BaseGenerator):
         target_column (str, optional): Column used for stratified validation
             splitting. Default: None.
         val_size (float): Fraction of rows reserved for C2ST validation. Set
-            to <=0 to disable C2ST early stopping. Default: 0.2.
+            to <=0 to disable C2ST early stopping. Default: -1.
         val_steps (int): Epochs between validation C2ST checks, or training
             steps when ``training_steps`` is provided. Set to <=0 to disable
-            validation. Default: 5000.
+            validation. Default: -1.
         patience (int): Number of consecutive non-improving C2ST validation
             checks before early stopping. Default: 3.
         max_validation_rows (int): Maximum number of rows reserved for C2ST
@@ -181,8 +181,8 @@ class TabCascadeGenerator(BaseGenerator):
         full_determinism: bool = False,
         cap_train_time: Optional[float] = None,
         target_column: Optional[str] = None,
-        val_size: float = 0.2,
-        val_steps: int = 5000,
+        val_size: float = -1,
+        val_steps: int = -1,
         patience: int = 3,
         max_validation_rows: int = 30_000,
     ):
@@ -471,10 +471,7 @@ class TabCascadeGenerator(BaseGenerator):
             pbar.update(1)
 
             train_time += time.monotonic() - step_start_time
-            if (
-                self.cap_train_time is not None
-                and train_time > self.cap_train_time
-            ):
+            if self.cap_train_time is not None and train_time > self.cap_train_time:
                 print(f"Training timed out after {self.cap_train_time} seconds.")
                 timed_out = True
                 break
@@ -568,9 +565,7 @@ class TabCascadeGenerator(BaseGenerator):
             x_cat = torch.empty((len(X), 0), dtype=torch.long)
 
         if self.numerical_features:
-            self.quantile_encoder = QuantileStandardScaler(
-                len(X), self.random_state
-            )
+            self.quantile_encoder = QuantileStandardScaler(len(X), self.random_state)
 
         x_num = X[self.numerical_features].to_numpy().astype(float)
         x_num = self.quantile_encoder.fit_transform(x_num)

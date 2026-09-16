@@ -24,6 +24,7 @@ class TVAEGenerator(BaseGenerator):
         compress_dims (tuple): Tuple of dimensions for encoder layers. Default: (128, 128).
         decompress_dims (tuple): Tuple of dimensions for decoder layers. Default: (128, 128).
         l2scale (float): L2 regularization scale. Default: 1e-5.
+        lr (float): Learning rate. Default: 1e-3.
         batch_size (int): Batch size for training. Default: 500.
         epochs (int): Number of training epochs. Default: 300.
         training_steps (int, optional): Total number of training steps. When
@@ -37,10 +38,10 @@ class TVAEGenerator(BaseGenerator):
         target_column (str, optional): Column used for stratified validation
             splitting. Default: None.
         val_size (float): Fraction of rows reserved for C2ST validation. Set
-            to <=0 to disable C2ST early stopping. Default: 0.2.
+            to <=0 to disable C2ST early stopping. Default: -1.
         val_steps (int): Epochs between validation C2ST checks, or training
             steps when ``training_steps`` is provided. Set to <=0 to disable
-            validation. Default: 50.
+            validation. Default: -1.
         patience (int): Number of consecutive non-improving C2ST validation
             checks before early stopping. Default: 3.
         max_validation_rows (int): Maximum number of rows reserved for C2ST
@@ -74,6 +75,7 @@ class TVAEGenerator(BaseGenerator):
         compress_dims=(128, 128),
         decompress_dims=(128, 128),
         l2scale=1e-5,
+        lr=1e-3,
         batch_size=500,
         epochs=300,
         training_steps=None,
@@ -82,8 +84,8 @@ class TVAEGenerator(BaseGenerator):
         verbose=True,
         cap_train_time: Optional[float] = None,
         target_column: Optional[str] = None,
-        val_size: float = 0.2,
-        val_steps: int = 50,
+        val_size: float = -1,
+        val_steps: int = -1,
         patience: int = 3,
         max_validation_rows: int = 30_000,
         random_state: int = 0,
@@ -95,6 +97,7 @@ class TVAEGenerator(BaseGenerator):
         self.compress_dims = compress_dims
         self.decompress_dims = decompress_dims
         self.l2scale = l2scale
+        self.lr = lr
         self.batch_size = batch_size
         self.epochs = epochs
         self.training_steps = training_steps
@@ -141,6 +144,7 @@ class TVAEGenerator(BaseGenerator):
             compress_dims=self.compress_dims,
             decompress_dims=self.decompress_dims,
             l2scale=self.l2scale,
+            lr=self.lr,
             batch_size=self.batch_size,
             verbose=self.verbose,
             epochs=epochs,
@@ -213,6 +217,7 @@ class TVAEGenerator(BaseGenerator):
             "compress_dims": self.compress_dims,
             "decompress_dims": self.decompress_dims,
             "l2scale": self.l2scale,
+            "lr": self.lr,
             "batch_size": self.batch_size,
             "epochs": self.epochs,
             "training_steps": self.training_steps,

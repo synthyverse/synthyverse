@@ -10,6 +10,8 @@ from .base import (
 )
 from ._optional import has_ctgan, require_ctgan
 
+from .config import get_config
+
 _BASE_GENERATORS = {
     "ARFGenerator": (".arf_generator", "arf"),
     "TabSynGenerator": (".tabsyn_generator", "tabsyn"),

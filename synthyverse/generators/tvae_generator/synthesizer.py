@@ -118,6 +118,7 @@ class TVAE(BaseSynthesizer):
         compress_dims=(128, 128),
         decompress_dims=(128, 128),
         l2scale=1e-5,
+        lr=1e-3,
         batch_size=500,
         epochs=300,
         loss_factor=2,
@@ -131,6 +132,7 @@ class TVAE(BaseSynthesizer):
         self.decompress_dims = decompress_dims
 
         self.l2scale = l2scale
+        self.lr = lr
         self.batch_size = batch_size
         self.loss_factor = loss_factor
         self.epochs = epochs
@@ -175,6 +177,7 @@ class TVAE(BaseSynthesizer):
         ) + get_total_trainable_params(self.decoder)
         optimizerAE = Adam(
             list(encoder.parameters()) + list(self.decoder.parameters()),
+            lr=self.lr,
             weight_decay=self.l2scale,
         )
 
