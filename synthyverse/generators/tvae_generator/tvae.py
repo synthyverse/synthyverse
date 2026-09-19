@@ -45,7 +45,7 @@ class TVAEGenerator(BaseGenerator):
         patience (int): Number of consecutive non-improving C2ST validation
             checks before early stopping. Default: 3.
         max_validation_rows (int): Maximum number of rows reserved for C2ST
-            validation. Extra rows remain in the training set. Default: 30000.
+            validation. Negative values remove the cap. Extra rows remain in the training set. Default: 30000.
 
     Example:
         >>> import pandas as pd

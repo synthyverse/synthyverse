@@ -46,7 +46,7 @@ class TabSynGenerator(BaseGenerator):
         patience (int): Number of consecutive non-improving C2ST validation
             checks before early stopping. Default: 3.
         max_validation_rows (int): Maximum number of rows reserved for
-            validation. Extra rows remain in the training set. Default: 30000.
+            validation. Negative values remove the cap. Extra rows remain in the training set. Default: 30000.
         batch_size (int): Batch size applied to both VAE and diffusion training. Default: 4096.
         epochs (int): Maximum number of diffusion training epochs. Default: 10001.
         training_steps (int, optional): Total diffusion training steps. When

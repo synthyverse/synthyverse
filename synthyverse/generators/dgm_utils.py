@@ -67,9 +67,9 @@ def split_validation(
     if target_column is not None and target_column not in X:
         raise ValueError(f"target_column '{target_column}' is not in X.")
     n_val = min(int(ceil(len(X) * val_size)), len(X) - 1)
-    if max_validation_rows is not None:
-        if max_validation_rows <= 0:
-            raise ValueError("max_validation_rows must be positive.")
+    if max_validation_rows == 0:
+        raise ValueError("max_validation_rows must be nonzero.")
+    if max_validation_rows is not None and max_validation_rows > 0:
         n_val = min(n_val, max_validation_rows)
     if n_val <= 0:
         return X.copy(), None

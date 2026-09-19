@@ -15,6 +15,7 @@ For detailed examples of low-level generators, preprocessing, persistence, and w
    generators/arf
    generators/ctgan
    generators/cdtd
+   generators/tabargn
    generators/forestdiffusion
    generators/smote
    generators/tabddpm

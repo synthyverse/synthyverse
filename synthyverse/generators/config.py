@@ -9,6 +9,7 @@ GENERATOR_CLASSES = {
     "arf": ("arf_generator/arf.py", "ARFGenerator"),
     "tabsyn": ("tabsyn_generator/tabsyn.py", "TabSynGenerator"),
     "cdtd": ("cdtd_generator/cdtd.py", "CDTDGenerator"),
+    "tabargn": ("tabargn_generator/tabargn.py", "TabARGNGenerator"),
     "tabddpm": ("tabddpm_generator/tabddpm.py", "TabDDPMGenerator"),
     "tabdiff": ("tabdiff_generator/tabdiff.py", "TabDiffGenerator"),
     "tabcascade": ("tabcascade_generator/tabcascade.py", "TabCascadeGenerator"),
@@ -42,6 +43,11 @@ GENERATOR_DEFAULT_CONFIGS = {
 }
 
 NETWORK_SIZE_CONFIGS = {
+    "tabargn": {
+        "small": {"model_size": "S"},
+        "medium": {"model_size": "M"},
+        "large": {"model_size": "L"},
+    },
     "tabsyn": {
         "small": {
             "embedding_dim": 256,
@@ -194,11 +200,13 @@ def _update_batch_size(config, n):
     training_rows = n
     if config.get("val_size", 0) > 0 and config.get("val_steps", 0) > 0 and n > 1:
         val_rows = min(ceil(n * config["val_size"]), n - 1)
-        if config.get("max_validation_rows") is not None:
+        if config.get("max_validation_rows") is not None and config["max_validation_rows"] > 0:
             val_rows = min(val_rows, config["max_validation_rows"])
         training_rows -= val_rows
 
     batch_size = config["batch_size"]
+    if batch_size is None:
+        return
     max_batch_size = max(1, training_rows // 5)
     if batch_size <= max_batch_size:
         return
@@ -283,6 +291,6 @@ def get_config(generator: str, n: int, size: Optional[str] = "medium"):
         },
     )
 
-    if "batch_size" in config:
+    if "batch_size" in config and name != "tabargn":
         _update_batch_size(config, n)
     return config

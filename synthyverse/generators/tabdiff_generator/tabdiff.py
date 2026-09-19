@@ -108,7 +108,7 @@ class TabDiffGenerator(BaseGenerator):
         patience (int): Number of consecutive non-improving C2ST validation
             checks before early stopping. Default: 3.
         max_validation_rows (int): Maximum number of rows reserved for C2ST
-            validation. Extra rows remain in the training set. Default: 30000.
+            validation. Negative values remove the cap. Extra rows remain in the training set. Default: 30000.
 
     Example:
         >>> import pandas as pd
@@ -230,8 +230,8 @@ class TabDiffGenerator(BaseGenerator):
         if self.patience < 1:
             raise ValueError("TabDiff requires patience to be at least 1.")
         should_validate = self.val_size > 0 and self.val_steps > 0
-        if should_validate and self.max_validation_rows <= 0:
-            raise ValueError("TabDiff requires max_validation_rows to be positive.")
+        if should_validate and self.max_validation_rows == 0:
+            raise ValueError("TabDiff requires max_validation_rows to be nonzero.")
         if (
             should_validate
             and self.target_column is not None

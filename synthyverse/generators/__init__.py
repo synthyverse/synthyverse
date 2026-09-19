@@ -16,6 +16,7 @@ _BASE_GENERATORS = {
     "ARFGenerator": (".arf_generator", "arf"),
     "TabSynGenerator": (".tabsyn_generator", "tabsyn"),
     "CDTDGenerator": (".cdtd_generator", "cdtd"),
+    "TabARGNGenerator": (".tabargn_generator", "tabargn"),
     "TabDDPMGenerator": (".tabddpm_generator", "tabddpm"),
     "TabDiffGenerator": (".tabdiff_generator", "tabdiff"),
     "TabCascadeGenerator": (".tabcascade_generator", "tabcascade"),

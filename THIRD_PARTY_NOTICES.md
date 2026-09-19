@@ -74,6 +74,16 @@ The MIT license text for these adapted implementations is kept in
 The Apache-2.0 license text for these adapted implementations is kept in
 `LICENSES/Apache-2.0.txt`.
 
+### TabARGNGenerator
+
+- Synthyverse files: `synthyverse/generators/tabargn_generator/*`
+- Upstream project: `mostlyai-engine (https://github.com/mostly-ai/mostlyai-engine)`
+- Upstream license: Apache License, Version 2.0
+- Upstream copyright notice: `Copyright 2025 MOSTLY AI`
+- Imported or last compared against: `version 2.7.0`
+- Modifications: `Refactored API, omitting several optional features from the upstream engine.`
+- Upstream NOTICE text, if any: `None`
+
 ### TabDDPMGenerator
 
 - Synthyverse files: `synthyverse/generators/tabddpm_generator/*`
