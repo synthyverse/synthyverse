@@ -18,6 +18,7 @@ GENERATOR_CLASSES = {
     "synthpop": ("synthpop_generator/synthpop.py", "SynthpopGenerator"),
     "xgbddpm": ("xgbddpm_generator/xgbddpm.py", "XGBDDPMGenerator"),
     "xgbdiffusion": ("xgbdiffusion_generator/xgbdiffusion.py", "XGBDiffusionGenerator"),
+    "utrees": ("utrees_generator/utrees.py", "UTreesGenerator"),
     "forestdiffusion": (
         "forestdiffusion_generator/fd.py",
         "ForestDiffusionGenerator",

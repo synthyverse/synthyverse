@@ -74,6 +74,26 @@ The MIT license text for these adapted implementations is kept in
 The Apache-2.0 license text for these adapted implementations is kept in
 `LICENSES/Apache-2.0.txt`.
 
+### UTreesGenerator
+
+- Synthyverse files: `synthyverse/generators/utrees_generator/*`
+- Upstream project: `utrees (https://github.com/calvinmccarter/unmasking-trees/)`
+- Upstream license: Apache License, Version 2.0
+- Upstream copyright notice: `Copyright 2024 Calvin McCarter`
+- Imported or last compared against: `version 0.3.0`
+- Modifications: `Refactored API, omitting TabPFN functionality.`
+- Upstream NOTICE text, if any: `None`
+
+### KDITransform
+
+- Synthyverse files: `synthyverse/generators/utrees_generator/kditransform/*`
+- Upstream project: `kditransform (https://github.com/calvinmccarter/kditransform/)`
+- Upstream license: Apache License, Version 2.0
+- Upstream copyright notice: `Copyright 2023-2025 Calvin McCarter`
+- Imported or last compared against: `version 1.1.0`
+- Modifications: `Add support for scikit-learn>=1.6.`
+- Upstream NOTICE text, if any: `None`
+
 ### TabARGNGenerator
 
 - Synthyverse files: `synthyverse/generators/tabargn_generator/*`

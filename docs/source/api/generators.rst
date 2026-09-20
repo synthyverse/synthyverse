@@ -26,4 +26,5 @@ For detailed examples of low-level generators, preprocessing, persistence, and w
    generators/univariate
    generators/xgbddpm
    generators/xgbdiffusion
+   generators/utrees
    generators/synthpop

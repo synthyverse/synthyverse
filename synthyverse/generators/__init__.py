@@ -25,6 +25,7 @@ _BASE_GENERATORS = {
     "SynthpopGenerator": (".synthpop_generator", "synthpop"),
     "XGBDDPMGenerator": (".xgbddpm_generator", "xgbddpm"),
     "XGBDiffusionGenerator": (".xgbdiffusion_generator", "xgbdiffusion"),
+    "UTreesGenerator": (".utrees_generator", "utrees"),
     "ForestDiffusionGenerator": (".forestdiffusion_generator", "forestdiffusion"),
 }
 

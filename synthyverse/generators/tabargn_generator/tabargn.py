@@ -40,15 +40,14 @@ TABARGN_LEGACY_MODEL_SIZE_CONFIGS = {
 
 
 class TabARGNGenerator(BaseGenerator):
-    """Flat TabARGN model from mostlyai-engine.
+    """Any-order deep autoregressive model from MostlyAI.
 
-    `fit(X, discrete_features)` models BaseGenerator-encoded categorical features
-    with the upstream categorical encoding and continuous features with the
-    upstream numeric-auto encoding. `generate(n)` samples the autoregressive network.
-    Upstream's default Medium-sized settings, value protection, flexible column order,
-    AdamW optimizer, and validation-loss checkpoint selection are retained.
-    ``TABARGN_LEGACY_MODEL_SIZE_CONFIGS`` stores the low-level parameter mapping
-    for the original ``"S"``, ``"M"``, and ``"L"`` presets.
+    Based on the mostlyai-engine: https://github.com/mostly-ai/mostlyai-engine.
+
+    Trained by minimizing cross-entropy loss in categorical features and discretized numerical features.
+
+    Paper: "Tabularargn: A flexible and efficient auto-regressive framework for generating high-fidelity synthetic data" by Tiwald et al. (2025).
+
 
     Args:
         model_size: Optional ``"S"``, ``"M"``, or ``"L"`` preset. When set, it
@@ -385,7 +384,9 @@ class TabARGNGenerator(BaseGenerator):
                     np.ceil(self.trained_steps_ / steps_per_epoch)
                 )
                 if self.cap_train_time is not None and train_time > self.cap_train_time:
-                    tqdm.write(f"Training timed out after {self.cap_train_time} seconds.")
+                    tqdm.write(
+                        f"Training timed out after {self.cap_train_time} seconds."
+                    )
                     timed_out = True
                     break
                 if (
