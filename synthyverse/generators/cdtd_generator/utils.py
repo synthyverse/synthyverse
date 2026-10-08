@@ -16,9 +16,7 @@ def low_discrepancy_sampler(num_samples, device):
     single_u = torch.rand((1,), device=device, requires_grad=False, dtype=torch.float64)
     return (
         single_u
-        + torch.arange(
-            0.0, 1.0, step=1.0 / num_samples, device=device, requires_grad=False
-        )
+        + torch.arange(num_samples, device=device, dtype=torch.float64) / num_samples
     ) % 1
 
 
@@ -58,5 +56,3 @@ class LinearScheduler:
                 * (step - self.warmup_steps)
             )
         return decrease + self.base_lr_orig if self.anneal_lr else self.base_lr_orig
-
-
