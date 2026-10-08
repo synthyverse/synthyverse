@@ -625,6 +625,8 @@ class TabSynGenerator(BaseGenerator):
 
     def _state(self):
         return {
+            "training_steps": self.training_steps,
+            "vae_training_steps": self.vae_training_steps,
             "vae_num_layers": self.vae_num_layers,
             "vae_d_token": self.vae_d_token,
             "vae_n_head": self.vae_n_head,

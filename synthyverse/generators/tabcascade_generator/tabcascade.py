@@ -2,6 +2,7 @@
 # See THIRD_PARTY_NOTICES.md for attribution and modification details.
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import torch
 from sklearn.preprocessing import OrdinalEncoder
@@ -229,7 +230,10 @@ class TabCascadeGenerator(BaseGenerator):
         n_classes_cat = []
         proportions_cat = []
         n_sample = x_cat.shape[0]
-        cat_cardinalities = self._categorical_cardinalities(self.discrete_features)
+        cat_cardinalities = (
+            [len(values) for values in self.cat_encoder.categories_ if len(values) > 1]
+            if self.cat_encoder is not None else []
+        )
         for i in range(x_cat.shape[1]):
             n_classes_cat.append(cat_cardinalities[i])
             counts = torch.bincount(x_cat[:, i], minlength=cat_cardinalities[i])
@@ -541,6 +545,7 @@ class TabCascadeGenerator(BaseGenerator):
                 X,
                 self.val_size,
                 self.target_column,
+                discrete_features=discrete_features,
                 random_state=self.random_state,
                 max_validation_rows=self.max_validation_rows,
             )
@@ -555,8 +560,22 @@ class TabCascadeGenerator(BaseGenerator):
         if not self.numerical_features:
             raise ValueError("TabCascade requires at least one numerical feature.")
 
-        if self.discrete_features:
-            x_cat = torch.tensor(X[self.discrete_features].to_numpy()).long()
+        # Re-encode training categories and exclude training-constant columns.
+        self.cat_encoder = None
+        self.constant_categoricals = {}
+        if discrete_features:
+            self.cat_encoder = OrdinalEncoder(dtype=np.int64)
+            X[discrete_features] = self.cat_encoder.fit_transform(X[discrete_features])
+            self.constant_categoricals = {
+                col: values[0]
+                for col, values in zip(discrete_features, self.cat_encoder.categories_)
+                if len(values) == 1
+            }
+        self.model_discrete_features = [
+            col for col in discrete_features if col not in self.constant_categoricals
+        ]
+        if self.model_discrete_features:
+            x_cat = torch.tensor(X[self.model_discrete_features].to_numpy()).long()
         else:
             x_cat = torch.empty((len(X), 0), dtype=torch.long)
 
@@ -586,15 +605,23 @@ class TabCascadeGenerator(BaseGenerator):
         x_cat, x_num = self._sample_tabcascade(n)
         x_num = self.quantile_encoder.inverse_transform(x_num)
         frames = []
-        if self.discrete_features:
+        if self.model_discrete_features:
             frames.append(
                 pd.DataFrame(
                     x_cat.astype(int),
-                    columns=self.discrete_features,
+                    columns=self.model_discrete_features,
                 )
             )
         frames.append(pd.DataFrame(x_num, columns=self.numerical_features))
-        return pd.concat(frames, axis=1)[self.col_order]
+        syn = pd.concat(frames, axis=1)
+        # Restore the original category codes and excluded constant columns.
+        for col in self.constant_categoricals:
+            syn[col] = 0
+        if self.cat_encoder is not None:
+            syn[self.discrete_features] = self.cat_encoder.inverse_transform(
+                syn[self.discrete_features]
+            )
+        return syn[self.col_order]
 
     def get_trainable_params(self):
         return get_total_trainable_params(self.lowres) + get_total_trainable_params(
@@ -668,6 +695,7 @@ class TabCascadeGenerator(BaseGenerator):
 
     def _state(self):
         return {
+            "training_steps": self.training_steps,
             "config": config(
                 data={"encoder": self.config.data.encoder},
                 lowres={"model": self.config.lowres.model},
@@ -675,6 +703,9 @@ class TabCascadeGenerator(BaseGenerator):
             ),
             "col_order": self.col_order,
             "discrete_features": self.discrete_features,
+            "model_discrete_features": self.model_discrete_features,
+            "cat_encoder": self.cat_encoder,
+            "constant_categoricals": self.constant_categoricals,
             "numerical_features": self.numerical_features,
             "ordinal_encoder": self.ordinal_encoder,
             "quantile_encoder": self.quantile_encoder,

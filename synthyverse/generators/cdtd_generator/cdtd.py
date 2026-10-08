@@ -2,8 +2,10 @@
 # See THIRD_PARTY_NOTICES.md for attribution and modification details.
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import torch
+from sklearn.preprocessing import OrdinalEncoder
 from torch_ema import ExponentialMovingAverage
 from tqdm import tqdm
 
@@ -160,6 +162,7 @@ class CDTDGenerator(BaseGenerator):
                 X,
                 self.val_size,
                 self.target_column,
+                discrete_features=discrete_features,
                 random_state=self.random_state,
                 max_validation_rows=self.max_validation_rows,
             )
@@ -171,6 +174,17 @@ class CDTDGenerator(BaseGenerator):
             col for col in X.columns if col not in discrete_features
         ]
         self.col_order = X.columns
+        # Re-encode training categories and exclude training-constant columns.
+        self.cat_encoder = OrdinalEncoder(dtype=np.int64)
+        X[discrete_features] = self.cat_encoder.fit_transform(X[discrete_features])
+        self.constant_categoricals = {
+            col: values[0]
+            for col, values in zip(discrete_features, self.cat_encoder.categories_)
+            if len(values) == 1
+        }
+        self.model_discrete_features = [
+            col for col in discrete_features if col not in self.constant_categoricals
+        ]
 
         X_train = X.copy()
 
@@ -179,7 +193,7 @@ class CDTDGenerator(BaseGenerator):
             X_train[self.numerical_features].astype(float)
         )
 
-        X_discrete = torch.tensor(X_train[self.discrete_features].to_numpy()).long()
+        X_discrete = torch.tensor(X_train[self.model_discrete_features].to_numpy()).long()
         X_numerical = torch.tensor(X_train[self.numerical_features].to_numpy()).float()
 
         # --- build diffusion model ---
@@ -187,7 +201,9 @@ class CDTDGenerator(BaseGenerator):
         self.num_cont_features = X_numerical.shape[1]
         num_features = self.num_cat_features + self.num_cont_features
 
-        categories = self._categorical_cardinalities(self.discrete_features)
+        categories = [
+            len(values) for values in self.cat_encoder.categories_ if len(values) > 1
+        ]
         self.categories = categories
 
         proportions = []
@@ -380,10 +396,14 @@ class CDTDGenerator(BaseGenerator):
         syn_X = pd.concat(
             (pd.DataFrame(syn_X_discrete), pd.DataFrame(syn_X_numerical)), axis=1
         )
-        syn_X.columns = self.discrete_features + self.numerical_features
-        syn_X = syn_X[self.col_order]
-
-        return syn_X
+        syn_X.columns = self.model_discrete_features + self.numerical_features
+        # Restore the original category codes and excluded constant columns.
+        for col in self.constant_categoricals:
+            syn_X[col] = 0
+        syn_X[self.discrete_features] = self.cat_encoder.inverse_transform(
+            syn_X[self.discrete_features]
+        )
+        return syn_X[self.col_order]
 
     def get_trainable_params(self):
         return get_total_trainable_params(self.diff_model)
@@ -409,6 +429,9 @@ class CDTDGenerator(BaseGenerator):
             "num_timesteps": self.num_timesteps,
             "batch_size": self.batch_size,
             "discrete_features": self.discrete_features,
+            "model_discrete_features": self.model_discrete_features,
+            "cat_encoder": self.cat_encoder,
+            "constant_categoricals": self.constant_categoricals,
             "numerical_features": self.numerical_features,
             "col_order": self.col_order,
             "ordinal_encoder": self.ordinal_encoder,

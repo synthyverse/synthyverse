@@ -39,10 +39,62 @@ DEFAULT_CONFIG = {
 }
 
 NETWORK_SIZE_CONFIGS = {
+    "synthpop": {
+        "original": {
+            "minibucket": 10,
+            "minibucket_sampling": 10,
+            "K": 1,
+            "order": "original",
+            "n_jobs": -1,
+            "tree_kwargs": None,
+            "subsample": 1.0,
+            "subsample_with_replacement": False,
+            "honest_trees": False,
+            "cache_real_leafs": False,
+            "cache_honest_lookup": False,
+            "condition_y": None,
+            "smoothing": None,
+            "kde_kwargs": None,
+        },
+        "plus": {
+            "minibucket": 5,
+            "minibucket_sampling": 5,
+            "K": 100,
+            "order": "random",
+            "n_jobs": -1,
+            "tree_kwargs": None,
+            "subsample": 0.5,
+            "subsample_with_replacement": False,
+            "honest_trees": True,
+            "cache_real_leafs": False,
+            "cache_honest_lookup": False,
+            "condition_y": None,
+            "smoothing": None,
+            "kde_kwargs": None,
+        },
+    },
     "tabargn": {
-        "small": {"model_size": "S", "early_stopping_metric": "c2st"},
-        "medium": {"model_size": "M", "early_stopping_metric": "c2st"},
-        "large": {"model_size": "L", "early_stopping_metric": "c2st"},
+        "small": {
+            "model_size": "S",
+            "early_stopping_metric": "c2st",
+            "enable_flexible_generation": False,
+            "random_generation_order": False,
+            "value_protection": False,
+        },
+        "medium": {
+            "model_size": "M",
+            "early_stopping_metric": "c2st",
+            "enable_flexible_generation": False,
+            "random_generation_order": False,
+            "value_protection": False,
+        },
+        "large": {
+            "model_size": "L",
+            "early_stopping_metric": "c2st",
+            "enable_flexible_generation": False,
+            "random_generation_order": False,
+            "value_protection": False,
+        },
     },
     "tabsyn": {
         "small": {
@@ -323,10 +375,10 @@ def get_config(generator: str, n: int, size: Optional[str] = "medium"):
 
     if size is not None:
         size = size.lower()
-        if size not in {"small", "medium", "large"}:
+        if size not in {"small", "medium", "large"} | generator_config.keys():
             raise ValueError(f"Config size {size} not found")
         _update_config(config, generator_config.get(size, {}))
 
-    if "batch_size" in config and name != "tabargn":
+    if "batch_size" in config:
         _update_batch_size(config, n)
     return config

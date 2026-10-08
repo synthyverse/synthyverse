@@ -54,7 +54,9 @@ class MixedTypeDiffusion(nn.Module):
         self.weight_network = WeightNetwork(1024)
 
         # timewarping
-        self.timewarp_type = timewarp_type
+        self.timewarp_type = (
+            "single" if not categories and timewarp_type == "bytype" else timewarp_type
+        )
         self.sigma_min_cat = torch.tensor(sigma_min_cat)
         self.sigma_max_cat = torch.tensor(sigma_max_cat)
         self.sigma_min_cont = torch.tensor(sigma_min_cont)
@@ -97,12 +99,16 @@ class MixedTypeDiffusion(nn.Module):
         assert cont_preds.shape == x_cont_0.shape
 
         # cross entropy over categorical features for each individual
-        ce_losses = torch.stack(
-            [
-                F.cross_entropy(cat_logits[i], x_cat_0[:, i], reduction="none")
-                for i in range(self.num_cat_features)
-            ],
-            dim=1,
+        ce_losses = (
+            torch.stack(
+                [
+                    F.cross_entropy(cat_logits[i], x_cat_0[:, i], reduction="none")
+                    for i in range(self.num_cat_features)
+                ],
+                dim=1,
+            )
+            if self.num_cat_features
+            else x_cont_0.new_empty((len(x_cont_0), 0))
         )
 
         # MSE loss over numerical features
@@ -424,10 +430,7 @@ class FinalLayer(nn.Module):
             cont_logits = out[0]
         else:
             cont_logits = None
-        if self.num_cat_features > 0:
-            cat_logits = out[self.cat_idx :]
-        else:
-            cat_logits = None
+        cat_logits = out[self.cat_idx :]
 
         return cat_logits, cont_logits
 
@@ -465,7 +468,7 @@ class CatEmbedding(nn.Module):
     def __init__(self, dim, categories, cat_emb_init_sigma=0.001, bias=False):
         super().__init__()
 
-        self.categories = torch.tensor(categories)
+        self.categories = torch.tensor(categories, dtype=torch.long)
         categories_offset = self.categories.cumsum(dim=-1)[:-1]
         categories_offset = torch.cat(
             (torch.zeros((1,), dtype=torch.long), categories_offset)
@@ -535,7 +538,7 @@ class MLP(nn.Module):
 
         # init final layer
         cont_bias_init = torch.zeros((num_cont_features,))
-        cat_bias_init = torch.cat(proportions).log()
+        cat_bias_init = torch.cat(proportions).log() if proportions else torch.empty(0)
         bias_init = torch.cat((cont_bias_init, cat_bias_init))
 
         self.final_layer = FinalLayer(

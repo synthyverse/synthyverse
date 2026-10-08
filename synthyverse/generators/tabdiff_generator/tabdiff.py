@@ -239,6 +239,7 @@ class TabDiffGenerator(BaseGenerator):
                 X,
                 self.val_size,
                 self.target_column,
+                discrete_features=discrete_features,
                 random_state=self.random_state,
                 max_validation_rows=self.max_validation_rows,
             )
@@ -506,6 +507,7 @@ class TabDiffGenerator(BaseGenerator):
 
     def _state(self):
         return {
+            "training_steps": self.training_steps,
             "batch_size": self.batch_size,
             "num_layers": self.num_layers,
             "d_token": self.d_token,

@@ -320,6 +320,8 @@ class TabularSchema:
     def restore(self, X: pd.DataFrame) -> pd.DataFrame:
         """Restore column order, numeric precision, and pandas dtypes.
 
+        Integer columns containing missing values are returned as floats.
+
         Args:
             X (pd.DataFrame): Data containing the columns captured by the
                 schema.
@@ -330,7 +332,11 @@ class TabularSchema:
         x = self.round_numeric(X)
         self.validate_columns(x)
         x = x[self.column_order]
-        return x.astype(self.dtypes)
+        return x.astype({
+            col: float if pd.api.types.is_integer_dtype(dtype) and x[col].isna().any()
+            else dtype
+            for col, dtype in self.dtypes.items()
+        })
 
 
 class TabularImputer:
@@ -404,6 +410,10 @@ class TabularImputer:
             tuple: ``(X_processed, X_val_processed)``. The second item is
             ``None`` when no validation data is provided.
         """
+        self.imputer = None
+        self.imputer_base_cols = None
+        self.categorical_features = []
+        self.ordinal_encoder = None
         self.numerical_features = list(numerical_features)
         x = X.copy()
         x_val = X_val.copy() if X_val is not None else None
@@ -449,38 +459,33 @@ class TabularImputer:
                 for col in self.imputer_base_cols
                 if col not in self.numerical_features
             ]
-            if self.categorical_features:
-                self.ordinal_encoder = OrdinalEncoder(
-                    handle_unknown="use_encoded_value",
-                    unknown_value=-1,
-                    encoded_missing_value=-2,
-                )
-                x[self.categorical_features] = self.ordinal_encoder.fit_transform(
-                    x[self.categorical_features]
-                )
-            x[self.imputer_base_cols] = self.imputer.fit_transform(
-                x[self.imputer_base_cols]
+            self.ordinal_encoder = OrdinalEncoder(
+                handle_unknown="use_encoded_value",
+                unknown_value=-1,
+                encoded_missing_value=-2,
             )
-            if self.categorical_features:
-                x[self.categorical_features] = self.ordinal_encoder.inverse_transform(
-                    x[self.categorical_features]
-                )
+            imputed = pd.DataFrame(
+                self.imputer.fit_transform(self._missforest_predictors(x, fit=True)),
+                columns=self.imputer_base_cols,
+                index=x.index,
+            )
+            x[self.numerical_features] = imputed[self.numerical_features]
             if x_val is not None:
-                if self.categorical_features:
-                    x_val[self.categorical_features] = self.ordinal_encoder.transform(
-                        x_val[self.categorical_features]
-                    )
-                x_val[self.imputer_base_cols] = self.imputer.transform(
-                    x_val[self.imputer_base_cols]
-                )
-                if self.categorical_features:
-                    x_val[self.categorical_features] = (
-                        self.ordinal_encoder.inverse_transform(
-                            x_val[self.categorical_features]
-                        )
-                    )
+                x_val = self.transform(x_val)
 
         return x, x_val
+
+    def _missforest_predictors(self, X: pd.DataFrame, fit: bool = False):
+        predictors = X[self.imputer_base_cols].copy()
+        if self.categorical_features:
+            categorical = predictors[self.categorical_features].astype(object)
+            categorical = categorical.mask(categorical.isna(), np.nan)
+            encode = (
+                self.ordinal_encoder.fit_transform
+                if fit else self.ordinal_encoder.transform
+            )
+            predictors[self.categorical_features] = encode(categorical)
+        return predictors
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """Transform data with the fitted missing-value strategy.
@@ -520,17 +525,12 @@ class TabularImputer:
                     "Cannot impute missing numerical values because fitting "
                     "skipped imputation when no missing numerical values were present."
                 )
-            if self.categorical_features:
-                x[self.categorical_features] = self.ordinal_encoder.transform(
-                    x[self.categorical_features]
-                )
-            x[self.imputer_base_cols] = self.imputer.transform(
-                x[self.imputer_base_cols]
+            imputed = pd.DataFrame(
+                self.imputer.transform(self._missforest_predictors(x)),
+                columns=self.imputer_base_cols,
+                index=x.index,
             )
-            if self.categorical_features:
-                x[self.categorical_features] = self.ordinal_encoder.inverse_transform(
-                    x[self.categorical_features]
-                )
+            x[self.numerical_features] = imputed[self.numerical_features]
             return x
 
 
@@ -775,8 +775,7 @@ class DataProcessor:
             if col not in constraint_columns and x[col].nunique(dropna=False) == 1
         }
         if self.constant_values:
-            constant_cols = list(self.constant_values)
-            x = x.drop(columns=constant_cols)
+            x = x.drop(columns=list(self.constant_values))
             self.categorical_features = [
                 col
                 for col in self.categorical_features
@@ -1122,12 +1121,12 @@ class SynthyverseGenerator:
             params.update(generator_params)
         if generator_kwargs is not None:
             params.update(generator_kwargs)
-        if "random_state" not in params:
-            signature = inspect.signature(generator_cls.__init__)
-            if "random_state" in signature.parameters:
-                params["random_state"] = random_state
-        if "full_determinism" not in params:
-            params["full_determinism"] = full_determinism
+        signature = inspect.signature(generator_cls.__init__)
+        for key, value in (
+            ("random_state", random_state), ("full_determinism", full_determinism)
+        ):
+            if key not in params and key in signature.parameters:
+                params[key] = value
         return generator_cls(**params)
 
     @staticmethod
@@ -1166,7 +1165,7 @@ def column_precision(series: pd.Series) -> int:
         s = str(x)
 
         if "e" in s.lower():
-            s = format(float(x), "f")
+            s = np.format_float_positional(x, trim="-")
 
         if "." not in s:
             return 0

@@ -56,7 +56,7 @@ The MIT license text for these adapted implementations is kept in
 - Upstream license: MIT License
 - Upstream copyright notice: `Copyright (c) 2026 Markus Mueller`
 - Imported or last compared against: `Commit c8f44bb`
-- Modifications: `Refactored API, simple ordinal encoding for categories.`
+- Modifications: `Refactored API.`
 - Upstream NOTICE text, if any: `None`
 
 ### ForestDiffusionGenerator
@@ -121,7 +121,7 @@ The Apache-2.0 license text for these adapted implementations is kept in
 - Upstream license: Apache License, Version 2.0
 - Upstream copyright notice: `Copyright vanderschaarlab 2023`
 - Imported or last compared against: `Commit 23f322f`
-- Modifications: `Refactored API, allow manual specification of categorical features, fast tensor dataloader.`
+- Modifications: `Refactored API, allow manual specification of categorical features, fast tensor dataloader, anneal learning rate by optimizer steps instead of epochs.`
 - Upstream NOTICE text, if any: `None`
 
 ### TabSynGenerator
@@ -178,7 +178,7 @@ not under the synthyverse MIT License.
 - Upstream copyright notice: `The Licensed Work is (c) DataCebo, Inc.; license text copyright (c) 2017 MariaDB Corporation Ab, All Rights Reserved.`
 - License text: `LICENSES/CTGAN-BSL-1.1.txt`
 - Imported or last compared against: `version 0.12.0`
-- Modifications: `No ctgan source code is vendored.`
+- Modifications: `enable time-based early stopping, and validation every k steps/epochs.`
 - Upstream NOTICE text, if any: `The Business Source License (this document, or the "License") is not an Open Source license. However, the Licensed Work will eventually be made available under an Open Source License, as stated in this License.`
 
 ## Non-vendored dependencies

@@ -76,7 +76,8 @@ class TabularSynthesisBenchmark:
             synthetic set is generated at the (capped) real-train evaluation
             size. Default: 100_000.
         allow_generated_missings (bool): Whether to evaluate generated samples
-            with missing numerical values. Default: False.
+            with missing numerical values. When False, skipped sets receive an
+            ``evaluation_status`` result explaining the skip. Default: False.
         dataset_save_dir (str or Path or None): Directory for saving sampled
             synthetic datasets as parquet files. When provided, datasets are
             saved under ``dataset_save_dir/train_seed/sampling_seed``.
@@ -258,6 +259,7 @@ class TabularSynthesisBenchmark:
             new_rows.extend(rows)
             if write_results:
                 self._save_results(result_rows, results_path)
+            del generator, processor, processed, split
 
         return pd.DataFrame(new_rows, columns=RESULT_COLUMNS)
 
@@ -332,7 +334,7 @@ class TabularSynthesisBenchmark:
             processor, processed = self._load_or_fit_processor(train_seed, split)
             generator = self._load_generator(generator_cls, train_seed)
 
-            rows = self._evaluate_generator(
+            for rows in self._evaluate_generator(
                 generator=generator,
                 processor=processor,
                 processed=processed,
@@ -340,10 +342,11 @@ class TabularSynthesisBenchmark:
                 n_sets=n_sets,
                 train_seed=train_seed,
                 max_eval_samples=max_eval_samples,
-            )
-            result_rows.extend(rows)
-            new_rows.extend(rows)
-            self._save_results(result_rows, results_path)
+            ):
+                result_rows.extend(rows)
+                new_rows.extend(rows)
+                self._save_results(result_rows, results_path)
+            del generator, processor, processed, split
 
         return pd.DataFrame(new_rows, columns=RESULT_COLUMNS)
 
@@ -417,6 +420,8 @@ class TabularSynthesisBenchmark:
                 result_rows.extend(rows)
                 new_rows.extend(rows)
                 self._save_results(result_rows, results_path)
+                del X_syn, X_train_eval, X_test_eval
+            del processor, processed, split
 
         return pd.DataFrame(new_rows, columns=RESULT_COLUMNS)
 
@@ -510,7 +515,7 @@ class TabularSynthesisBenchmark:
             new_rows.extend(rows)
             self._save_results(result_rows, results_path)
 
-            rows = self._evaluate_generator(
+            for rows in self._evaluate_generator(
                 generator=generator,
                 processor=processor,
                 processed=processed,
@@ -518,10 +523,11 @@ class TabularSynthesisBenchmark:
                 n_sets=n_sets,
                 train_seed=train_seed,
                 max_eval_samples=max_eval_samples,
-            )
-            result_rows.extend(rows)
-            new_rows.extend(rows)
-            self._save_results(result_rows, results_path)
+            ):
+                result_rows.extend(rows)
+                new_rows.extend(rows)
+                self._save_results(result_rows, results_path)
+            del generator, processor, processed, split
 
         return pd.DataFrame(new_rows, columns=RESULT_COLUMNS)
 
@@ -569,14 +575,10 @@ class TabularSynthesisBenchmark:
                 processor.save(processor_dir)
                 print(f"Saved DataProcessor to {processor_file}")
 
-        X_train_model = processed
-        X_test_model = processor.preprocess(X=split["test"])
-
         return processor, {
-            "train_model": X_train_model,
-            "test_model": X_test_model,
-            "train_eval": processor.postprocess(X_train_model),
-            "test_eval": processor.postprocess(X_test_model),
+            "train_model": processed,
+            "train_eval": processor.imputer.transform(split["train"]),
+            "test_eval": processor.imputer.transform(split["test"]),
         }
 
     def _fit_generator(
@@ -650,8 +652,7 @@ class TabularSynthesisBenchmark:
         n_sets: int,
         train_seed: int,
         max_eval_samples: Optional[int],
-    ) -> list[dict[str, Any]]:
-        result_rows = []
+    ) -> Iterable[list[dict[str, Any]]]:
         for set_index in memory_guarded(range(n_sets)):
             sampling_seed = self.random_state + set_index
             X_train_eval = self._subsample_eval_dataset(
@@ -677,15 +678,15 @@ class TabularSynthesisBenchmark:
                 X_syn,
             )
 
-            result_rows.append(
+            rows = [
                 {
                     "metric name": "sampling_time_seconds",
                     "metric value": sampling_time,
                     "train_seed": train_seed,
                     "set": set_index,
                 }
-            )
-            result_rows.extend(
+            ]
+            rows.extend(
                 self._evaluate_synthetic_datasets(
                     X_train_eval=X_train_eval,
                     X_test_eval=X_test_eval,
@@ -696,8 +697,8 @@ class TabularSynthesisBenchmark:
                     sampling_seed=sampling_seed,
                 )
             )
-
-        return result_rows
+            del X_syn, X_train_eval, X_test_eval
+            yield rows
 
     def _evaluate_synthetic_datasets(
         self,
@@ -719,7 +720,14 @@ class TabularSynthesisBenchmark:
             not self.allow_generated_missings
             and X_syn[numerical_features].isna().any().any()
         ):
-            return []
+            return [
+                {
+                    "metric name": "evaluation_status",
+                    "metric value": "skipped due to generated missing values",
+                    "train_seed": train_seed,
+                    "set": set_index,
+                }
+            ]
 
         evaluator = evaluation.TabularMetricEvaluator(
             metrics=metrics,
@@ -963,34 +971,26 @@ class TabularSynthesisBenchmark:
 
 
 def make_csv_safe(value: Any) -> Any:
+    value = _json_safe(value)
+    if isinstance(value, (dict, list)):
+        return json.dumps(value)
+    return pd.NA if value is None else value
+
+
+def _json_safe(value: Any) -> Any:
     if isinstance(value, dict):
-        return json.dumps(
-            {str(key): make_csv_safe(item) for key, item in value.items()}
-        )
+        return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple, set)):
-        return json.dumps([make_csv_safe(item) for item in value])
+        return [_json_safe(item) for item in value]
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, pd.DataFrame):
-        return value.to_json(orient="records")
-    if isinstance(value, pd.Series):
-        return make_csv_safe(value.to_list())
+        return json.loads(value.to_json(orient="records"))
     if hasattr(value, "tolist") and not isinstance(value, (str, bytes)):
-        try:
-            return make_csv_safe(value.tolist())
-        except TypeError:
-            pass
+        return _json_safe(value.tolist())
     if hasattr(value, "item") and not isinstance(value, (str, bytes)):
-        try:
-            return make_csv_safe(value.item())
-        except (TypeError, ValueError):
-            pass
-    try:
-        if pd.isna(value):
-            return pd.NA
-    except (TypeError, ValueError):
-        pass
-    return value
+        return _json_safe(value.item())
+    return None if pd.isna(value) else value
 
 
 def flatten_metrics(metrics: Any, prefix: str = "") -> Iterable[tuple[str, Any]]:

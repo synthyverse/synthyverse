@@ -47,6 +47,13 @@ X_syn_model = generator.generate(1000)
 X_syn = processor.postprocess(X_syn_model)
 ```
 
+When evaluating synthetic data compared to real data, it may be necessary to impute missing data using the imputer within the DataProcessor:
+
+```python
+X_train_eval = processor.imputer.transform(X_train)
+X_test_eval = processor.imputer.transform(X_test)
+```
+
 ### Missing Values
 
 The current tabular imputation methods are:

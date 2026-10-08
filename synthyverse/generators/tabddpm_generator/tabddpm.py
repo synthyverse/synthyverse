@@ -151,6 +151,7 @@ class TabDDPMGenerator(BaseGenerator):
                 X,
                 self.val_size,
                 self.target_column,
+                discrete_features=discrete_features,
                 random_state=self.random_state,
                 max_validation_rows=self.max_validation_rows,
             )
@@ -273,6 +274,7 @@ class TabDDPMGenerator(BaseGenerator):
             len(X),
             self.batch_size,
         )
+        total_steps = epochs * len(self.dataloader)
         pbar = trange(epochs, desc="Epoch", leave=True)
 
         best_val_score = float("inf")
@@ -307,12 +309,12 @@ class TabDDPMGenerator(BaseGenerator):
                 loss = loss_multi + loss_gauss
                 loss.backward()
                 self.optimizer.step()
-                self._anneal_lr(epoch + 1, epochs)
 
                 curr_count += len(x)
                 curr_loss_multi += loss_multi.item() * len(x)
                 curr_loss_gauss += loss_gauss.item() * len(x)
                 steps += 1
+                self._anneal_lr(steps, total_steps)
                 self.trained_steps_ = steps
 
                 mloss = np.around(curr_loss_multi / curr_count, 4)
@@ -366,8 +368,8 @@ class TabDDPMGenerator(BaseGenerator):
             self.loss_history, columns=["step", "mloss", "gloss", "loss"]
         ).set_index("step")
 
-    def _anneal_lr(self, epoch: int, epochs: int) -> None:
-        lr = self.lr * (1 - epoch / epochs)
+    def _anneal_lr(self, step: int, total_steps: int) -> None:
+        lr = self.lr * (1 - step / total_steps)
         for param_group in self.optimizer.param_groups:
             param_group["lr"] = lr
 
@@ -409,6 +411,7 @@ class TabDDPMGenerator(BaseGenerator):
 
     def _state(self):
         state = {
+            "training_steps": self.training_steps,
             "batch_size": self.batch_size,
             "output_columns": self.output_columns,
             "target_column": self.target_column,

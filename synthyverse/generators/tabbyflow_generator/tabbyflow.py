@@ -19,7 +19,7 @@ from ..dgm_utils import (
     split_validation,
     validate_c2st,
 )
-from ...utils.utils import resolve_epochs_from_training_steps
+from ...utils.utils import get_total_trainable_params, resolve_epochs_from_training_steps
 
 LRScheduler = Literal["reduce_lr_on_plateau", "anneal", "fixed"]
 CLossWeightSchedule = Literal["anneal", "fixed"]
@@ -448,6 +448,9 @@ class TabbyFlowGenerator(BaseGenerator):
         syn_X.columns = self.discrete_features + self.numerical_features
         syn_X = syn_X[self.col_order]
         return syn_X
+
+    def get_trainable_params(self):
+        return get_total_trainable_params(self.flow)
 
     def get_trained_steps_epochs(self):
         if self.training_steps is not None:

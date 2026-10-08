@@ -3,6 +3,7 @@
 """Single-table TabARGN generator."""
 
 import time
+from math import ceil
 from pathlib import Path
 from typing import Optional
 
@@ -22,6 +23,7 @@ from ..dgm_utils import (
 )
 from .encoding import ColumnEncoder
 from .model import FlatModel
+from ...utils.utils import resolve_epochs_from_training_steps
 
 TABARGN_LEGACY_MODEL_SIZE_CONFIGS = {
     "S": {
@@ -67,10 +69,13 @@ class TabARGNGenerator(BaseGenerator):
         regressor_layer_units: Width multipliers for autoregressive regressor layers.
         dropout: Dropout applied inside the autoregressive regressors.
         epochs: Maximum training epochs used when ``training_steps`` is not set.
-        training_steps: Number of optimizer steps. Overrides ``epochs`` when set.
-        cap_train_time: Time limit in seconds for training. Default: None.
+        training_steps: Optimizer-step budget converted to complete epochs.
+            Overrides ``epochs`` when set; the final epoch can exceed the budget.
+        cap_train_time: Time limit in seconds for training, excluding validation.
+            Default: None.
         batch_size: Physical training batch size.
-        gradient_accumulation_steps: Optimizer accumulation steps.
+        gradient_accumulation_steps: Batches accumulated per optimizer step.
+            The final step in each epoch uses the remaining batches.
         lr: Learning rate. ``None`` uses the upstream batch-size scaling.
         weight_decay: AdamW weight decay.
         scheduler_factor: Multiplicative LR reduction factor after validation plateaus.
@@ -274,20 +279,20 @@ class TabARGNGenerator(BaseGenerator):
         )
         batch_size = self.batch_size
         batch_size = max(1, min(batch_size, len(train_indices)))
-        accumulation = max(
-            1, min(self.gradient_accumulation_steps, len(train_indices) // batch_size)
-        )
-        steps_per_epoch = max(1, len(train_indices) // (batch_size * accumulation))
-        lr = self.lr
-        if lr is None:
-            lr = float(np.round(0.001 * np.sqrt(batch_size * accumulation / 32), 5))
-
         names = list(self.cardinalities)
         loader = FastTensorDataLoader(
             *(encoded[sub][train_indices] for sub in names),
             shuffle=True,
             batch_size=batch_size,
         )
+        accumulation = min(self.gradient_accumulation_steps, len(loader))
+        steps_per_epoch = ceil(len(loader) / accumulation)
+        epochs = resolve_epochs_from_training_steps(
+            self.epochs, self.training_steps, len(train_indices), batch_size * accumulation
+        )
+        lr = self.lr
+        if lr is None:
+            lr = float(np.round(0.001 * np.sqrt(batch_size * accumulation / 32), 5))
         val_data = {sub: encoded[sub][val_indices] for sub in names}
         optimizer = torch.optim.AdamW(
             self.model.parameters(), lr=lr, weight_decay=self.weight_decay
@@ -307,30 +312,25 @@ class TabARGNGenerator(BaseGenerator):
         train_time = 0.0
         self.trained_steps_ = 0
         self.trained_epochs_ = 0
-        iterator = iter(loader)
         fixed_order = (
             list(self.columns) if not self.enable_flexible_generation else None
         )
         last_validation_step = -1
 
-        def train_step():
-            nonlocal iterator, train_time
+        def train_step(batches):
+            nonlocal train_time
             step_start_time = time.monotonic()
             self.model.train()
             optimizer.zero_grad(set_to_none=True)
-            for _ in range(accumulation):
-                try:
-                    batch = next(iterator)
-                except StopIteration:
-                    iterator = iter(loader)
-                    batch = next(iterator)
+            for _ in range(batches):
+                batch = next(iterator)
                 data = {
                     name: values.to(self.device) for name, values in zip(names, batch)
                 }
                 logits = self.model(data, fixed_order)
                 loss = (
                     sum(F.cross_entropy(logits[sub], data[sub]) for sub in names)
-                    / accumulation
+                    / batches
                 )
                 loss.backward()
             optimizer.step()
@@ -370,20 +370,28 @@ class TabARGNGenerator(BaseGenerator):
             last_validation_step = self.trained_steps_
             return bad_checks >= self.patience
 
-        total_steps = self.training_steps or self.epochs * steps_per_epoch
+        total_steps = epochs * steps_per_epoch
         with tqdm(
-            total=self.training_steps or self.epochs,
+            total=epochs,
             desc="Training",
-            unit="step" if self.training_steps is not None else "epoch",
+            unit="epoch",
         ) as progress:
             for _ in range(total_steps):
-                train_step()
+                epoch_step = self.trained_steps_ % steps_per_epoch
+                if epoch_step == 0:
+                    iterator = iter(loader)
+                train_step(min(accumulation, len(loader) - epoch_step * accumulation))
                 self.trained_epochs_ = int(
                     np.ceil(self.trained_steps_ / steps_per_epoch)
                 )
                 epoch_end = self.trained_steps_ % steps_per_epoch == 0
-                if self.training_steps is not None or epoch_end:
+                if epoch_end:
                     progress.update(1)
+                if self.cap_train_time is not None and train_time > self.cap_train_time:
+                    tqdm.write(
+                        f"Training timed out after {self.cap_train_time} seconds."
+                    )
+                    break
                 if use_validation and epoch_end and validate("cross_entropy"):
                     break
                 if (
@@ -391,11 +399,6 @@ class TabARGNGenerator(BaseGenerator):
                     and self.trained_steps_ % validation_interval == 0
                     and validate("c2st")
                 ):
-                    break
-                if self.cap_train_time is not None and train_time > self.cap_train_time:
-                    tqdm.write(
-                        f"Training timed out after {self.cap_train_time} seconds."
-                    )
                     break
 
         if (
