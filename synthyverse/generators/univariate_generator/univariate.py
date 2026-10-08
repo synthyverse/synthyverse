@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 
 from ..base import BaseGenerator
+from sklearn.preprocessing import KBinsDiscretizer
 
 
 class UnivariateGenerator(BaseGenerator):
@@ -31,10 +32,12 @@ class UnivariateGenerator(BaseGenerator):
 
     def __init__(
         self,
+        n_bins: int = 1000,
         random_state: int = 0,
         full_determinism: bool = False,
     ):
         super().__init__(random_state=random_state, full_determinism=full_determinism)
+        self.n_bins = n_bins
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
         self.columns = X.columns.tolist()
@@ -46,15 +49,24 @@ class UnivariateGenerator(BaseGenerator):
         ]
         self.category_values = {}
         self.category_probabilities = {}
-        self.numeric_ranges = {}
 
         for col in self.categorical_features:
             frequencies = X[col].value_counts(normalize=True, dropna=False)
             self.category_values[col] = frequencies.index.to_numpy()
             self.category_probabilities[col] = frequencies.to_numpy()
 
+        self.num_enc = KBinsDiscretizer(n_bins=self.n_bins, encode="ordinal", strategy="quantile")
+        x_num_enc = self.num_enc.fit_transform(X[self.numerical_features])
+
+        self.numeric_bins = {}
+        self.numeric_probabilities = {}
+
         for col in self.numerical_features:
-            self.numeric_ranges[col] = (X[col].min(), X[col].max())
+            col_idx = self.columns.index(col)
+            bin_idx, cnt = np.unique(x_num_enc[:,col_idx], return_counts=True)
+            p = cnt / cnt.sum()
+            self.numeric_bins[col_idx] = bin_idx
+            self.numeric_probabilities[col_idx] = p
 
         return self
 
@@ -71,10 +83,12 @@ class UnivariateGenerator(BaseGenerator):
                     p=self.category_probabilities[col],
                 )
                 syn[col] = self.category_values[col][sampled_indices]
-                continue
-
-            low, high = self.numeric_ranges[col]
-            syn[col] = rng.uniform(low, high, size=n)
+            else:
+                col_idx = self.columns.index(col)
+                bin_idx = rng.choice(self.numeric_bins[col_idx], p=self.numeric_probabilities[col_idx], size=n).astype(int)
+                edges = self.num_enc.bin_edges_[col_idx]
+                u = rng.random(n)
+                syn[col] = edges[bin_idx] + u * (edges[bin_idx + 1] - edges[bin_idx])
 
         return syn[self.columns]
 
@@ -85,5 +99,6 @@ class UnivariateGenerator(BaseGenerator):
             "numerical_features": self.numerical_features,
             "category_values": self.category_values,
             "category_probabilities": self.category_probabilities,
-            "numeric_ranges": self.numeric_ranges,
+            "numeric_bins": self.numeric_bins,
+            "numerica_probabilities": self.numeric_probabilities,
         }
