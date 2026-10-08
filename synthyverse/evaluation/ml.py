@@ -31,7 +31,6 @@ from sklearn.preprocessing import (
 from sklearn.svm import SVC, SVR
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
-
 SCORE_FNS = {
     "auc": roc_auc_score,
     "f1": f1_score,
@@ -49,7 +48,7 @@ SCORE_ALIASES = {
     "root_mean_squared_error": "rmse",
 }
 
-XGBOOST_GPU_MIN_ELEMENTS = 1_000_000
+XGBOOST_GPU_MIN_ELEMENTS = 5_000_000
 
 
 def split_validation(X, y, val_size: float, random_state: int, stratify: bool = True):
