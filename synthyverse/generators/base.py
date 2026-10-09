@@ -18,7 +18,6 @@ from sklearn.preprocessing import OrdinalEncoder
 
 from ..utils.reproducibility import set_seed
 
-
 PROCESSOR_FILENAME = "processor.pkl"
 WRAPPER_FILENAME = "synthyverse_generator.pkl"
 WRAPPED_GENERATOR_DIR = "generator"
@@ -142,7 +141,9 @@ class BaseGenerator(ABC):
         x = X.copy()
         if self.ordinal_encoder is not None and len(x) > 0:
             x[self._base_discrete_features] = self.ordinal_encoder.inverse_transform(
-                x[self._base_discrete_features].round().astype(np.int64)
+                x[self._base_discrete_features]
+                .round()
+                .to_numpy(dtype=np.int64, copy=True)
             )
         return x
 
@@ -332,11 +333,16 @@ class TabularSchema:
         x = self.round_numeric(X)
         self.validate_columns(x)
         x = x[self.column_order]
-        return x.astype({
-            col: float if pd.api.types.is_integer_dtype(dtype) and x[col].isna().any()
-            else dtype
-            for col, dtype in self.dtypes.items()
-        })
+        return x.astype(
+            {
+                col: (
+                    float
+                    if pd.api.types.is_integer_dtype(dtype) and x[col].isna().any()
+                    else dtype
+                )
+                for col, dtype in self.dtypes.items()
+            }
+        )
 
 
 class TabularImputer:
@@ -482,7 +488,8 @@ class TabularImputer:
             categorical = categorical.mask(categorical.isna(), np.nan)
             encode = (
                 self.ordinal_encoder.fit_transform
-                if fit else self.ordinal_encoder.transform
+                if fit
+                else self.ordinal_encoder.transform
             )
             predictors[self.categorical_features] = encode(categorical)
         return predictors
@@ -1123,7 +1130,8 @@ class SynthyverseGenerator:
             params.update(generator_kwargs)
         signature = inspect.signature(generator_cls.__init__)
         for key, value in (
-            ("random_state", random_state), ("full_determinism", full_determinism)
+            ("random_state", random_state),
+            ("full_determinism", full_determinism),
         ):
             if key not in params and key in signature.parameters:
                 params[key] = value
