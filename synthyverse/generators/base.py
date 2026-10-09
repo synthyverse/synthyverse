@@ -453,7 +453,7 @@ class TabularImputer:
                 max_depth=10,
                 max_features="sqrt",
                 random_state=self.random_state,
-                max_samples=50_000,
+                max_samples=min(len(x), 50_000),
                 n_jobs=-1,
             )
             self.imputer = IterativeImputer(
