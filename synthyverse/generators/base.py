@@ -459,7 +459,7 @@ class TabularImputer:
             self.imputer = IterativeImputer(
                 estimator=estimator,
                 random_state=self.random_state,
-                tol=1e-3,
+                tol=0,
                 max_iter=3,
                 skip_complete=True,
                 verbose=2,
