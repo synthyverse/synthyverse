@@ -451,13 +451,16 @@ class TabularImputer:
             estimator = RandomForestRegressor(
                 n_estimators=20,
                 max_depth=10,
+                max_features="sqrt",
                 random_state=self.random_state,
             )
             self.imputer = IterativeImputer(
                 estimator=estimator,
                 random_state=self.random_state,
                 tol=1e-3,
-                max_iter=10,
+                max_iter=5,
+                skip_complete=True,
+                verbose=1,
             )
             self.imputer_base_cols = x.columns.tolist()
             self.categorical_features = [

@@ -316,7 +316,8 @@ benchmark = TabularSynthesisBenchmark(
     generator_params={},
     categorical_features=discrete_features,
     target_column="target",
-    model_save_dir="runs/univariate",
+    model_save_dir="runs/dataset",
+    save_models=True,
     constraints=["total=part_a+part_b"],
     missing_imputation_method="median",
     random_state=42,
@@ -330,6 +331,17 @@ results = benchmark.run(
 ```
 
 Use `train()` and `eval()` separately when you want to reuse saved models or run new metrics later.
+
+To cache processors without saving generators, set `model_save_dir` and leave
+`save_models=False` (the default). With `reuse_processors=True`, generators using
+the same directory reuse one fitted processor per train seed, including its
+imputer.
+Use separate cache directories for different datasets and split/preprocessing
+settings. Use `eval_saved_datasets()` to evaluate saved synthetic data without
+saved generator models.
+
+Set `save_models=True` to also save generators. Set `reuse_processors=False` to
+refit processors instead of loading the cache; this is independent of model saving.
 
 ```python
 benchmark.train(n_train_seeds=3)

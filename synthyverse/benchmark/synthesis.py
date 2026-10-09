@@ -36,10 +36,9 @@ class TabularSynthesisBenchmark:
     * call ``train()`` and ``eval()`` separately to reuse saved models or run
       different metrics later.
 
-    When ``model_save_dir`` is provided, the benchmark stores the fitted data
-    processor and trained generator there. When ``model_save_dir`` is ``None``,
-    models and processors are not saved. Results are returned as a long-format
-    ``pandas.DataFrame`` and can also be written to CSV.
+    When ``model_save_dir`` is provided, the benchmark caches fitted processors
+    there and saves trained generators when ``save_models=True``. Results are
+    returned as a long-format ``pandas.DataFrame`` and can also be written to CSV.
 
     Args:
         X (pd.DataFrame): Real tabular dataset to benchmark on.
@@ -52,10 +51,11 @@ class TabularSynthesisBenchmark:
         target_column (str or None): Column used for supervised metrics and,
             when categorical, stratified splits. Use ``None`` when there is no
             target column.
-        model_save_dir (str or Path or None): Directory used for saved models
-            and processors. Models are saved under ``model_save_dir/models`` and
-            preprocessing artifacts are saved under ``model_save_dir/processors``.
-            When ``None``, models and processors are not saved. Default: None.
+        model_save_dir (str or Path or None): Directory used for cached processors
+            under ``model_save_dir/processors`` and optional saved models under
+            ``model_save_dir/models``. When ``None``, neither is saved.
+            Use a separate directory
+            for each dataset and split/preprocessing configuration. Default: None.
         random_state (int): First seed used for train splits and synthetic set
             sampling. Additional train seeds are consecutive integers starting
             from this value. Default: 42.
@@ -67,6 +67,8 @@ class TabularSynthesisBenchmark:
             ``"missforest"``. Default: ``"drop"``.
         monitor_memory (bool): Whether to record peak CPU and, when available,
             CUDA memory used by training. Default: False.
+        save_models (bool): Whether to save trained generators when
+            ``model_save_dir`` is set. Default: False.
         reuse_processors (bool): Whether to reuse saved preprocessing artifacts
             for each train seed when available. Default: True.
         max_eval_samples (int or None): Default maximum number of rows per real
@@ -96,7 +98,8 @@ class TabularSynthesisBenchmark:
         ...     generator_params={"epochs": 300},
         ...     categorical_features=["sex", "mortality"],
         ...     target_column="mortality",
-        ...     model_save_dir="dataset/ctgan",
+        ...     model_save_dir="dataset",
+        ...     save_models=True,
         ...     random_state=42,
         ... )
         >>>
@@ -112,7 +115,8 @@ class TabularSynthesisBenchmark:
         ...     generator_params={"epochs": 300},
         ...     categorical_features=["sex", "mortality"],
         ...     target_column="mortality",
-        ...     model_save_dir="dataset/ctgan",
+        ...     model_save_dir="dataset",
+        ...     save_models=True,
         ...     random_state=42,
         ... )
         >>> benchmark.train(n_train_seeds=3)
@@ -123,7 +127,8 @@ class TabularSynthesisBenchmark:
         ...     generator_params={"epochs": 300},
         ...     categorical_features=["sex", "mortality"],
         ...     target_column="mortality",
-        ...     model_save_dir="dataset/ctgan",
+        ...     model_save_dir="dataset",
+        ...     save_models=True,
         ...     random_state=42,
         ... )
         >>> results = reloaded_benchmark.eval(
@@ -144,6 +149,7 @@ class TabularSynthesisBenchmark:
         constraints: Optional[Union[list[str], str]] = None,
         missing_imputation_method: str = "drop",
         monitor_memory: bool = False,
+        save_models: bool = False,
         reuse_processors: bool = True,
         max_eval_samples: Optional[int] = 100_000,
         allow_generated_missings: bool = False,
@@ -161,6 +167,7 @@ class TabularSynthesisBenchmark:
         self.constraints = self._normalize_constraints(constraints)
         self.missing_imputation_method = missing_imputation_method
         self.monitor_memory = monitor_memory
+        self.save_models = save_models
         self.reuse_processors = reuse_processors
         self.max_eval_samples = self._validate_max_eval_samples(max_eval_samples)
         self.allow_generated_missings = allow_generated_missings
@@ -183,7 +190,8 @@ class TabularSynthesisBenchmark:
         For each train seed, this method creates the train/test split, fits or
         loads the corresponding ``DataProcessor``, trains the
         configured generator, and saves the trained generator under
-        ``model_save_dir/models`` when ``model_save_dir`` is set.
+        ``model_save_dir/models`` when ``save_models=True`` and ``model_save_dir``
+        is set.
 
         Use this method when you want to train models now and evaluate them
         later with ``eval()``. Use the same ``test_size`` during evaluation so
@@ -241,7 +249,7 @@ class TabularSynthesisBenchmark:
                 if write_results:
                     self._save_results(result_rows, results_path)
                 break
-            if self.model_save_dir is not None:
+            if self.save_models and self.model_save_dir is not None:
                 generator.save(self._model_dir(train_seed))
 
             rows = [
@@ -497,7 +505,7 @@ class TabularSynthesisBenchmark:
                 new_rows.extend(rows)
                 self._save_results(result_rows, results_path)
                 break
-            if self.model_save_dir is not None:
+            if self.save_models and self.model_save_dir is not None:
                 generator.save(self._model_dir(train_seed))
 
             rows = [
@@ -858,9 +866,7 @@ class TabularSynthesisBenchmark:
         return self.model_save_dir / "processors" / str(train_seed)
 
     def _model_dir(self, train_seed: int) -> Path:
-        return (
-            self.model_save_dir / "models" / self.generator / f"train_seed_{train_seed}"
-        )
+        return self.model_save_dir / "models" / self.generator / str(train_seed)
 
     def _dataset_dir(self, train_seed: int, sampling_seed: int) -> Path:
         return self.dataset_save_dir / str(train_seed) / str(sampling_seed)
