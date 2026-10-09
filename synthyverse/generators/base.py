@@ -460,7 +460,7 @@ class TabularImputer:
                 tol=1e-3,
                 max_iter=5,
                 skip_complete=True,
-                verbose=1,
+                verbose=2,
             )
             self.imputer_base_cols = x.columns.tolist()
             self.categorical_features = [
