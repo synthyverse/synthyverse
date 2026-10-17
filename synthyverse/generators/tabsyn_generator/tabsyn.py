@@ -48,7 +48,7 @@ class TabSynGenerator(BaseGenerator):
             checks before early stopping. Default: 3.
         max_validation_rows (int): Maximum number of rows reserved for
             validation. Negative values remove the cap. Extra rows remain in the training set. Default: 30000.
-        batch_size (int): Batch size applied to both VAE and diffusion training. Default: 4096.
+        batch_size (int): Batch size for VAE and diffusion training and sampling. Default: 4096.
         epochs (int): Maximum number of diffusion training epochs. Default: 10001.
         training_steps (int, optional): Total diffusion training steps. When
             provided, this overrides ``epochs`` by deriving the epoch count from
@@ -253,31 +253,26 @@ class TabSynGenerator(BaseGenerator):
 
     def _generate(self, n: int):
         self.model.eval()
+        batches = []
         with torch.no_grad():
-            x = sample(
-                self.model.denoise_fn_D,
-                n,
-                self.sample_dim,
-                self.device,
-                num_steps=self.num_timesteps,
-            )
-            x = x * 2 + self.train_z_mean.to(self.device)
+            for start in range(0, n, self.batch_size):
+                x = sample(
+                    self.model.denoise_fn_D,
+                    min(self.batch_size, n - start),
+                    self.sample_dim,
+                    self.device,
+                    num_steps=self.num_timesteps,
+                )
+                x = x * 2 + self.train_z_mean.to(self.device)
+                x = x.reshape(x.shape[0], -1, self.token_dim)
+                x_hat_num, x_hat_cat = self.pre_decoder(x.float())
+                syn_num = x_hat_num.cpu().numpy()
+                syn_cat = torch.stack(
+                    [pred.argmax(dim=-1) for pred in x_hat_cat], dim=1
+                ).cpu().numpy()
+                batches.append(np.concatenate([syn_num, syn_cat], axis=1))
 
-            # x = x.float().cpu().numpy()
-
-            x = x.reshape(x.shape[0], -1, self.token_dim)
-            norm_input = self.pre_decoder(x.float())
-            x_hat_num, x_hat_cat = norm_input
-
-            x_cat = []
-            for pred in x_hat_cat:
-                x_cat.append(pred.argmax(dim=-1))
-
-        syn_num = x_hat_num.detach().cpu().numpy()
-        syn_cat = torch.stack(x_cat).t().cpu().numpy()
-        syn_cat = np.int64(syn_cat)
-
-        syn = np.concatenate([syn_num, syn_cat], axis=1)
+        syn = np.concatenate(batches, axis=0)
         cols = self.numerical_features + self.discrete_features
         syn = pd.DataFrame(syn, columns=cols)
         syn = syn[self.ori_columns]
@@ -630,6 +625,7 @@ class TabSynGenerator(BaseGenerator):
 
     def _state(self):
         return {
+            "batch_size": self.batch_size,
             "training_steps": self.training_steps,
             "vae_training_steps": self.vae_training_steps,
             "vae_num_layers": self.vae_num_layers,

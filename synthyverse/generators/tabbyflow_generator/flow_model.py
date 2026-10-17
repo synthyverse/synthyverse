@@ -69,7 +69,7 @@ class ExpVFM(torch.nn.Module):
             x_cat_t = t * x_cat_oh + (1 - t) * torch.randn_like(x_cat_oh)
 
         # Predict orignal data (distribution)
-        model_out_num, model_out_cat = self._vf_fn(x_num_t, x_cat_t, t.squeeze())
+        model_out_num, model_out_cat = self._vf_fn(x_num_t, x_cat_t, t.squeeze(-1))
 
         d_loss = torch.zeros((1,)).float()
         c_loss = torch.zeros((1,)).float()

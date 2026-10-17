@@ -196,7 +196,7 @@ class TabCascadeGenerator(BaseGenerator):
         self.cap_train_time = cap_train_time
 
     def encode_into_z(self, x_num):
-        self.z_encoder = Discretizer(
+        z_encoder = Discretizer(
             x_num,
             variant=self.config.data.encoder,
             seed=self.random_state,
@@ -204,9 +204,9 @@ class TabCascadeGenerator(BaseGenerator):
             adjust_means=self.config.data.adjust_means,
             max_depth=self.config.data.max_depth,
         )
-        groups, mask, infl_groups, has_miss = self.z_encoder.encode(x_num)
-        self.z_means = self.z_encoder.means
-        self.z_stds = self.z_encoder.stds
+        groups, mask, infl_groups, has_miss = z_encoder.encode(x_num)
+        self.z_means = z_encoder.means
+        self.z_stds = z_encoder.stds
         return groups, mask, infl_groups, has_miss
 
     def get_masks(self, groups):
@@ -310,7 +310,7 @@ class TabCascadeGenerator(BaseGenerator):
         self.n_classes, self.proportions = self.get_classes_and_proportions(
             x_cat, z_groups
         )
-        self.train_loader = self.get_train_loader(x_cat, x_num, z_groups, z_mask)
+        train_loader = cycle(self.get_train_loader(x_cat, x_num, z_groups, z_mask))
         self.lowres = self.get_lowres_model().to(self.device)
         self.highres = self.get_highres_model().to(self.device)
 
@@ -342,7 +342,6 @@ class TabCascadeGenerator(BaseGenerator):
             min_lr=1e-6,
         )
 
-        train_loader = cycle(self.train_loader)
         step = n_inputs = 0
         lowres_loss_trn = highres_loss_trn = 0
         pbar = tqdm(total=self.config.lowres.training.num_steps_train)

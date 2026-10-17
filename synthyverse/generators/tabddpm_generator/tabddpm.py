@@ -45,7 +45,7 @@ class TabDDPMGenerator(BaseGenerator):
             the training sample size and batch size. Default: None.
         lr (float): Learning rate. Default: 0.002.
         weight_decay (float): Weight decay for optimization. Default: 1e-4.
-        batch_size (int): Batch size for training. Default: 4096.
+        batch_size (int): Batch size for training and sampling. Default: 4096.
         num_timesteps (int): Number of diffusion timesteps. Default: 1000.
         gaussian_loss_type (str): Type of Gaussian loss. Options: "mse", "kl". Default: "mse".
         scheduler (str): Beta scheduler type. Options: "cosine", "linear". Default: "cosine".
@@ -395,7 +395,12 @@ class TabDDPMGenerator(BaseGenerator):
             cond_tensor = None
 
         self.diffusion.eval()
-        sample = self.diffusion.sample_all(n, cond_tensor).detach().cpu().numpy()
+        sample = (
+            self.diffusion.sample_all(n, cond_tensor, max_batch_size=self.batch_size)
+            .detach()
+            .cpu()
+            .numpy()
+        )
         df = pd.DataFrame(sample, columns=self.feature_names_out)
         df = self._inverse_transform(df[self.feature_names])
         if self.is_conditional:
