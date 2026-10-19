@@ -304,11 +304,9 @@ class TabbyFlowGenerator(BaseGenerator):
         self.trained_steps_ = 0
         self.trained_epochs_ = 0
 
+        pbar = tqdm(total=self.epochs * len(train_loader), desc="Training")
         for epoch in range(curr_epoch, self.epochs):
             curr_epoch = epoch + 1
-            # Set up pbar
-            pbar = tqdm(train_loader, total=len(train_loader))
-            pbar.set_description(f"Epoch {epoch+1}/{self.epochs}")
 
             # Compute the loss weights
             if self.closs_weight_schedule == "fixed":
@@ -326,7 +324,7 @@ class TabbyFlowGenerator(BaseGenerator):
             curr_closs = 0.0
             curr_count = 0
             curr_lr = optimizer.param_groups[0]["lr"]
-            for batch in pbar:
+            for batch in train_loader:
                 step_start_time = time.monotonic()
                 x = batch[0].float().to(self.device)
                 batch_dloss, batch_closs = _run_step(x, closs_weight, dloss_weight)
@@ -345,8 +343,10 @@ class TabbyFlowGenerator(BaseGenerator):
                         ),
                         "closs_weight": closs_weight,
                         "dloss_weight": dloss_weight,
-                    }
+                    },
+                    refresh=False,
                 )
+                pbar.update(1)
                 self.trained_steps_ += 1
                 train_time += time.monotonic() - step_start_time
                 self.net_training_time_ = train_time
@@ -418,6 +418,7 @@ class TabbyFlowGenerator(BaseGenerator):
                         best_ema_loss = ema_total_loss
                         best_ema_model = cpu_state_dict(self.flow, copy=True)
 
+        pbar.close()
         if timed_out and use_validation:
             validate()
 

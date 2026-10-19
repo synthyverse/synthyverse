@@ -138,7 +138,6 @@ class ExpVFM(torch.nn.Module):
         all_samples = []
         num_generated = 0
         while num_generated < num_samples:
-            print(f"Samples left to generate: {num_samples-num_generated}")
             sample = self.sample(b)
             mask_nan = torch.any(sample.isnan(), dim=1)
             if keep_nan_samples:
