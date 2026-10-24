@@ -186,21 +186,25 @@ class TabDDPMGenerator(BaseGenerator):
         self.discrete_columns = list(discrete_columns)
         self.column_dtypes = X.infer_objects().dtypes
         self.feature_names = X.columns
-        self.quantile_transformers = {}
+        self.numerical_columns = [
+            col for col in X.columns if col not in self.discrete_columns
+        ]
+        self.quantile_transformer = None
 
         out = X.copy()
-        for col in out.columns:
-            if col in self.discrete_columns:
-                continue
-            transformer = QuantileStandardScaler(len(out), self.random_state)
-            out[col] = transformer.fit_transform(out[[col]]).reshape(-1)
-            self.quantile_transformers[col] = transformer
+        if self.numerical_columns:
+            self.quantile_transformer = QuantileStandardScaler(len(out), self.random_state)
+            out[self.numerical_columns] = self.quantile_transformer.fit_transform(
+                out[self.numerical_columns]
+            )
         return out
 
     def _inverse_transform(self, X: pd.DataFrame) -> pd.DataFrame:
         out = X.copy()
-        for col, transformer in self.quantile_transformers.items():
-            out[col] = transformer.inverse_transform(out[[col]]).reshape(-1)
+        if self.numerical_columns:
+            out[self.numerical_columns] = self.quantile_transformer.inverse_transform(
+                out[self.numerical_columns]
+            )
         if self.discrete_columns:
             out[self.discrete_columns] = out[self.discrete_columns].round().astype(int)
         return out.astype(self.column_dtypes)
@@ -427,7 +431,8 @@ class TabDDPMGenerator(BaseGenerator):
             "discrete_columns": self.discrete_columns,
             "column_dtypes": self.column_dtypes,
             "feature_names": self.feature_names,
-            "quantile_transformers": self.quantile_transformers,
+            "numerical_columns": self.numerical_columns,
+            "quantile_transformer": self.quantile_transformer,
             "ordinal_encoder": self.ordinal_encoder,
             "feature_names_out": self.feature_names_out,
             "diffusion_config": {
