@@ -5,6 +5,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Optional
 import time
+import warnings
 import numpy as np
 import pandas as pd
 import torch
@@ -64,6 +65,9 @@ class TabDDPMGenerator(BaseGenerator):
             checks before early stopping. Default: 3.
         max_validation_rows (int): Maximum number of rows reserved for C2ST
             validation. Negative values remove the cap. Extra rows remain in the training set. Default: 30000.
+        raise_on_nan (bool): Raise a ValueError if sampling produces NaNs.
+            Otherwise, warn and return one row with NaNs for numerical features
+            and categorical code 0. Default: False.
 
     Example:
         >>> import pandas as pd
@@ -108,6 +112,7 @@ class TabDDPMGenerator(BaseGenerator):
         random_state: int = 0,
         full_determinism: bool = False,
         training_steps: int = None,
+        raise_on_nan: bool = False,
     ):
         super().__init__(random_state=random_state, full_determinism=full_determinism)
         self.epochs = epochs
@@ -129,6 +134,7 @@ class TabDDPMGenerator(BaseGenerator):
         self.val_steps = val_steps
         self.patience = patience
         self.max_validation_rows = max_validation_rows
+        self.raise_on_nan = raise_on_nan
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -399,12 +405,26 @@ class TabDDPMGenerator(BaseGenerator):
             cond_tensor = None
 
         self.diffusion.eval()
-        sample = (
-            self.diffusion.sample_all(n, cond_tensor, max_batch_size=self.batch_size)
-            .detach()
-            .cpu()
-            .numpy()
+        sample = self.diffusion.sample_all(
+            n,
+            cond_tensor,
+            max_batch_size=self.batch_size,
+            raise_on_nan=self.raise_on_nan,
         )
+        if sample is None:
+            warnings.warn(
+                "Found NaNs in sample. Returning an invalid dataset with one row: "
+                "NaNs for numerical features and code 0 for categorical features.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return pd.DataFrame(
+                {
+                    col: [0] if col in self._base_discrete_features else [np.nan]
+                    for col in self.output_columns
+                }
+            )
+        sample = sample.detach().cpu().numpy()
         df = pd.DataFrame(sample, columns=self.feature_names_out)
         df = self._inverse_transform(df[self.feature_names])
         if self.is_conditional:
@@ -423,6 +443,7 @@ class TabDDPMGenerator(BaseGenerator):
         state = {
             "training_steps": self.training_steps,
             "batch_size": self.batch_size,
+            "raise_on_nan": self.raise_on_nan,
             "output_columns": self.output_columns,
             "target_column": self.target_column,
             "conditional_generation": self.conditional_generation,

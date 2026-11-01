@@ -11,11 +11,11 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
-from ctgan.data_transformer import DataTransformer
 from ctgan.synthesizers._utils import _set_device, validate_and_set_device
 from ctgan.synthesizers.base import BaseSynthesizer, random_state
 
 from ...utils.utils import get_total_trainable_params
+from ..ctgan_generator.data_transformer import DataTransformer
 
 
 class Encoder(Module):
@@ -126,6 +126,7 @@ class TVAE(BaseSynthesizer):
         verbose=False,
         cuda=None,
         cap_train_time=None,
+        n_jobs=-1,
     ):
         self.embedding_dim = embedding_dim
         self.compress_dims = compress_dims
@@ -139,6 +140,7 @@ class TVAE(BaseSynthesizer):
         self.loss_values = pd.DataFrame(columns=["Epoch", "Batch", "Loss"])
         self.verbose = verbose
         self.cap_train_time = cap_train_time
+        self.n_jobs = n_jobs
         self._device = validate_and_set_device(enable_gpu, cuda)
         self._enable_gpu = cuda if cuda is not None else enable_gpu
 
@@ -155,7 +157,7 @@ class TVAE(BaseSynthesizer):
                 contain the integer indices of the columns. Otherwise, if it is
                 a ``pandas.DataFrame``, this list should contain the column names.
         """
-        self.transformer = DataTransformer()
+        self.transformer = DataTransformer(n_jobs=self.n_jobs)
         self.transformer.fit(train_data, discrete_columns)
         train_data = self.transformer.transform(train_data)
         dataset = TensorDataset(

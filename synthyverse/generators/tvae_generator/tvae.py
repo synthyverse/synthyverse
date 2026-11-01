@@ -45,6 +45,8 @@ class TVAEGenerator(BaseGenerator):
             validation. Default: -1.
         patience (int): Number of consecutive non-improving C2ST validation
             checks before early stopping. Default: 3.
+        n_jobs (int): Number of preprocessing workers. -1 uses all CPUs;
+            1 runs sequentially. Default: -1.
         max_validation_rows (int): Maximum number of rows reserved for C2ST
             validation. Negative values remove the cap. Extra rows remain in the training set. Default: 30000.
 
@@ -91,6 +93,7 @@ class TVAEGenerator(BaseGenerator):
         max_validation_rows: int = 30_000,
         random_state: int = 0,
         full_determinism: bool = False,
+        n_jobs: int = -1,
     ):
         super().__init__(random_state=random_state, full_determinism=full_determinism)
         require_ctgan()
@@ -111,6 +114,7 @@ class TVAEGenerator(BaseGenerator):
         self.val_steps = val_steps
         self.patience = patience
         self.max_validation_rows = max_validation_rows
+        self.n_jobs = n_jobs
 
     def _fit(self, X: pd.DataFrame, discrete_features: list):
         from .synthesizer import TVAE
@@ -153,6 +157,7 @@ class TVAEGenerator(BaseGenerator):
             cuda=self.cuda,
             loss_factor=self.loss_factor,
             cap_train_time=self.cap_train_time,
+            n_jobs=self.n_jobs,
         )
 
         best_val_score = float("inf")
@@ -235,6 +240,7 @@ class TVAEGenerator(BaseGenerator):
             "val_steps": self.val_steps,
             "patience": self.patience,
             "max_validation_rows": self.max_validation_rows,
+            "n_jobs": self.n_jobs,
             "discrete_features": getattr(self, "discrete_features", None),
         }
 

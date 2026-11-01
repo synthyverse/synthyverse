@@ -860,7 +860,9 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
         cond: Any = None,
         max_batch_size: int = 2000,
         ddim: bool = False,
-    ) -> Tensor:
+        raise_on_nan: bool = True,
+    ) -> Optional[Tensor]:
+        """Sample batches, returning None on NaNs when raising is disabled."""
         if ddim:
             info("Sample using DDIM.")
             sample_fn = self.sample_ddim
@@ -874,7 +876,9 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
             c = None if cond is None else cond[indices[i] : indices[i + 1]]
             sample = sample_fn(b, c)
             if torch.any(sample.isnan()).item():
-                raise ValueError("found NaNs in sample")
+                if raise_on_nan:
+                    raise ValueError("found NaNs in sample")
+                return None
             all_samples.append(sample)
 
         return torch.cat(all_samples, dim=0)

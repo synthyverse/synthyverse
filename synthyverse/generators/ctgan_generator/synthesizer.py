@@ -20,12 +20,12 @@ from torch.nn import (
 from tqdm import tqdm
 
 from ctgan.data_sampler import DataSampler
-from ctgan.data_transformer import DataTransformer
 from ctgan.errors import InvalidDataError
 from ctgan.synthesizers._utils import _set_device, validate_and_set_device
 from ctgan.synthesizers.base import BaseSynthesizer, random_state
 
 from synthyverse.utils.utils import get_total_trainable_params
+from .data_transformer import DataTransformer
 
 
 class Discriminator(Module):
@@ -180,6 +180,7 @@ class CTGAN(BaseSynthesizer):
         enable_gpu=True,
         cuda=None,
         cap_train_time=None,
+        n_jobs=-1,
     ):
         if pac < 1:
             raise ValueError("pac must be >= 1.")
@@ -206,6 +207,7 @@ class CTGAN(BaseSynthesizer):
         self._epochs = epochs
         self.pac = pac
         self.cap_train_time = cap_train_time
+        self.n_jobs = n_jobs
         self._device = validate_and_set_device(enable_gpu, cuda)
         self._enable_gpu = cuda if cuda is not None else enable_gpu
         self._transformer = None
@@ -370,7 +372,7 @@ class CTGAN(BaseSynthesizer):
                 DeprecationWarning,
             )
 
-        self._transformer = DataTransformer()
+        self._transformer = DataTransformer(n_jobs=self.n_jobs)
         self._transformer.fit(train_data, discrete_columns)
 
         train_data = self._transformer.transform(train_data)
