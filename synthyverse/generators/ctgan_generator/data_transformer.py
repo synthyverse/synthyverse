@@ -197,7 +197,7 @@ class DataTransformer(object):
                 raw_data, self._column_transform_info_list
             )
 
-        return np.concatenate(column_data_list, axis=1).astype(float)
+        return np.concatenate(column_data_list, axis=1, dtype=np.float64)
 
     def _inverse_transform_continuous(
         self, column_transform_info, column_data, sigmas, st

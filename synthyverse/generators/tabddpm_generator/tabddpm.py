@@ -199,7 +199,9 @@ class TabDDPMGenerator(BaseGenerator):
 
         out = X.copy()
         if self.numerical_columns:
-            self.quantile_transformer = QuantileStandardScaler(len(out), self.random_state)
+            self.quantile_transformer = QuantileStandardScaler(
+                len(out), self.random_state
+            )
             out[self.numerical_columns] = self.quantile_transformer.fit_transform(
                 out[self.numerical_columns]
             )
@@ -296,6 +298,9 @@ class TabDDPMGenerator(BaseGenerator):
             nonlocal best_val_score, best_val_model, bad_val_steps
             self.diffusion.eval()
             score = validate_c2st(self, X_val, random_state=self.random_state)
+            if self._invalid_sample is not None:
+                best_val_model = None
+                return True
             if score < best_val_score:
                 best_val_score = score
                 best_val_model = cpu_state_dict(self.diffusion, copy=True)
@@ -391,6 +396,7 @@ class TabDDPMGenerator(BaseGenerator):
             targ.detach().mul_(rate).add_(src.detach(), alpha=1 - rate)
 
     def _generate(self, n: int):
+        self._invalid_sample = None
         cond = None
         if self.is_conditional:
             if self.is_classification:
@@ -418,12 +424,13 @@ class TabDDPMGenerator(BaseGenerator):
                 RuntimeWarning,
                 stacklevel=2,
             )
-            return pd.DataFrame(
+            self._invalid_sample = pd.DataFrame(
                 {
                     col: [0] if col in self._base_discrete_features else [np.nan]
                     for col in self.output_columns
                 }
             )
+            return self._invalid_sample.copy()
         sample = sample.detach().cpu().numpy()
         df = pd.DataFrame(sample, columns=self.feature_names_out)
         df = self._inverse_transform(df[self.feature_names])

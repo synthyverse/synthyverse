@@ -43,6 +43,8 @@ def validate_c2st(
         for i in range(n_repeats):
             state = random_state + i + 1
             syn = self.generate(len(X), random_state=state)
+            if len(syn) == 1:
+                return float("inf")
             score = ClassifierTwoSampleTest(nfold=nfolds, random_state=state).evaluate(
                 X.reset_index(drop=True), syn, discrete_features=self.discrete_features
             )["c2st.auc"]
