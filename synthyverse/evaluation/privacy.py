@@ -63,6 +63,7 @@ class DCR(BaseMetric):
     Args:
         subsample_test_size (bool): Whether to subsample the training set and synthetic set to the test set size. Prevents biasing DCR due to different sample sizes. If used, multiple iterations average random train/synthetic subsamples of size ``|X_test|``. Default: True.
         random_state (int): Random seed for reproducibility. Default: 0.
+        repeats (int): Number of repeated evaluations when subsampling. Default: 5.
 
     Outputs:
         DCR score, nearest-neighbor direction proportions, threshold risks,
@@ -93,9 +94,11 @@ class DCR(BaseMetric):
         self,
         subsample_test_size: bool = True,
         random_state: int = 0,
+        repeats: int = 5,
     ):
         super().__init__(random_state=random_state)
         self.subsample_test_size = subsample_test_size
+        self.repeats = repeats
 
     def _evaluate(
         self,
@@ -139,7 +142,7 @@ class DCR(BaseMetric):
                 "DCR with NNDR requires at least two train rows and two test rows "
                 "after applying subsampling."
             )
-        num_iterations = int(np.ceil(len(train) / num_rows_subsample))
+        num_iterations = self.repeats if self.subsample_test_size else 1
         metric_values = {}
 
         rng = np.random.default_rng(self.random_state)
