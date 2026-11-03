@@ -328,6 +328,7 @@ class TabSynGenerator(BaseGenerator):
         )
 
         use_validation = x_val is not None
+        best_vae = None
         if use_validation:
             x_val_num = x_val[
                 [col for col in x.columns if col not in self.discrete_features]
@@ -336,7 +337,6 @@ class TabSynGenerator(BaseGenerator):
             x_val_cat = x_val[self.discrete_features].values
             x_val_cat = torch.from_numpy(x_val_cat).long().to(self.device)
             best_val_loss = float("inf")
-            best_vae = cpu_state_dict(vae, copy=True)
 
         pbar = tqdm(range(epochs))
 
@@ -405,7 +405,7 @@ class TabSynGenerator(BaseGenerator):
                             if beta > self.vae_min_beta:
                                 beta = beta * self.vae_lambda
 
-        if use_validation:
+        if best_vae is not None:
             vae.load_state_dict(best_vae)
         vae.eval()
         return vae, train_time
@@ -566,7 +566,7 @@ class TabSynGenerator(BaseGenerator):
             if timed_out or stop_training:
                 break
 
-        if timed_out and use_validation:
+        if timed_out and best_val_model is not None:
             validate()
 
         if best_val_model is not None:

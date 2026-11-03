@@ -349,7 +349,7 @@ class CDTDGenerator(BaseGenerator):
                     if validate():
                         break
 
-        if timed_out and use_validation:
+        if timed_out and best_val_model is not None:
             validate()
 
         if best_val_model is None:

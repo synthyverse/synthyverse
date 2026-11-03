@@ -222,7 +222,7 @@ class CTGANGenerator(BaseGenerator):
             validate_callback=validate_callback,
         )
         self.net_training_time_ = self.model.net_training_time_
-        if getattr(self.model, "timed_out_", False) and use_validation:
+        if getattr(self.model, "timed_out_", False) and best_val_model is not None:
             validate()
 
         if best_val_model is not None:

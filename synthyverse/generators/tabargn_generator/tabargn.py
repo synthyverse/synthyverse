@@ -310,6 +310,7 @@ class TabARGNGenerator(BaseGenerator):
         validation_interval = self.val_steps or steps_per_epoch
         best_score, bad_checks, best_state = float("inf"), 0, None
         train_time = self.net_training_time_ = 0.0
+        timed_out = False
         self.trained_steps_ = 0
         self.trained_epochs_ = 0
         fixed_order = (
@@ -392,6 +393,7 @@ class TabARGNGenerator(BaseGenerator):
                     tqdm.write(
                         f"Training timed out after {self.cap_train_time} seconds."
                     )
+                    timed_out = True
                     break
                 if use_validation and epoch_end and validate("cross_entropy"):
                     break
@@ -404,6 +406,7 @@ class TabARGNGenerator(BaseGenerator):
 
         if (
             use_validation
+            and (not timed_out or best_state is not None)
             and (self.early_stopping_metric == "cross_entropy" or use_c2st)
             and last_validation_step != self.trained_steps_
         ):

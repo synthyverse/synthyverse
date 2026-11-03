@@ -391,7 +391,7 @@ class TabDiffGenerator(BaseGenerator):
             if timed_out or stop_training:
                 break
 
-        if timed_out and use_validation:
+        if timed_out and best_val_model is not None:
             validate()
 
         if best_val_model is None:

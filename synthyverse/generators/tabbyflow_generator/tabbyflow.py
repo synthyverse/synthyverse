@@ -419,7 +419,7 @@ class TabbyFlowGenerator(BaseGenerator):
                         best_ema_model = cpu_state_dict(self.flow, copy=True)
 
         pbar.close()
-        if timed_out and use_validation:
+        if timed_out and best_val_model is not None:
             validate()
 
         if best_val_model is not None:
