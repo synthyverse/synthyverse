@@ -17,6 +17,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import mutual_info_score
+from sklearn.model_selection import train_test_split
 
 from scipy.stats import (
     spearmanr,
@@ -25,7 +26,7 @@ from scipy.stats import (
 )
 
 from .base import BaseMetric
-from .ml import cv_ml_task, resolve_model_name
+from .ml import cv_ml_task, ml_task, resolve_model_name
 from .distances import (
     FastGowerNN,
     js_robust,
@@ -56,7 +57,7 @@ def _metric_key_part(value) -> str:
 class ClassifierTwoSampleTest(BaseMetric):
     """ROCAUC score of a classifier that distinguishes synthetic from real data.
 
-    Lower scores indicate better quality synthetic data (harder to distinguish from real).
+    Scores closer to 0.5 indicate better quality synthetic data (harder to distinguish from real).
 
     Args:
         random_state (int): Random seed for reproducibility. Default: 0.
@@ -68,7 +69,15 @@ class ClassifierTwoSampleTest(BaseMetric):
             and other models use no extra parameters.
         nfold (int): Number of cross-validation folds. Default: 3.
         test_repeats (int): Number of synthetic subsamples to score against X_test
-            when X_test is provided. Default: 3.
+            when X_test is provided. Each repeat uses a different sampling and
+            evaluation seed. Default: 3.
+        scoring (str): "cv" for cross-validation or "holdout" for an
+            80:20 train/test split. With XGBoost early stopping, 1/8 of the
+            training split is reserved for validation. "cv_holdout" uses CV on
+            the 80% training split to select XGBoost boosting rounds, then
+            retrains on that split and scores on the 20% test split. Falls back
+            to "holdout" with a warning without XGBoost early stopping.
+            Default: "cv".
 
     Outputs:
         "c2st.auc" and, when X_test is provided, "c2st.test.auc";
@@ -102,8 +111,12 @@ class ClassifierTwoSampleTest(BaseMetric):
         nfold: int = 3,
         random_state: int = 0,
         test_repeats: int = 3,
+        scoring: str = "cv",
     ):
         super().__init__(random_state=random_state)
+        if scoring not in {"cv", "holdout", "cv_holdout"}:
+            raise ValueError('scoring must be "cv", "holdout", or "cv_holdout".')
+        self.scoring = scoring
         self.nfold = int(nfold)
         if self.nfold < 2:
             raise ValueError("nfold must be >= 2.")
@@ -119,6 +132,17 @@ class ClassifierTwoSampleTest(BaseMetric):
             )
         else:
             self.model_params = model_params.copy()
+        if self.scoring == "cv_holdout" and (
+            resolve_model_name(self.model_name) != "xgboost"
+            or self.model_params.get("early_stopping_rounds") is None
+        ):
+            warnings.warn(
+                'scoring="cv_holdout" requires XGBoost with early_stopping_rounds; '
+                'falling back to "holdout".',
+                UserWarning,
+                stacklevel=2,
+            )
+            self.scoring = "holdout"
 
     def _evaluate(
         self,
@@ -128,7 +152,9 @@ class ClassifierTwoSampleTest(BaseMetric):
         discrete_features: list = None,
     ):
         result = {
-            f"{self.name}.auc": self._score_split(X, X_syn, discrete_features),
+            f"{self.name}.auc": self._score_split(
+                X, X_syn, discrete_features, self.random_state
+            ),
         }
 
         if X_test is not None:
@@ -146,7 +172,12 @@ class ClassifierTwoSampleTest(BaseMetric):
                     random_state=self.random_state + repeat,
                 )
                 test_scores.append(
-                    self._score_split(X_test, syn_sample, discrete_features)
+                    self._score_split(
+                        X_test,
+                        syn_sample,
+                        discrete_features,
+                        self.random_state + repeat,
+                    )
                 )
             result[f"{self.name}.test.auc"] = float(np.mean(test_scores))
 
@@ -157,12 +188,64 @@ class ClassifierTwoSampleTest(BaseMetric):
         real: pd.DataFrame,
         syn: pd.DataFrame,
         discrete_features: list,
+        random_state: int,
     ) -> float:
         x_train = pd.concat([real, syn], ignore_index=True).copy()
         y_train = pd.concat(
             [pd.Series([0] * len(real)), pd.Series([1] * len(syn))],
             ignore_index=True,
         )
+        if self.scoring in {"holdout", "cv_holdout"}:
+            x_train, x_test, y_train, y_test = train_test_split(
+                x_train,
+                y_train,
+                test_size=0.2,
+                stratify=y_train,
+                random_state=random_state,
+            )
+            x_val = y_val = None
+            model_params = self.model_params.copy()
+            if self.scoring == "cv_holdout":
+                cv_result = cv_ml_task(
+                    x_train,
+                    y_train,
+                    discrete_features,
+                    task="binary",
+                    model_name=self.model_name,
+                    model_params=model_params,
+                    random_state=random_state,
+                    score_fn="auc",
+                    nfold=self.nfold,
+                )
+                model_params["n_estimators"] = cv_result["n_estimators"]
+                model_params.pop("early_stopping_rounds")
+                model_params.pop("num_boost_round", None)
+            elif (
+                resolve_model_name(self.model_name) == "xgboost"
+                and self.model_params.get("early_stopping_rounds") is not None
+            ):
+                x_train, x_val, y_train, y_val = train_test_split(
+                    x_train,
+                    y_train,
+                    test_size=1 / 8,
+                    stratify=y_train,
+                    random_state=random_state,
+                )
+            return ml_task(
+                x_train,
+                x_test,
+                y_train,
+                y_test,
+                discrete_features,
+                task="binary",
+                model_name=self.model_name,
+                model_params=model_params,
+                random_state=random_state,
+                score_fns=["auc"],
+                X_val=x_val,
+                y_val=y_val,
+            )["auc"]
+
         minority_class_size = min(len(real), len(syn))
         if minority_class_size < 2:
             raise ValueError(
@@ -178,7 +261,7 @@ class ClassifierTwoSampleTest(BaseMetric):
             task="binary",
             model_name=self.model_name,
             model_params=self.model_params,
-            random_state=self.random_state,
+            random_state=random_state,
             score_fn="auc",
             nfold=nfold,
         )["auc"]

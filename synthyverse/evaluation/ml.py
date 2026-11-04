@@ -126,18 +126,16 @@ def cv_ml_task(
     key = score_key(resolve_score_fn(score_fn)[0])
 
     if model_name == "xgboost":
-        return {
-            key: _xgboost_cv_score(
-                X,
-                y,
-                categorical_features,
-                task,
-                key,
-                model_params,
-                random_state,
-                nfold,
-            )
-        }
+        return _xgboost_cv_score(
+            X,
+            y,
+            categorical_features,
+            task,
+            key,
+            model_params,
+            random_state,
+            nfold,
+        )
 
     model = Pipeline(
         [
@@ -473,7 +471,11 @@ def _xgboost_cv_score(
         maximize=maximize,
         as_pandas=True,
     )
-    return float(results[f"test-{metric}-mean"].iloc[-1])
+    scores = results[f"test-{metric}-mean"]
+    return {
+        score_key_: float(scores.iloc[-1]),
+        "n_estimators": int(scores.argmax() if maximize else scores.argmin()) + 1,
+    }
 
 
 def _xgboost_cv_metric(score_key_: str):
