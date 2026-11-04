@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -2149,6 +2149,23 @@ wheels = [
 ]
 
 [[package]]
+name = "structured-data-models"
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "pyarrow" },
+    { name = "safetensors" },
+    { name = "torch" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/97/33/cb15b007fc67fe53c9bff242e1ca9b7d57229ac39f82e3081db828405d1b/structured_data_models-0.2.1.tar.gz", hash = "sha256:035ead2627dff755987287fd13f7864b3a7be2c4b0bdc060a94add8d93c29a26", size = 2220106, upload-time = "2026-10-14T17:12:56.009Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8f/0e/cf1f2d36c52deb723b3d2e26f655c5adc28648853e62c1dec67e94d84de4/structured_data_models-0.2.1-py3-none-any.whl", hash = "sha256:4fa9a422dc3c55033cdb14096cae024b743b543ef2a8feb4b7cffb21c966f3da", size = 283697, upload-time = "2026-10-14T17:12:54.1Z" },
+]
+
+[[package]]
 name = "sympy"
 version = "1.14.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2162,7 +2179,7 @@ wheels = [
 
 [[package]]
 name = "synthyverse"
-version = "0.2.7"
+version = "0.2.8"
 source = { editable = "." }
 dependencies = [
     { name = "einops" },
@@ -2175,8 +2192,10 @@ dependencies = [
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "seaborn" },
+    { name = "structured-data-models" },
     { name = "torch" },
     { name = "torch-ema" },
+    { name = "torchdiffeq" },
     { name = "tqdm" },
     { name = "xgb-diffusion" },
     { name = "xgboost" },
@@ -2219,9 +2238,11 @@ requires-dist = [
     { name = "sphinx-autodoc-typehints", marker = "extra == 'docs'" },
     { name = "sphinx-copybutton", marker = "extra == 'docs'" },
     { name = "sphinxcontrib-mermaid", marker = "extra == 'docs'" },
+    { name = "structured-data-models", specifier = ">=0.2.1" },
     { name = "tabpfn", marker = "extra == 'tabpfn'", specifier = ">=9.0.0" },
     { name = "torch" },
     { name = "torch-ema" },
+    { name = "torchdiffeq", specifier = ">=0.2.5" },
     { name = "tqdm" },
     { name = "xgb-diffusion" },
     { name = "xgboost" },
@@ -2315,6 +2336,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/45/af/db7d0c8b26a13062d9b85bdcf8d977acd8a51057fb6edca9eb30613ef5ef/torch_ema-0.3.tar.gz", hash = "sha256:5a3595405fa311995f01291a1d4a9242d6be08a0fc9db29152ec6cfd586ea414", size = 5486, upload-time = "2021-11-17T20:59:16.265Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c0/f1/a47c831436595cffbfd69a19ea129a23627120b13f4886499e58775329d1/torch_ema-0.3-py3-none-any.whl", hash = "sha256:823ad8da5c10bc1eebcec739cc3f521aa9573229fe04e5673c304d29f1433279", size = 5475, upload-time = "2021-11-17T20:59:14.73Z" },
+]
+
+[[package]]
+name = "torchdiffeq"
+version = "0.2.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "scipy" },
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/87/ec/a40aa124660f0ee65e6760cb53df6a82ad91a1a3ef1da5e747f1336644dd/torchdiffeq-0.2.5.tar.gz", hash = "sha256:b50d3760d13fd138dcceac651f4b80396f44fefcebd037a033fecfeaa9cc12e7", size = 31197, upload-time = "2024-11-21T20:20:11.552Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b9/35/537f64f2d0b3cfebaae0f903b4e3a3b239abcc99d0f73cb15b9cee9b8212/torchdiffeq-0.2.5-py3-none-any.whl", hash = "sha256:aa1db4bed13bd04952f28a53cdf4336d1ab60417c1d9698d7a239fec1cf2bcf8", size = 32902, upload-time = "2024-11-21T20:20:09.938Z" },
 ]
 
 [[package]]
