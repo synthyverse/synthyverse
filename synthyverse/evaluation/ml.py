@@ -3,8 +3,10 @@ import warnings
 from functools import lru_cache
 
 import numpy as np
+import torch
 import pandas as pd
 import xgboost as xgb
+import sdm
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import ElasticNet, LogisticRegression
@@ -216,23 +218,33 @@ def ml_task(
         X_val = X_val.loc[target_info["val_mask"]]
         y_val = y_val.loc[target_info["val_mask"]]
 
-    X_train, X_test, X_val = _transform_features(
-        model_name, categorical_features, numerical_features, X_train, X_test, X_val
-    )
+    if model_name != "tfm":
+        X_train, X_test, X_val = _transform_features(
+            model_name, categorical_features, numerical_features, X_train, X_test, X_val
+        )
     y_train, y_test, y_val = _transform_target(
         y_train, y_test, y_val, task, target_info
     )
-
     if model_name == "xgboost":
         _maybe_enable_xgboost_gpu(model_params, *X_train.shape)
+    if model_name == "tfm":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model_params["device"] = device
+
+        # create required tensor inputs, since preprocessing is skipped, X_train is still a pandas DataFrame
+        X_train, y_train = _to_table_tensor(X_train, y_train, categorical_features, numerical_features, task, device)
+        X_test, _ = _to_table_tensor(X_test, None, categorical_features, numerical_features, task, device)
+
     model = build_ml_model(model_name, task, model_params, random_state=random_state)
     model.fit(
         X_train,
         y_train,
-        **_fit_kwargs(model_name, model_params, X_val, y_val),
+        **_fit_kwargs(model_name, model_params, X_val, y_val, random_state),
     )
 
-    preds, pred_labels = _predict(model, X_test, y_test, task, target_info)
+    preds, pred_labels = _predict(
+        model, X_test, y_test, task, target_info, model_name
+    )
     if score_fns is None:
         return preds
     return score_ml_predictions(
@@ -390,24 +402,61 @@ def _transform_target(y_train, y_test, y_val, task, target):
         None if y_val is None else target["model_encoder"].transform(y_val),
     )
 
+def _to_table_tensor(X, y, categorical_features, numerical_features, task, device):
+    stypes = {c: "categorical" for c in categorical_features} | {
+        c: "numerical" for c in numerical_features
+    }
+    x_t = sdm.TableTensor.from_pandas(X[list(stypes)], stypes, device=device)
+    if y is None:
+        return x_t, None
+    y_stype = "numerical" if task == "regression" else "categorical"
+    y_df = pd.DataFrame({"target": np.asarray(y)})
+    y_t = sdm.TableTensor.from_pandas(y_df, {"target": y_stype}, device=device)
+    return x_t, y_t
 
-def _fit_kwargs(model_name, model_params, X_val, y_val):
+
+def _fit_kwargs(model_name, model_params, X_val, y_val, random_state=0):
     if _uses_xgboost_early_stopping(model_name, model_params):
         return {"eval_set": [(X_val, y_val)]}
+    if model_name == "tfm":
+        generator = torch.Generator(model_params["device"])
+        generator.manual_seed(random_state)
+        return {"num_estimators": 8, "generator": generator}
     return {}
 
 
-def _predict(model, X_test, y_test, task, target):
+def _predict_tfm(model, X_test, task):
+    """Run KumoTabular and return numpy outputs.
+
+    Classification: (class-probability matrix, class labels per column), where
+    the labels are the (encoded) classes seen in the context rows.
+    Regression: the mean of the 999 equally spaced predicted quantiles
+    (q001..q999), which approximates the mean of the predictive distribution.
+    """
+    out = model.predict(X_test).to_pandas()
     if task == "regression":
+        return out.to_numpy(dtype=float).mean(axis=1), None
+    return out.to_numpy(dtype=float), out.columns.to_numpy(dtype=int)
+
+
+def _predict(model, X_test, y_test, task, target, model_name=None):
+    if model_name == "tfm":
+        raw_preds, model_classes = _predict_tfm(model, X_test, task)
+        if task == "regression":
+            return raw_preds, raw_preds
+        pred_labels_idx = model_classes[raw_preds.argmax(axis=1)]
+    elif task == "regression":
         preds = model.predict(X_test)
         return preds, preds
+    else:
+        raw_preds = model.predict_proba(X_test)
+        model_classes = np.asarray(
+            getattr(model, "classes_", np.arange(raw_preds.shape[1])), dtype=int
+        )
+        pred_labels_idx = np.asarray(model.predict(X_test), dtype=int)
 
-    raw_preds = model.predict_proba(X_test)
-    model_classes = np.asarray(
-        getattr(model, "classes_", np.arange(raw_preds.shape[1])), dtype=int
-    )
     class_map = target["class_map"]
-    pred_labels = class_map[np.asarray(model.predict(X_test), dtype=int)]
+    pred_labels = class_map[pred_labels_idx]
 
     if task == "multiclass" or target["score_task"] == "multiclass":
         preds = np.zeros((len(y_test), len(target["score_encoder"].classes_)))
@@ -560,6 +609,8 @@ def resolve_model_name(model_name: str):
         return "svm"
     if model_name.startswith("xgb"):
         return "xgboost"
+    if model_name in ["kumo", "tfm", "fm"]:
+        return "tfm"
     raise ValueError(f"Model {model_name} not supported")
 
 
@@ -581,6 +632,13 @@ def build_ml_model(
                 else ("multi:softprob" if task == "multiclass" else "reg:squarederror")
             ),
             "tree_method": "hist",
+        }
+    elif model_name == "tfm":
+        model = sdm.models.KumoTabular
+        # sdm only knows "classification" and "regression" (binary/multiclass are both "classification")
+        defaults = {
+            "task": "regression" if task == "regression" else "classification",
+            "size": "small",
         }
     elif model_name == "randomforest":
         model = (
