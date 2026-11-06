@@ -25,6 +25,8 @@ class ForestDiffusionGenerator(BaseGenerator):
 
     Args:
         target_column: The column to use as the target column. Default: None.
+        conditional_generation: Whether to condition on a discrete target column.
+            If False, the target is treated as any other variable. Default: True.
         logdir: The directory to write/read XGBoost models. When None,
             trained XGBoost models are kept in memory. Default: None.
         num_timesteps: The number of noise levels to use. Default: 50.
@@ -64,6 +66,7 @@ class ForestDiffusionGenerator(BaseGenerator):
     def __init__(
         self,
         target_column: str = None,
+        conditional_generation: bool = True,
         logdir: str = None,
         num_timesteps: int = 50,
         diffusion_type: str = "vp",
@@ -82,6 +85,7 @@ class ForestDiffusionGenerator(BaseGenerator):
     ):
         super().__init__(random_state=random_state, full_determinism=full_determinism)
         self.target_column = target_column
+        self.conditional_generation = conditional_generation
         self.logdir = logdir
         self.num_timesteps = num_timesteps
         self.diffusion_type = diffusion_type
@@ -112,13 +116,15 @@ class ForestDiffusionGenerator(BaseGenerator):
             )
 
         self.output_columns = list(X.columns)
-        self.conditional_generation = (
-            self.target_column is not None and self.target_column in discrete_features
+        condition_on_target = (
+            self.conditional_generation
+            and self.target_column is not None
+            and self.target_column in discrete_features
         )
-        y_train = X[self.target_column] if self.conditional_generation else None
+        y_train = X[self.target_column] if condition_on_target else None
         X_train = (
             X.drop(columns=[self.target_column]).copy()
-            if self.conditional_generation
+            if condition_on_target
             else X.copy()
         )
         self.feature_columns = list(X_train.columns)
@@ -185,7 +191,7 @@ class ForestDiffusionGenerator(BaseGenerator):
     def _state(self):
         state = {
             "target_column": self.target_column,
-            "conditional_generation": getattr(self, "conditional_generation", False),
+            "conditional_generation": self.conditional_generation,
             "logdir": self.logdir,
             "num_timesteps": self.num_timesteps,
             "diffusion_type": self.diffusion_type,

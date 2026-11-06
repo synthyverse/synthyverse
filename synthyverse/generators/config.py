@@ -39,6 +39,48 @@ DEFAULT_CONFIG = {
 }
 
 NETWORK_SIZE_CONFIGS = {
+    "forestdiffusion": {
+        "vp": {
+            "num_timesteps": 50,
+            "diffusion_type": "vp",
+            "multi_output": False,
+            "xgb_hypers": {
+                "n_estimators": 100,
+                "max_depth": 7,
+                "reg_lambda": 0.0,
+                "early_stopping_rounds": 20,
+            },
+            "noise_samples_per_row": 50,
+            "eps": 0.001,
+            "beta_min": 0.1,
+            "beta_max": 8,
+            "n_jobs": -1,
+            "backend": "loky",
+            "n_batch": -1,
+            "memory_cap_gb": 128,
+            "conditional_generation": False,
+        },
+        "flow": {
+            "num_timesteps": 50,
+            "diffusion_type": "flow",
+            "multi_output": False,
+            "xgb_hypers": {
+                "n_estimators": 100,
+                "max_depth": 7,
+                "reg_lambda": 0.0,
+                "early_stopping_rounds": 20,
+            },
+            "noise_samples_per_row": 50,
+            "eps": 0.0,
+            "beta_min": 0.1,
+            "beta_max": 8,
+            "n_jobs": -1,
+            "backend": "loky",
+            "n_batch": -1,
+            "memory_cap_gb": 128,
+            "conditional_generation": False,
+        },
+    },
     "synthpop": {
         "original": {
             "minibucket": 10,
