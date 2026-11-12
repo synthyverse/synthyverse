@@ -512,7 +512,7 @@ class ForestModel:
             df = df[
                 self.X_names_before
             ]  # remove all gender_b, gender_c and put everything in the right order
-            X = df.to_numpy()
+            X = df.to_numpy(copy=True)
         return X
 
     # Unscale and clip to prevent going beyond min-max and also round off the integers
