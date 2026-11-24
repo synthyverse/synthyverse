@@ -23,6 +23,7 @@ from scipy.stats import (
     spearmanr,
     pearsonr,
     chi2_contingency,
+    wasserstein_distance,
 )
 
 from .base import BaseMetric
@@ -909,6 +910,160 @@ class Marginals(BaseMetric):
             result[f"cat.{distance}"] = float(np.mean(cat)) if len(cat) else np.nan
 
         return result
+
+
+class MarginalTails(BaseMetric):
+    """Evaluates the tails of univariate distibutions of numerical features.
+
+    For each numerical feature, the tails are defined by quantiles of the
+    training data (lower_q and upper_q). Lower tails contain values <= the
+    cutoff, upper tails values >= the cutoff. Three scores are computed per
+    quantile level:
+
+    - mass: absolute difference between training and synthetic data in the
+      probability mass beyond the cutoff.
+    - quantiles: absolute difference between the training cutoff and the
+      synthetic quantile at the same level, divided by the training standard
+      deviation.
+    - wsd: Wasserstein distance between the tails of the training and synthetic
+      data, divided by the training standard deviation. Each dataset's tail is
+      defined by its own quantile, and tail values are expressed as distances
+      from that dataset's own cutoff. It compares the shape of the tails
+      independently of their location and mass, and is never empty.
+
+    Scores are computed per feature and averaged over numerical features.
+    Discrete features and features that are constant in the training data are
+    ignored. If a score cannot be computed for any feature, its average is NaN.
+    The "test" split gives a baseline by comparing training data to test data
+    instead of synthetic data.
+
+    Lower scores indicate better fidelity of the generated tails.
+
+    Args:
+        lower_q (tuple[float]): Quantile levels in (0, 1) defining the lower
+            tails. May be empty. Default: (0.05,).
+        upper_q (tuple[float]): Quantile levels in (0, 1) defining the upper
+            tails. May be empty, but not together with lower_q. The numbers of
+            lower and upper levels need not match. Default: (0.95,).
+        random_state (int): Random seed for reproducibility. Default: 0.
+
+    Outputs:
+        "tails.<split>.mass_q<q>", "tails.<split>.quantiles_q<q>" and
+        "tails.<split>.wsd_q<q>" for each quantile level q, where <split> is
+        "train" (training vs synthetic) or "test" (training vs test data, only
+        if X_test is given).
+
+    Example:
+        >>> import pandas as pd
+        >>> from synthyverse.evaluation import MarginalTails
+        >>>
+        >>> # Prepare data
+        >>> X_train = pd.DataFrame(...)
+        >>> X_test = pd.DataFrame(...)
+        >>> X_syn = pd.DataFrame(...)
+        >>> discrete_features = ["category_col"]
+        >>>
+        >>> # Create metric
+        >>> metric = MarginalTails(lower_q=(0.01, 0.05), upper_q=(0.95,))
+        >>>
+        >>> # Evaluate
+        >>> results = metric.evaluate(X=X_train, X_syn=X_syn, X_test=X_test, discrete_features=discrete_features)
+    """
+
+    name = "tails"
+
+    def __init__(self, lower_q: tuple[float] = (0.05,), upper_q: tuple[float] = (0.95,), random_state: int = 0):
+        super().__init__(random_state=random_state)
+        for name, qs in (("lower_q", lower_q), ("upper_q", upper_q)):
+            if any(not 0 < q < 1 for q in qs):
+                raise ValueError(f"{name} values must be in (0, 1).")
+        if not (len(lower_q) or len(upper_q)):
+            raise ValueError("At least one of lower_q and upper_q must be non-empty.")
+        self.lower_q = lower_q
+        self.upper_q = upper_q
+
+    def _evaluate(
+            self,
+            X: pd.DataFrame,
+            X_syn: pd.DataFrame,
+            X_test: pd.DataFrame = None,
+            discrete_features: list = None,
+        ):
+        self.discrete_features = discrete_features
+        result = {}
+        # train: training vs synthetic data
+        # test: training vs test data (baseline for natural deviation)
+        splits = [("train", X, X_syn)]
+        if X_test is not None:
+            splits.append(("test", X, X_test))
+
+        for split, real, syn in splits:
+            scores = self._evaluate_split(real, syn)
+            result.update({f"{self.name}.{split}.{k}": v for k, v in scores.items()})
+        return result
+
+    def _evaluate_split(self, real: pd.DataFrame, syn: pd.DataFrame) -> dict:
+        # tails are undefined for constant (in the training data) features
+        numerical_features = [
+            c
+            for c in real.columns
+            if c not in self.discrete_features and real[c].nunique() > 1
+        ]
+        if len(numerical_features) == 0:
+            return {}
+        return self._tail_scores(real[numerical_features], syn[numerical_features])
+
+    def _tail_scores(self, rd: pd.DataFrame, sd: pd.DataFrame) -> dict:
+        """Per-feature tail scores: mass, quantiles and wsd for each quantile level.
+
+        Cutoffs are quantiles of rd, the real (training) data. sd is the data
+        it is compared to (synthetic or test data). Scores that cannot be
+        computed for a feature are NaN, which makes the average over features NaN.
+
+        Returns:
+            dict: "<score>_q<quantile>" -> average over numerical features.
+        """
+        sides = [("lower", q) for q in self.lower_q] + [("upper", q) for q in self.upper_q]
+        per_feature = {}
+        for col in rd.columns:
+            r = np.sort(rd[col].dropna().to_numpy(dtype=float))
+            s = np.sort(sd[col].dropna().to_numpy(dtype=float))
+
+            # scale for quantiles and wsd: real std (> 0, constant features are filtered)
+            scale = r.std()
+            valid = len(s) > 0
+
+            for side, q in sides:
+                scores = {"mass": np.nan, "quantiles": np.nan, "wsd": np.nan}
+                if valid:
+                    cut = np.quantile(r, q)  # real cutoff
+                    syn_cut = np.quantile(s, q)  # cutoff of the compared data
+
+                    # tails at the real cutoff (mass) and at each dataset's own
+                    # cutoff (wsd). Excesses are distances from the own cutoff.
+                    if side == "lower":
+                        r_n = np.searchsorted(r, cut, side="right")  # X <= cut
+                        s_n = np.searchsorted(s, cut, side="right")
+                        s_own_n = np.searchsorted(s, syn_cut, side="right")
+                        r_ex = cut - r[:r_n]
+                        s_ex = syn_cut - s[:s_own_n]
+                    else:
+                        r_n = len(r) - np.searchsorted(r, cut, side="left")  # X >= cut
+                        s_n = len(s) - np.searchsorted(s, cut, side="left")
+                        s_own_n = len(s) - np.searchsorted(s, syn_cut, side="left")
+                        r_ex = r[len(r) - r_n:] - cut
+                        s_ex = s[len(s) - s_own_n:] - syn_cut
+
+                    scores["mass"] = abs(r_n / len(r) - s_n / len(s))
+                    scores["quantiles"] = abs(cut - syn_cut) / scale
+                    # tails are never empty: each cutoff is a quantile of its data
+                    scores["wsd"] = wasserstein_distance(s_ex, r_ex) / scale
+
+                for name, value in scores.items():
+                    per_feature.setdefault(f"{name}_q{q}", []).append(value)
+
+        # average over features (NaN if the score failed for any feature)
+        return {key: float(np.mean(values)) for key, values in per_feature.items()}
 
 
 class Correlations(BaseMetric):

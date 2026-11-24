@@ -7,6 +7,7 @@ _METRICS = {
     # "Wasserstein": (".fidelity", "wasserstein"),
     "ShapeTrend": (".fidelity", "shapetrend"),
     "Marginals": (".fidelity", "marginals"),
+    "MarginalTails": (".fidelity", "tails"),
     "Correlations": (".fidelity", "correlations"),
     "ARM": (".fidelity", "arm"),
     "NMI": (".fidelity", "nmi"),
