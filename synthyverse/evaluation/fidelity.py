@@ -29,7 +29,7 @@ from scipy.stats import (
 from .base import BaseMetric
 from .ml import cv_ml_task, ml_task, resolve_model_name
 from .distances import (
-    FastGowerNN,
+    FaissGowerNN,
     js_robust,
     kld,
     knn_distances,
@@ -340,6 +340,7 @@ class AlphaPrecisionBetaRecall(BaseMetric):
             reference_data=X,
             discrete_features=discrete_features,
             categorical_fit_data=[X, X_syn],
+            numerical_fit_data=[X],
         )
         rd_metric = nn_data["rd"]
         sd_metric = nn_data["sd"]
@@ -361,10 +362,10 @@ class AlphaPrecisionBetaRecall(BaseMetric):
         # Use L1 distance in the mixed-type feature space.
         synth_to_center = l1(x_sd, emb_center)
 
-        nbrs_real = FastGowerNN(categorical_cols=discrete_features).fit(rd_metric)
+        nbrs_real = FaissGowerNN(categorical_cols=discrete_features).fit(rd_metric)
         real_to_real, _ = nbrs_real.kneighbors(X=None, k=self.k)
 
-        nbrs_synth = FastGowerNN(categorical_cols=discrete_features).fit(sd_metric)
+        nbrs_synth = FaissGowerNN(categorical_cols=discrete_features).fit(sd_metric)
         real_to_synth, real_to_synth_args = nbrs_synth.kneighbors(rd_metric, k=1)
 
         real_to_real = real_to_real[:, self.k - 1].reshape(-1)
