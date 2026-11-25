@@ -913,29 +913,30 @@ class Marginals(BaseMetric):
 
 
 class MarginalTails(BaseMetric):
-    """Evaluates the tails of univariate distibutions of numerical features.
+    """Evaluates the tails of univariate distributions of numerical features.
 
     For each numerical feature, the tails are defined by quantiles of the
-    training data (lower_q and upper_q). Lower tails contain values <= the
+    real reference data (lower_q and upper_q). Lower tails contain values <= the
     cutoff, upper tails values >= the cutoff. Three scores are computed per
     quantile level:
 
-    - mass: absolute difference between training and synthetic data in the
+    - mass: absolute difference between real and synthetic data in the
       probability mass beyond the cutoff.
-    - quantiles: absolute difference between the training cutoff and the
-      synthetic quantile at the same level, divided by the training standard
+    - quantiles: absolute difference between the real cutoff and the
+      synthetic quantile at the same level, divided by the real standard
       deviation.
-    - wsd: Wasserstein distance between the tails of the training and synthetic
-      data, divided by the training standard deviation. Each dataset's tail is
+    - wsd: Wasserstein distance between the tails of the real and synthetic
+      data, divided by the real standard deviation. Each dataset's tail is
       defined by its own quantile, and tail values are expressed as distances
       from that dataset's own cutoff. It compares the shape of the tails
       independently of their location and mass, and is never empty.
 
     Scores are computed per feature and averaged over numerical features.
-    Discrete features and features that are constant in the training data are
+    Discrete features and features that are constant in the real reference data are
     ignored. If a score cannot be computed for any feature, its average is NaN.
-    The "test" split gives a baseline by comparing training data to test data
-    instead of synthetic data.
+    The "train" split uses training data as the real reference; the "test"
+    split uses test data. Each split uses its reference quantiles and standard
+    deviations.
 
     Lower scores indicate better fidelity of the generated tails.
 
@@ -950,7 +951,7 @@ class MarginalTails(BaseMetric):
     Outputs:
         "tails.<split>.mass_q<q>", "tails.<split>.quantiles_q<q>" and
         "tails.<split>.wsd_q<q>" for each quantile level q, where <split> is
-        "train" (training vs synthetic) or "test" (training vs test data, only
+        "train" (training vs synthetic) or "test" (test vs synthetic data, only
         if X_test is given).
 
     Example:
@@ -992,10 +993,10 @@ class MarginalTails(BaseMetric):
         self.discrete_features = discrete_features
         result = {}
         # train: training vs synthetic data
-        # test: training vs test data (baseline for natural deviation)
+        # test: test vs synthetic data
         splits = [("train", X, X_syn)]
         if X_test is not None:
-            splits.append(("test", X, X_test))
+            splits.append(("test", X_test, X_syn))
 
         for split, real, syn in splits:
             scores = self._evaluate_split(real, syn)
@@ -1003,21 +1004,25 @@ class MarginalTails(BaseMetric):
         return result
 
     def _evaluate_split(self, real: pd.DataFrame, syn: pd.DataFrame) -> dict:
-        # tails are undefined for constant (in the training data) features
+        # tails are undefined for constant features in the real reference data
         numerical_features = [
             c
             for c in real.columns
             if c not in self.discrete_features and real[c].nunique() > 1
         ]
         if len(numerical_features) == 0:
-            return {}
+            return {
+                f"{score}_q{q}": np.nan
+                for q in (*self.lower_q, *self.upper_q)
+                for score in ("mass", "quantiles", "wsd")
+            }
         return self._tail_scores(real[numerical_features], syn[numerical_features])
 
     def _tail_scores(self, rd: pd.DataFrame, sd: pd.DataFrame) -> dict:
         """Per-feature tail scores: mass, quantiles and wsd for each quantile level.
 
-        Cutoffs are quantiles of rd, the real (training) data. sd is the data
-        it is compared to (synthetic or test data). Scores that cannot be
+        Cutoffs are quantiles of rd, the real reference (training or test) data.
+        sd is the synthetic data it is compared to. Scores that cannot be
         computed for a feature are NaN, which makes the average over features NaN.
 
         Returns:
