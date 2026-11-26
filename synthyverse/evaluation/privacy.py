@@ -15,6 +15,7 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from scipy.stats import gaussian_kde, rankdata
+from scipy.spatial import cKDTree
 from .base import BaseMetric
 from .distances import FastGowerNN
 from .ml import ml_task
@@ -55,10 +56,124 @@ def lift_at_k(y_true, y_score, k=0.1):
     return float(precision_at_k / prevalence)
 
 
+class Memorization(BaseMetric):
+    """Fraction of rows memorized from the training data.
+
+    A row is memorized if every categorical feature is equal and every numerical
+    difference is at most ``threshold * (X.max() - X.min())`` for that feature.
+    Includes a test-to-train baseline.
+
+    Args:
+        threshold (float): Numerical tolerance as a fraction of each training-data
+            feature range. Must be finite and between 0 and 1 inclusive. Default: 0.01.
+        random_state (int): Random seed for consistency with other metrics.
+            This metric is deterministic. Default: 0.
+        n_jobs (int): Number of parallel workers for cKDTree queries. Default: -1
+            (all CPUs).
+        batch_size (int): Maximum number of query rows per batch. Must be positive.
+            Default: 100_000.
+
+    Outputs:
+        ``memorization.train``: Fraction of synthetic rows matching train data.
+        ``memorization.baseline``: Fraction of test rows matching train data.
+
+    Example:
+        >>> from synthyverse.evaluation import Memorization
+        >>> metric = Memorization(threshold=0.01)
+        >>> results = metric.evaluate(
+        ...     X_train, X_syn, X_test=X_test, discrete_features=["category"]
+        ... )
+    """
+
+    name = "memorization"
+
+    def __init__(
+        self,
+        threshold: float = 0.01,
+        random_state: int = 0,
+        n_jobs: int = -1,
+        batch_size: int = 100_000,
+    ):
+        super().__init__(random_state=random_state)
+        if not np.isfinite(threshold) or not 0 <= threshold <= 1:
+            raise ValueError("threshold must be finite and between 0 and 1 inclusive.")
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive.")
+        self.threshold = threshold
+        self.n_jobs = n_jobs
+        self.batch_size = batch_size
+
+    def _evaluate(
+        self,
+        X: pd.DataFrame,
+        X_syn: pd.DataFrame,
+        X_test: pd.DataFrame = None,
+        discrete_features: list = None,
+    ):
+        if X_test is None:
+            raise ValueError("Memorization requires X_test.")
+        if not len(X) or not len(X_syn) or not len(X_test) or not len(X.columns):
+            raise ValueError("Memorization requires non-empty datasets and features.")
+        numerical = [col for col in X.columns if col not in discrete_features]
+        lower = X[numerical].min().astype(float)
+        tolerance = (X[numerical].max().astype(float) - lower) * self.threshold
+        numerical = tolerance.index[tolerance > 0].tolist()
+        exact = [col for col in X.columns if col not in numerical]
+        if exact:
+            codes, categories = pd.factorize(pd.MultiIndex.from_frame(X[exact]))
+        if numerical:
+            lower = lower[numerical].to_numpy()
+            tolerance = tolerance[numerical].to_numpy()
+            values = np.empty((len(X), len(numerical) + bool(exact)))
+            np.subtract(X[numerical].to_numpy(), lower, out=values[:, : len(numerical)])
+            values[:, : len(numerical)] /= tolerance
+            if exact:
+                # One code represents the entire exact-match feature tuple.
+                # Different tuples are farther apart than the search radius.
+                values[:, -1] = codes * 2
+            tree = cKDTree(values)
+
+        results = {}
+        for name, samples in (("train", X_syn), ("baseline", X_test)):
+            matches = 0
+            for start in range(0, len(samples), self.batch_size):
+                batch = samples.iloc[start : start + self.batch_size]
+                if exact:
+                    codes = categories.get_indexer(
+                        pd.MultiIndex.from_frame(batch[exact])
+                    )
+                    valid = codes >= 0
+                    if not numerical:
+                        matches += np.count_nonzero(valid)
+                        continue
+                    batch = batch.loc[valid]
+                    codes = codes[valid]
+                    if batch.empty:
+                        continue
+                query = np.empty((len(batch), values.shape[1]))
+                np.subtract(
+                    batch[numerical].to_numpy(), lower, out=query[:, : len(numerical)]
+                )
+                query[:, : len(numerical)] /= tolerance
+                if exact:
+                    query[:, -1] = codes * 2
+                distances, _ = tree.query(
+                    query,
+                    k=1,
+                    p=np.inf,
+                    distance_upper_bound=np.nextafter(1.0, np.inf),
+                    workers=self.n_jobs,
+                )
+                matches += np.count_nonzero(np.isfinite(distances))
+            results[f"{self.name}.{name}"] = float(matches / len(samples))
+        return results
+
+
 class DCR(BaseMetric):
     """Distance to Closest Record (DCR) privacy metrics.
 
-    Measures whether synthetic records are more often closer to a training record than an independent test record.
+    Compares synthetic-to-train proximity with an independent test baseline
+    using nearest-record distances and nearest-neighbor distance ratios (NNDR).
 
     Args:
         subsample_test_size (bool): Whether to subsample the training set and synthetic set to the test set size. Prevents biasing DCR due to different sample sizes. If used, multiple iterations average random train/synthetic subsamples of size ``|X_test|``. Default: True.
@@ -66,8 +181,35 @@ class DCR(BaseMetric):
         repeats (int): Number of repeated evaluations when subsampling. Default: 5.
 
     Outputs:
-        DCR score, nearest-neighbor direction proportions, threshold risks,
-        and NNDR ratio summaries.
+        ``dcr.share.train``: Share of synthetic records whose nearest train
+        record is closer than their nearest test record. Ties count as 0.5.
+        Returns one scalar, averaged across repeats.
+
+        ``dcr.raw.train.<summary>``: Synthetic-to-train nearest distances.
+        ``dcr.raw.baseline.<summary>``: Test-to-train nearest distances.
+        Here ``<summary>`` is ``001``, ``002``, ``005``, ``010``, ``015``,
+        ``025``, ``median``, or ``mean``. Numeric suffixes denote percentiles.
+
+        ``dcr.tail_share.<percentile>``: Share of synthetic-to-train distances
+        strictly below the corresponding percentile of test-to-train
+        distances. Suffixes are ``001``, ``002``, ``005``, ``010``, ``015``,
+        and ``025``. For example, ``dcr.tail_share.001`` uses the baseline's
+        1st percentile as its distance threshold.
+
+        ``dcr.nndr.train.<summary>``: Synthetic-to-train NNDR, computed for
+        each synthetic record as its nearest train distance divided by its
+        second-nearest train distance.
+        ``dcr.nndr.baseline.<summary>``: Test-to-train NNDR, computed for
+        each test record using its two nearest train records.
+        ``dcr.nndr_ratio.<summary>``: The corresponding train NNDR summary
+        divided by the baseline NNDR summary, after averaging across repeats.
+        NNDR and summary ratios return 1 when the denominator is zero.
+
+        For NNDR outputs, ``<summary>`` is ``mean``, ``median``,
+        ``q01``, ``q02``, ``q05``, ``q10``, ``q15``, or ``q25``. Quantiles
+        correspond to the 1st, 2nd, 5th, 10th, 15th, and 25th percentiles.
+        Raw distance summaries, tail shares, and NNDR summaries are computed
+        per repeat and then averaged.
 
     Example:
         >>> import pandas as pd
@@ -144,6 +286,7 @@ class DCR(BaseMetric):
             )
         num_iterations = self.repeats if self.subsample_test_size else 1
         metric_values = {}
+        percentiles = (1, 2, 5, 10, 15, 25)
 
         rng = np.random.default_rng(self.random_state)
 
@@ -177,11 +320,18 @@ class DCR(BaseMetric):
         def nearest_distance_ratio(distances: np.ndarray) -> np.ndarray:
             return safe_ratio(distances[:, 0], distances[:, 1])
 
-        def distribution_metrics(prefix: str, values: np.ndarray) -> dict:
+        def distribution_metrics(
+            prefix: str, values: np.ndarray, percentile_format: str = "q{:02d}"
+        ) -> dict:
             return {
-                prefix: np.mean(values),
-                f"{prefix}_002": np.quantile(values, 0.02),
-                f"{prefix}_005": np.quantile(values, 0.05),
+                f"{prefix}.mean": np.mean(values),
+                f"{prefix}.median": np.median(values),
+                **{
+                    f"{prefix}.{percentile_format.format(p)}": np.quantile(
+                        values, p / 100
+                    )
+                    for p in percentiles
+                },
             }
 
         def collect(metrics: dict):
@@ -209,39 +359,47 @@ class DCR(BaseMetric):
 
             ties = np.isclose(d_s_tr, d_s_te)
             closer_to_train_ = np.mean(np.where(ties, 0.5, d_s_tr < d_s_te))
-            closer_to_test_ = np.mean(np.where(ties, 0.5, d_s_te < d_s_tr))
 
             nndr_train_scores = nearest_distance_ratio(d_s_tr_neighbors)
             nndr_baseline_scores = nearest_distance_ratio(d_te_tr_neighbors)
             nndr_train_metrics = distribution_metrics(
-                "nndr_train",
+                "nndr.train",
                 nndr_train_scores,
             )
             nndr_baseline_metrics = distribution_metrics(
-                "nndr_baseline",
+                "nndr.baseline",
                 nndr_baseline_scores,
             )
 
             iteration_metrics = {
-                "score": min(1, closer_to_test_ * 2),
-                "train": closer_to_train_,
-                "test": closer_to_test_,
-                "002": np.mean(d_s_tr < np.quantile(d_te_tr, 0.02)),
-                "005": np.mean(d_s_tr < np.quantile(d_te_tr, 0.05)),
+                "share.train": closer_to_train_,
+                **{
+                    f"tail_share.{p:03d}": np.mean(
+                        d_s_tr < np.quantile(d_te_tr, p / 100)
+                    )
+                    for p in percentiles
+                },
             }
             iteration_metrics.update(nndr_train_metrics)
             iteration_metrics.update(nndr_baseline_metrics)
+            for prefix, distances in (
+                ("raw.train", d_s_tr),
+                ("raw.baseline", d_te_tr),
+            ):
+                iteration_metrics.update(
+                    distribution_metrics(prefix, distances, percentile_format="{:03d}")
+                )
 
             collect(iteration_metrics)
 
         scores = {
             name: float(np.mean(values)) for name, values in metric_values.items()
         }
-        for suffix in ("", "_002", "_005"):
-            scores[f"nndr_ratio{suffix}"] = float(
+        for summary in ("mean", "median", *(f"q{p:02d}" for p in percentiles)):
+            scores[f"nndr_ratio.{summary}"] = float(
                 safe_ratio(
-                    np.array([scores[f"nndr_train{suffix}"]]),
-                    np.array([scores[f"nndr_baseline{suffix}"]]),
+                    np.array([scores[f"nndr.train.{summary}"]]),
+                    np.array([scores[f"nndr.baseline.{summary}"]]),
                 )[0]
             )
 
@@ -441,11 +599,16 @@ class MIA(BaseMetric, ABC):
         random_state (int): Random seed for reproducibility. Default: 0.
 
     Outputs:
-        "<attack_name>.auc" and lift-at-k scores.
+        "<attack_name>.auc", lift-at-k scores, and standardized partial AUC
+        scores "<attack_name>.pauc_{001,005,010}" up to FPR 0.01, 0.05,
+        and 0.10 (random baseline 0.5, perfect score 1.0).
     """
 
     score_metrics = (
         "auc",
+        "pauc_010",
+        "pauc_005",
+        "pauc_001",
         "lift_010",
         "lift_005",
         "lift_001",
@@ -490,12 +653,9 @@ class MIA(BaseMetric, ABC):
                     "evaluation records."
                 )
 
-            scores[repeat_idx] = {
-                "auc": roc_auc_score(mia_data.y_eval, membership_scores),
-                "lift_010": lift_at_k(mia_data.y_eval, membership_scores, 0.10),
-                "lift_005": lift_at_k(mia_data.y_eval, membership_scores, 0.05),
-                "lift_001": lift_at_k(mia_data.y_eval, membership_scores, 0.01),
-            }
+            scores[repeat_idx] = self._score_membership(
+                mia_data.y_eval, membership_scores
+            )
 
         avg_scores = {
             metric: float(
@@ -505,6 +665,21 @@ class MIA(BaseMetric, ABC):
         }
 
         return {f"{self.name}.{metric}": value for metric, value in avg_scores.items()}
+
+    def _score_membership(self, y_eval: pd.Series, scores: np.ndarray) -> dict:
+        scores = np.nan_to_num(np.asarray(scores, dtype=float))
+        return {
+            "auc": roc_auc_score(y_eval, scores),
+            **{
+                f"pauc_{int(fpr * 100):03d}": roc_auc_score(
+                    y_eval, scores, max_fpr=fpr
+                )
+                for fpr in (0.10, 0.05, 0.01)
+            },
+            "lift_010": lift_at_k(y_eval, scores, 0.10),
+            "lift_005": lift_at_k(y_eval, scores, 0.05),
+            "lift_001": lift_at_k(y_eval, scores, 0.01),
+        }
 
     def _create_mia_data(
         self,
@@ -597,7 +772,7 @@ class DOMIAS(MIA):
         random_state (int): Random seed for reproducibility. Default: 0.
 
     Outputs:
-        "mia.domias.auc" and lift-at-k scores.
+        AUC, standardized partial AUC, and lift-at-k scores (see MIA).
 
     Example:
         >>> import pandas as pd
@@ -716,7 +891,7 @@ class DPI(MIA):
         random_state (int): Random seed for reproducibility. Default: 0.
 
     Outputs:
-        "mia.dpi.auc" and lift-at-k scores.
+        AUC, standardized partial AUC, and lift-at-k scores (see MIA).
     """
 
     name = "mia.dpi"
@@ -808,7 +983,7 @@ class ClassifierMIA(MIA):
         random_state (int): Random seed for reproducibility. Default: 0.
 
     Outputs:
-        "mia.classifier.auc" and lift-at-k scores.
+        AUC, standardized partial AUC, and lift-at-k scores (see MIA).
     """
 
     name = "mia.classifier"
@@ -881,7 +1056,7 @@ class EnsembleMIA(MIA):
         random_state (int): Random seed for reproducibility. Default: 0.
 
     Outputs:
-        Ensemble AUC/lift scores plus component AUC/lift scores.
+        Ensemble and component AUC, standardized partial AUC, and lift scores.
     """
 
     name = "mia.ensemble"
@@ -990,15 +1165,6 @@ class EnsembleMIA(MIA):
             return np.full(len(scores), 0.5, dtype=float)
         ranks = rankdata(scores, method="average")
         return (ranks - 1) / (len(scores) - 1)
-
-    def _score_membership(self, y_eval: pd.Series, scores: np.ndarray) -> dict:
-        scores = np.nan_to_num(np.asarray(scores, dtype=float))
-        return {
-            "auc": roc_auc_score(y_eval, scores),
-            "lift_010": lift_at_k(y_eval, scores, 0.10),
-            "lift_005": lift_at_k(y_eval, scores, 0.05),
-            "lift_001": lift_at_k(y_eval, scores, 0.01),
-        }
 
     def _component_membership_scores(
         self, mia_data: MIAData, seed: int

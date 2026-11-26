@@ -6,6 +6,7 @@ from sklearn.metrics import (
     root_mean_squared_error,
     f1_score,
     accuracy_score,
+    log_loss,
 )
 from .ml import (
     ml_task,
@@ -150,7 +151,7 @@ class MLE(BaseMetric):
         score_fns = (
             [r2_score, root_mean_squared_error]
             if self.task == "regression"
-            else [roc_auc_score, f1_score, accuracy_score]
+            else [roc_auc_score, f1_score, accuracy_score, log_loss]
         )
 
         if uses_xgboost_early_stopping and not (

@@ -13,6 +13,7 @@ from sklearn.linear_model import ElasticNet, LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
+    log_loss,
     r2_score,
     roc_auc_score,
     root_mean_squared_error,
@@ -37,6 +38,7 @@ SCORE_FNS = {
     "auc": roc_auc_score,
     "f1": f1_score,
     "accuracy": accuracy_score,
+    "log_loss": log_loss,
     "r2": r2_score,
     "rmse": root_mean_squared_error,
 }
@@ -158,7 +160,7 @@ def cv_ml_task(
     score = cross_val_score(
         model, X, y, cv=cv, scoring=_cv_scoring(key, task), n_jobs=n_jobs
     ).mean()
-    return {key: float(-score if key == "rmse" else score)}
+    return {key: float(-score if key in {"rmse", "log_loss"} else score)}
 
 
 def ml_task(
@@ -299,6 +301,9 @@ def score_ml_predictions(
                 if task == "multiclass"
                 else fn(y_true, preds)
             )
+        elif key == "log_loss":
+            labels = np.arange(preds.shape[1]) if task == "multiclass" else [0, 1]
+            value = fn(y_true, preds, labels=labels)
         elif key == "f1":
             value = (
                 fn(y_true, pred_labels, average="weighted")
@@ -500,7 +505,7 @@ def _xgboost_cv_score(
     if task == "multiclass":
         params.setdefault("num_class", y.nunique())
 
-    metric, maximize = _xgboost_cv_metric(score_key_)
+    metric, maximize = _xgboost_cv_metric(score_key_, task)
     results = xgb.cv(
         params=params,
         dtrain=xgb.DMatrix(
@@ -527,11 +532,13 @@ def _xgboost_cv_score(
     }
 
 
-def _xgboost_cv_metric(score_key_: str):
+def _xgboost_cv_metric(score_key_: str, task: str):
     if score_key_ == "auc":
         return "auc", True
     if score_key_ == "rmse":
         return "rmse", False
+    if score_key_ == "log_loss":
+        return "mlogloss" if task == "multiclass" else "logloss", False
     raise ValueError(f"Score function {score_key_} is not supported for XGBoost CV")
 
 
@@ -577,6 +584,7 @@ def _xgboost_can_use_gpu():
 def _cv_scoring(score_key_: str, task: str):
     scoring = {
         "auc": "roc_auc_ovr" if task == "multiclass" else "roc_auc",
+        "log_loss": "neg_log_loss",
         "f1": "f1_weighted" if task == "multiclass" else "f1",
         "accuracy": "accuracy",
         "r2": "r2",

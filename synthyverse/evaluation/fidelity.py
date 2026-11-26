@@ -787,7 +787,8 @@ class Marginals(BaseMetric):
     """Per-column distributional distance between real and synthetic marginals.
 
     Computes distance metrics for each column independently and returns
-    the average distances over numerical and categorical features separately.
+    per-feature distances, means, and medians for numerical and categorical
+    features separately.
     Numerical distance functions: Wasserstein (wsd), Jensen-Shannon distance
     (jsd), Kolmogorov-Smirnov statistic (ks), Total Variation distance (tvd),
     and Kullback-Leibler divergence (kld).
@@ -804,8 +805,8 @@ class Marginals(BaseMetric):
         random_state (int): Random seed for reproducibility. Default: 0.
 
     Outputs:
-        "marginals.<split>.num.<distance>" and
-        "marginals.<split>.cat.<distance>".
+        "marginals.<split>.<type>.<distance>.feature.<feature>" for each feature,
+        plus ".mean" and ".median" summaries, where <type> is "num" or "cat".
 
     Example:
         >>> import pandas as pd
@@ -881,33 +882,29 @@ class Marginals(BaseMetric):
         )
 
         result = {}
-        for distance in self.numerical_distances:
-            num = []
-            for col in numerical_features:
-                if distance in ["jsd", "tvd", "kld"]:
-                    rd_dist, sd_dist = empirical_discrete_distribution(
-                        rd_binned[col].to_numpy(),
-                        sd_binned[col].to_numpy(),
-                    )
-                    num.append(dist_func[distance](sd_dist, rd_dist))
-                else:
-                    num.append(
-                        dist_func[distance](
-                            sd[col].to_numpy(),
-                            rd[col].to_numpy(),
+        for kind, features, distances in (
+            ("num", numerical_features, self.numerical_distances),
+            ("cat", self.discrete_features, self.categorical_distances),
+        ):
+            for distance in distances:
+                scores = {}
+                for col in features:
+                    if distance in ("jsd", "tvd", "kld"):
+                        rd_dist, sd_dist = empirical_discrete_distribution(
+                            rd_binned[col].to_numpy(), sd_binned[col].to_numpy()
                         )
-                    )
-            result[f"num.{distance}"] = float(np.mean(num)) if len(num) else np.nan
-
-        for distance in self.categorical_distances:
-            cat = []
-            for col in self.discrete_features:
-                rd_dist, sd_dist = empirical_discrete_distribution(
-                    rd[col].to_numpy(),
-                    sd[col].to_numpy(),
+                        scores[col] = dist_func[distance](sd_dist, rd_dist)
+                    else:
+                        scores[col] = dist_func[distance](
+                            sd[col].to_numpy(), rd[col].to_numpy()
+                        )
+                prefix = f"{kind}.{distance}"
+                result.update(
+                    {f"{prefix}.feature.{col}": float(v) for col, v in scores.items()}
                 )
-                cat.append(dist_func[distance](sd_dist, rd_dist))
-            result[f"cat.{distance}"] = float(np.mean(cat)) if len(cat) else np.nan
+                values = list(scores.values())
+                result[f"{prefix}.mean"] = float(np.mean(values)) if values else np.nan
+                result[f"{prefix}.median"] = float(np.median(values)) if values else np.nan
 
         return result
 
@@ -931,9 +928,9 @@ class MarginalTails(BaseMetric):
       from that dataset's own cutoff. It compares the shape of the tails
       independently of their location and mass, and is never empty.
 
-    Scores are computed per feature and averaged over numerical features.
+    Scores are returned per feature, with means and medians over numerical features.
     Discrete features and features that are constant in the real reference data are
-    ignored. If a score cannot be computed for any feature, its average is NaN.
+    ignored. If a score cannot be computed for any feature, its summaries are NaN.
     The "train" split uses training data as the real reference; the "test"
     split uses test data. Each split uses its reference quantiles and standard
     deviations.
@@ -949,8 +946,9 @@ class MarginalTails(BaseMetric):
         random_state (int): Random seed for reproducibility. Default: 0.
 
     Outputs:
-        "tails.<split>.mass_q<q>", "tails.<split>.quantiles_q<q>" and
-        "tails.<split>.wsd_q<q>" for each quantile level q, where <split> is
+        "tails.<split>.<score>_q<q>.feature.<feature>", plus ".mean" and
+        ".median" summaries for each score (mass, quantiles, wsd) and quantile
+        level q, where <split> is
         "train" (training vs synthetic) or "test" (test vs synthetic data, only
         if X_test is given).
 
@@ -1012,9 +1010,10 @@ class MarginalTails(BaseMetric):
         ]
         if len(numerical_features) == 0:
             return {
-                f"{score}_q{q}": np.nan
+                f"{score}_q{q}.{summary}": np.nan
                 for q in (*self.lower_q, *self.upper_q)
                 for score in ("mass", "quantiles", "wsd")
+                for summary in ("mean", "median")
             }
         return self._tail_scores(real[numerical_features], syn[numerical_features])
 
@@ -1023,10 +1022,10 @@ class MarginalTails(BaseMetric):
 
         Cutoffs are quantiles of rd, the real reference (training or test) data.
         sd is the synthetic data it is compared to. Scores that cannot be
-        computed for a feature are NaN, which makes the average over features NaN.
+        computed for a feature are NaN, which makes the summaries over features NaN.
 
         Returns:
-            dict: "<score>_q<quantile>" -> average over numerical features.
+            dict: Per-feature scores and their means and medians.
         """
         sides = [("lower", q) for q in self.lower_q] + [("upper", q) for q in self.upper_q]
         per_feature = {}
@@ -1065,10 +1064,15 @@ class MarginalTails(BaseMetric):
                     scores["wsd"] = wasserstein_distance(s_ex, r_ex) / scale
 
                 for name, value in scores.items():
-                    per_feature.setdefault(f"{name}_q{q}", []).append(value)
+                    per_feature.setdefault(f"{name}_q{q}", {})[col] = value
 
-        # average over features (NaN if the score failed for any feature)
-        return {key: float(np.mean(values)) for key, values in per_feature.items()}
+        result = {}
+        for key, scores in per_feature.items():
+            result.update({f"{key}.feature.{col}": float(v) for col, v in scores.items()})
+            values = list(scores.values())
+            result[f"{key}.mean"] = float(np.mean(values))
+            result[f"{key}.median"] = float(np.median(values))
+        return result
 
 
 class Correlations(BaseMetric):

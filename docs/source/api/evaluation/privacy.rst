@@ -7,6 +7,7 @@ Privacy Metrics
 
    privacy/aia
    privacy/dcr
+   privacy/memorization
    privacy/domias
    privacy/dpi
    privacy/classifier_mia

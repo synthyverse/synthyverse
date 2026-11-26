@@ -15,6 +15,7 @@ _METRICS = {
     "MLE": (".utility", "mle"),
     "AIA": (".privacy", "aia"),
     "DCR": (".privacy", "dcr"),
+    "Memorization": (".privacy", "memorization"),
     "DOMIAS": (".privacy", "mia.domias"),
     "DPI": (".privacy", "mia.dpi"),
     "ClassifierMIA": (".privacy", "mia.classifier"),
