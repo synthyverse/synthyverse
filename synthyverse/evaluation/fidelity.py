@@ -1643,8 +1643,8 @@ class NMI(BaseMetric):
     Paper: "A Sobering Look at Tabular Data Generation via Probabilistic Circuits" by Scassola et al. (2026).
 
     Computes normalized mutual information (NMI) for every feature pair in the
-    real and synthetic data, then returns the weighted average of the per-pair
-    preservation score ``1 - abs(NMI_real - NMI_synthetic)``. Each pair is
+    real and synthetic data, then returns weighted and unweighted averages of
+    the per-pair preservation score ``1 - abs(NMI_real - NMI_synthetic)``. Each pair is
     weighted by ``abs(NMI_real + NMI_synthetic)`` and weights are normalized to
     sum to 1.
 
@@ -1657,7 +1657,7 @@ class NMI(BaseMetric):
         random_state (int): Random seed for reproducibility. Default: 0.
 
     Outputs:
-        "nmi.<split>.score".
+        "nmi.<split>.weighted" and "nmi.<split>.unweighted".
 
     Example:
         >>> import pandas as pd
@@ -1716,7 +1716,7 @@ class NMI(BaseMetric):
 
         cols = rd.columns.tolist()
         if len(cols) < 2:
-            return {"score": np.nan}
+            return {"weighted": np.nan, "unweighted": np.nan}
 
         numerical_features = [c for c in cols if c not in self.discrete_features]
 
@@ -1740,13 +1740,14 @@ class NMI(BaseMetric):
 
         scores = np.array(scores)
         weights = np.array(weights)
+        unweighted = float(np.mean(scores))
         weight_sum = weights.sum()
         if weight_sum == 0.0:
-            score = np.mean(scores)
+            weighted = unweighted
         else:
-            score = np.sum((weights / weight_sum) * scores)
+            weighted = float(np.sum((weights / weight_sum) * scores))
 
-        return {"score": float(score)}
+        return {"weighted": weighted, "unweighted": unweighted}
 
     def _nmi(self, s1: pd.Series, s2: pd.Series) -> float:
         x = self._to_codes(s1)
