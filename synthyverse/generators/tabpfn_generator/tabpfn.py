@@ -14,7 +14,7 @@ class TabPFNGenerator(BaseGenerator):
 
     def __init__(
         self,
-        api_key: str | None,
+        api_key: str | None = None,
         t: float = 1.0,
         n_permutations: int = 3,
         dag: dict[int, list[int]] | None = None,
@@ -24,7 +24,7 @@ class TabPFNGenerator(BaseGenerator):
         full_determinism=False,
     ):
         super().__init__(random_state, full_determinism)
-        # set required API key as environment variable
+        # Optionally supply a token for model access.
         if api_key is not None:
             os.environ["TABPFN_TOKEN"] = api_key
         self.t = t
