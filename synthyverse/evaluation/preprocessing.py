@@ -159,15 +159,40 @@ def fast_gower_transform(
     reference_data: pd.DataFrame,
     discrete_features: Optional[list] = None,
     categorical_fit_data: Optional[Iterable[pd.DataFrame]] = None,
+    numerical_fit_data: Optional[Iterable[pd.DataFrame]] = None,
 ) -> dict[str, pd.DataFrame]:
-    """Min-max scale numericals and integer-code categoricals for FastGowerNN."""
+    """Min-max scale numericals and integer-code categoricals for Gower k-NN.
+
+    Numerical features are scaled with the min/max of ``numerical_fit_data``,
+    which should contain only real data. The Gower distance unit then does
+    not depend on the synthetic data being evaluated: results stay comparable
+    across generators and robust to synthetic outliers. Transformed values are
+    clipped to [0, 1] (required by ``FaissGowerNN``), so out-of-range
+    synthetic values saturate at the real min/max. Missing values stay NaN.
+
+    Args:
+        data: Named datasets to transform.
+        reference_data: Dataset defining the column order and, by default,
+            the categorical vocabulary and numerical range.
+        discrete_features: Categorical columns; all others are numerical.
+        categorical_fit_data: Frames used to fit the categorical codes.
+            Defaults to ``[reference_data]``.
+        numerical_fit_data: Real-data frames whose joint min/max defines the
+            numerical scaling. Defaults to ``[reference_data]``.
+
+    Returns:
+        Dict mapping each name in ``data`` to its transformed DataFrame.
+    """
     discrete_features = list(discrete_features or [])
     columns = reference_data.columns.tolist()
     numerical_features = [col for col in columns if col not in discrete_features]
 
     scaler = None
     if numerical_features:
-        scaler = MinMaxScaler().fit(reference_data[numerical_features])
+        num_frames = list(numerical_fit_data or [reference_data])
+        scaler = MinMaxScaler().fit(
+            pd.concat([df[numerical_features] for df in num_frames], axis=0)
+        )
 
     encoder = None
     if discrete_features:
@@ -184,7 +209,9 @@ def fast_gower_transform(
     for name, df in data.items():
         out = pd.DataFrame(index=df.index)
         if numerical_features:
-            out[numerical_features] = scaler.transform(df[numerical_features])
+            out[numerical_features] = np.clip(
+                scaler.transform(df[numerical_features]), 0.0, 1.0
+            )
         if discrete_features:
             categorical = encoder.transform(df[discrete_features]).astype(np.int32)
             categorical[df[discrete_features].isna().to_numpy()] = -1

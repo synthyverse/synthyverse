@@ -17,7 +17,7 @@ from sklearn.metrics import (
 from scipy.stats import gaussian_kde, rankdata
 from scipy.spatial import cKDTree
 from .base import BaseMetric
-from .distances import FastGowerNN
+from .distances import FaissGowerNN
 from .ml import ml_task
 from .preprocessing import fast_gower_transform
 
@@ -273,6 +273,7 @@ class DCR(BaseMetric):
             reference_data=train,
             discrete_features=self.discrete_features,
             categorical_fit_data=[train, test, sd],
+            numerical_fit_data=[train, test],
         )
         train = data["train"]
         test = data["test"]
@@ -303,7 +304,7 @@ class DCR(BaseMetric):
                     f"Need at least {n_neighbors} reference records to compute "
                     "nearest-neighbor distances."
                 )
-            nbrs = FastGowerNN(categorical_cols=self.discrete_features).fit(reference)
+            nbrs = FaissGowerNN(categorical_cols=self.discrete_features).fit(reference)
             distances, _ = nbrs.kneighbors(query, k=n_neighbors)
             if n_neighbors == 1:
                 distances = distances.ravel()
@@ -935,6 +936,7 @@ class DPI(MIA):
             reference_data=reference,
             discrete_features=self.discrete_features,
             categorical_fit_data=[reference, synthetic],
+            numerical_fit_data=[reference, mia_data.x_eval],
         )
 
         reference_data = data["reference"]
@@ -944,7 +946,7 @@ class DPI(MIA):
         )
 
         _, indices = (
-            FastGowerNN(
+            FaissGowerNN(
                 categorical_cols=self.discrete_features,
             )
             .fit(neighbor_pool)

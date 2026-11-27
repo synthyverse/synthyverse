@@ -1,3 +1,6 @@
+import sys
+from functools import lru_cache
+
 import numpy as np
 import pandas as pd
 from pandas.api.types import is_integer_dtype
@@ -457,3 +460,294 @@ class FastGowerNN:
             indices[qs:qe] = best_idx
 
         return distances, indices
+
+
+# faiss caps top-k on GPU (k <= 2048); larger searches fall back to CPU.
+_FAISS_GPU_MAX_K = 2048
+# With device="auto", searches below this many n_query * n_ref * n_features
+# operations run on the CPU: the per-search GPU setup (~80 ms) costs more than
+# the faiss CPU search there. Machine-dependent; measured on a laptop GPU
+# (RTX A1000) vs a 20-thread i7-12700H, where CPU and GPU break even at ~3e8.
+_FAISS_GPU_MIN_WORK = 3e8
+# Slack for float round-off when checking that numerics are min-max scaled.
+_UNIT_RANGE_TOL = 1e-6
+
+
+@lru_cache(maxsize=None)
+def faiss_gpu_available() -> bool:
+    """Return whether faiss can run on a GPU in this process.
+
+    Requires Linux, the GPU build of faiss (``faiss-gpu``) and at least one
+    visible GPU. The result is cached for the lifetime of the process.
+    """
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        import faiss
+
+        return hasattr(faiss, "StandardGpuResources") and faiss.get_num_gpus() > 0
+    except Exception:
+        return False
+
+
+class FaissGowerNN:
+    """Exact Gower nearest-neighbour search backed by faiss ``METRIC_GOWER``.
+
+    Drop-in alternative to ``FastGowerNN`` with the same API. Runs on the GPU
+    when available (Linux, ``faiss-gpu``, visible GPU) and on the faiss CPU
+    brute-force index otherwise. GPU memory is allocated per search and
+    released when the search returns (only the CUDA context stays). With
+    ``device="auto"``, small searches run on the CPU because the per-search
+    GPU setup would dominate; ``last_device_`` records the device used by the
+    most recent search.
+
+    Distance:
+        numeric: abs(x - y), values must be min-max scaled to [0, 1]
+        categorical: 0 if equal else 1
+        missing numeric: feature ignored
+        missing categorical: encoded as a separate category
+
+    Notes:
+        - Numeric features must lie in [0, 1] for both the fitted and the
+          query data. Scale them with ``fast_gower_transform``, which uses the
+          real-data min/max and clips other data into [0, 1].
+        - faiss ranks neighbours by the mean Gower distance over jointly
+          observed features. Without missing numerics this gives the same
+          neighbours as ``FastGowerNN`` for both ``normalize`` settings. With
+          missing numerics and ``normalize=False``, the returned summed
+          distances are exact but neighbours are ranked by the mean, which
+          can differ from ``FastGowerNN``'s ranking by the sum.
+    """
+
+    def __init__(
+        self,
+        numeric_cols=None,
+        categorical_cols=None,
+        ref_chunk_size=50_000,
+        normalize=False,
+        device="auto",
+    ):
+        """Configure a faiss-backed Gower nearest-neighbour index.
+
+        Args:
+            numeric_cols: Numeric columns. If None, inferred during ``fit``.
+            categorical_cols: Integer-coded categorical columns. If None,
+                inferred during ``fit``.
+            ref_chunk_size: Accepted for API compatibility with
+                ``FastGowerNN``; faiss splits searches into memory-sized
+                pieces internally, so this has no effect.
+            normalize: If True, return average per-observed-feature Gower
+                distances. If False, return summed feature contributions.
+            device: "auto" uses the GPU if available and the search is large
+                enough to amortise the GPU setup (n_query * n_ref *
+                n_features >= 3e8), else the CPU. "gpu" forces the GPU and
+                "cpu" forces the CPU.
+        """
+        if device not in ("auto", "gpu", "cpu"):
+            raise ValueError(f"device must be 'auto', 'gpu' or 'cpu', got {device!r}.")
+        self.numeric_cols = numeric_cols
+        self.categorical_cols = categorical_cols
+        self.ref_chunk_size = ref_chunk_size
+        self.normalize = bool(normalize)
+        self.device = device
+
+    def fit(self, X):
+        """Fit the reference data used for subsequent nearest-neighbour queries.
+
+        Args:
+            X: DataFrame whose rows become the searchable reference set. The
+                neighbour indices returned by ``kneighbors`` point into it.
+
+        Returns:
+            The fitted nearest-neighbour index.
+        """
+        import faiss
+
+        if not isinstance(X, pd.DataFrame):
+            raise TypeError("X must be a pandas DataFrame.")
+
+        if self.numeric_cols is None:
+            if self.categorical_cols is None:
+                self.numeric_cols = list(X.columns)
+                self.categorical_cols = []
+            else:
+                self.categorical_cols = list(self.categorical_cols)
+                self.numeric_cols = [
+                    c for c in X.columns if c not in self.categorical_cols
+                ]
+        elif self.categorical_cols is None:
+            self.numeric_cols = list(self.numeric_cols)
+            self.categorical_cols = [c for c in X.columns if c not in self.numeric_cols]
+        else:
+            self.numeric_cols = list(self.numeric_cols)
+            self.categorical_cols = [
+                c for c in self.categorical_cols if c not in self.numeric_cols
+            ]
+
+        if len(self.numeric_cols) + len(self.categorical_cols) == 0:
+            raise ValueError("FaissGowerNN requires at least one feature.")
+
+        if self.device == "auto":
+            self.device_ = "gpu" if faiss_gpu_available() else "cpu"
+        elif self.device == "gpu" and not faiss_gpu_available():
+            raise RuntimeError(
+                "device='gpu' requires Linux, faiss-gpu and a visible GPU."
+            )
+        else:
+            self.device_ = self.device
+        # With "auto", small searches are routed to the CPU in _search.
+        self.auto_device_ = self.device == "auto"
+
+        self.X_, self.X_num_nan_ = self._encode(X)
+        self.n_samples_ = len(X)
+
+        # The CPU index is also the fallback for GPU searches with large k.
+        self.index_ = faiss.IndexFlat(self.X_.shape[1], faiss.METRIC_GOWER)
+        self.index_.add(self.X_)
+        return self
+
+    def _encode(self, X):
+        """Encode a frame for faiss: numerics in [0, 1], categoricals < 0."""
+        num = X[self.numeric_cols].to_numpy(dtype=np.float32, copy=True)
+        num_nan = np.isnan(num)
+        if num.size and not num_nan.all():
+            lo, hi = np.nanmin(num), np.nanmax(num)
+            if lo < -_UNIT_RANGE_TOL or hi > 1.0 + _UNIT_RANGE_TOL:
+                raise ValueError(
+                    "FaissGowerNN numeric columns must be min-max scaled to "
+                    f"[0, 1] (found range [{lo:.4g}, {hi:.4g}]). Use "
+                    "fast_gower_transform, which scales on real data and clips."
+                )
+            # Only absorbs float round-off; NaN is kept so faiss skips it.
+            np.clip(num, 0.0, 1.0, out=num)
+
+        invalid_cols = [
+            col for col in self.categorical_cols if not is_integer_dtype(X[col])
+        ]
+        if invalid_cols:
+            raise ValueError(
+                "FaissGowerNN categorical columns must be ordinally encoded as "
+                "integer dtype before fitting or querying. Non-encoded columns: "
+                f"{invalid_cols}. Use fast_gower_transform(..., "
+                "categorical_fit_data=[...]) to create consistent category codes "
+                "across datasets, or pass pre-encoded categorical columns."
+            )
+        cat = X[self.categorical_cols].to_numpy(
+            dtype=np.float32, na_value=np.nan, copy=True
+        )
+        cat[np.isnan(cat)] = -1
+        # faiss treats strictly negative values as categories. Codes 0..K,
+        # missing -1 and unknown -2 map to distinct values <= -1.
+        cat = -(cat + 3.0)
+
+        encoded = np.ascontiguousarray(np.hstack((num, cat)), dtype=np.float32)
+        return encoded, num_nan
+
+    def _search(self, Q, k):
+        """Top-k search ordered by (distance, index), like ``FastGowerNN``.
+
+        The CPU index already breaks distance ties by the lower index. GPU
+        top-k selection does not, so the GPU fetches extra candidates, sorts
+        them by (distance, index), and rows whose tie group at the k-th
+        neighbour may extend past the fetched candidates are recomputed on
+        the CPU.
+        """
+        k_ext = min(2 * k + 16, self.n_samples_, _FAISS_GPU_MAX_K)
+        small = Q.shape[0] * self.n_samples_ * self.X_.shape[1] < _FAISS_GPU_MIN_WORK
+        use_gpu = (
+            self.device_ == "gpu"
+            and k <= k_ext
+            and not (self.auto_device_ and small)
+        )
+        self.last_device_ = "gpu" if use_gpu else "cpu"
+        if not use_gpu:
+            return self.index_.search(Q, k)
+
+        import faiss
+
+        # Per-search GPU resources: their memory pool is freed on return, so
+        # faiss does not hold GPU memory between metrics or generator runs.
+        res = faiss.StandardGpuResources()
+        try:
+            D, I = faiss.knn_gpu(res, Q, self.X_, k_ext, metric=faiss.METRIC_GOWER)
+        finally:
+            del res
+        # Invalid slots (index -1) sort last.
+        D = np.where(I < 0, np.inf, D)
+        order = np.lexsort((np.where(I < 0, np.iinfo(np.int64).max, I), D), axis=-1)
+        D = np.take_along_axis(D, order, axis=1)
+        I = np.take_along_axis(I, order, axis=1)
+
+        if k_ext < self.n_samples_:
+            ambiguous = np.isfinite(D[:, k - 1]) & (D[:, k - 1] == D[:, -1])
+            if ambiguous.any():
+                D_cpu, I_cpu = self.index_.search(Q[ambiguous], k)
+                D[ambiguous, :k] = D_cpu
+                I[ambiguous, :k] = I_cpu
+        return D[:, :k], I[:, :k]
+
+    def kneighbors(self, X=None, k=1, exclude_self=None, query_chunk_size=None):
+        """Return nearest-neighbour distances and fitted-reference indices.
+
+        Args:
+            X: Query DataFrame to compare against the fitted reference set. If
+                None, the fitted reference data is queried against itself.
+            k: Number of nearest neighbours to retain for each query row.
+            exclude_self: Whether to ignore the same fitted row during
+                self-query. Defaults to True when X is None and False for
+                external query data.
+            query_chunk_size: Accepted for API compatibility with
+                ``FastGowerNN``; faiss splits searches into memory-sized
+                pieces internally, so this has no effect.
+
+        Returns:
+            Tuple ``(distances, indices)``: float32 and int64 arrays of shape
+            (n_query, k). Indices point into the fitted reference data.
+        """
+        if X is None:
+            Q, Q_nan = self.X_, self.X_num_nan_
+            same_data = True
+        else:
+            Q, Q_nan = self._encode(X)
+            same_data = False
+
+        if exclude_self is None:
+            exclude_self = same_data
+        exclude_self = bool(exclude_self and same_data)
+
+        k = int(k)
+        if k <= 0:
+            raise ValueError("k must be positive.")
+        if exclude_self and k >= self.n_samples_:
+            raise ValueError("When exclude_self=True, k must be < n_samples.")
+
+        nq = Q.shape[0]
+        if exclude_self:
+            D, I = self._search(Q, k + 1)
+            drop = I == np.arange(nq)[:, None]
+            # Ties may push self out of the top k+1: drop the last column.
+            drop[~drop.any(axis=1), -1] = True
+            D = D[~drop].reshape(nq, k)
+            I = I[~drop].reshape(nq, k)
+        else:
+            D, I = self._search(Q, k)
+
+        D = np.asarray(D, dtype=np.float32)
+        I = np.asarray(I, dtype=np.int64)
+
+        if not self.normalize:
+            # faiss returns the mean; scale back by the jointly observed count.
+            p_cat = len(self.categorical_cols)
+            if Q_nan.any() or self.X_num_nan_.any():
+                valid = np.where(I >= 0, I, 0)
+                observed = ~(Q_nan[:, None, :] | self.X_num_nan_[valid])
+                counts = p_cat + observed.sum(axis=-1)
+            else:
+                counts = len(self.numeric_cols) + p_cat
+            # inf * 0 for pairs without observed features; reset to inf below.
+            with np.errstate(invalid="ignore"):
+                D = (D * counts).astype(np.float32)
+
+        # Pairs without jointly observed features: same as FastGowerNN.
+        D[I < 0] = np.inf
+        return D, I
