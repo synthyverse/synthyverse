@@ -436,9 +436,7 @@ class TabPFNUnsupervisedModel(BaseEstimator):
                     torch.distributions.Categorical(probs=pred).sample().float()
                 )
 
-            impute_X[torch.isnan(y_predict), column_idx] = pred_sampled.to(
-                y_predict.dtype
-            )
+            impute_X[torch.isnan(y_predict), column_idx] = pred_sampled.to(y_predict)
 
         return impute_X
 
@@ -489,9 +487,7 @@ class TabPFNUnsupervisedModel(BaseEstimator):
                 t,
             )
 
-            impute_X[torch.isnan(y_predict), column_idx] = pred_sampled.to(
-                y_predict.dtype
-            )
+            impute_X[torch.isnan(y_predict), column_idx] = pred_sampled.to(y_predict)
 
         return impute_X, pred
 
